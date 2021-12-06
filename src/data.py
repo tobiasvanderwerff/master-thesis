@@ -244,9 +244,8 @@ class IAMDataset(Dataset):
             imgs, targets = zip(*batch)
 
         img_sizes = [im.shape for im in imgs]
-        if (
-            not len(set(img_sizes)) == 1
-        ):  # images are of varying sizes, so pad them to the maximum size in the batch
+        if len(set(img_sizes)) != 1:
+            # Images are of varying sizes, so pad them to the maximum size in the batch.
             hs, ws = zip(*img_sizes)
             pad_fn = A.PadIfNeeded(
                 max(hs), max(ws), border_mode=cv.BORDER_CONSTANT, value=0

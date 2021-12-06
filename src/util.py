@@ -2,12 +2,22 @@ import xml.etree.ElementTree as ET
 import random
 import math
 from pathlib import Path
-from typing import Union, Tuple
+from typing import Union, Tuple, Sequence, Any
 
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2
+
+
+def identity_collate_fn(x: Sequence[Any]):
+    """
+    This function can be used for PyTorch dataloaders that return batches of size
+    1 and do not require any collation of samples in the batch. This is useful if a
+    batch of data is already prepared when it is passed to the dataloader.
+    """
+    assert len(x) == 1
+    return x[0]
 
 
 def read_xml(xml_file: Union[Path, str]) -> ET.Element:
