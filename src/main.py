@@ -29,7 +29,8 @@ def main(args):
 
     seed_everything(args.seed)
 
-    tb_logger = pl_loggers.TensorBoardLogger(LOGGING_DIR, name="")
+    log_dir_root = Path(__file__).parent.parent.resolve()
+    tb_logger = pl_loggers.TensorBoardLogger(log_dir_root / LOGGING_DIR, name="")
 
     label_enc = None
     if args.validate:
@@ -48,7 +49,7 @@ def main(args):
     if not args.validate:
         # Save the label encoder.
         save_dir = Path(tb_logger.log_dir)
-        save_dir.mkdir(exist_ok=True)
+        save_dir.mkdir(exist_ok=True, parents=True)
         le_path = save_dir / "label_encoder.pkl"
         if not le_path.is_file():
             with open(le_path, "wb") as f:
@@ -162,10 +163,11 @@ def main(args):
         ),  # ddp = Distributed Data Parallel
         precision=args.precision,  # default is 32 bit
         num_nodes=args.num_nodes,
-        gpus=1,
+        gpus=(0 if args.use_cpu else 1),
         max_epochs=args.max_epochs,
         accumulate_grad_batches=args.accumulate_grad_batches,
         limit_train_batches=args.limit_train_batches,
+        limit_val_batches=args.limit_val_batches,
         num_sanity_val_steps=args.num_sanity_val_steps,
         callbacks=[
             ModelCheckpoint(
@@ -176,7 +178,7 @@ def main(args):
             ),
             LogModelPredictions(
                 ds.label_enc,
-                test_batch=next(
+                val_batch=next(
                     iter(
                         DataLoader(
                             Subset(
@@ -193,7 +195,24 @@ def main(args):
                         )
                     )
                 ),
-                include_train=True,
+                train_batch=next(
+                    iter(
+                        DataLoader(
+                            Subset(
+                                ds_train,
+                                random.sample(
+                                    range(len(ds_train)), LOGMODELPREDICTIONS_TO_SAMPLE
+                                ),
+                            ),
+                            batch_size=LOGMODELPREDICTIONS_TO_SAMPLE,
+                            shuffle=False,
+                            collate_fn=collate_fn,
+                            num_workers=args.num_workers,
+                            pin_memory=True,
+                        )
+                    )
+                ),
+                use_gpu=(False if args.use_cpu else True),
             ),
             EarlyStopping(
                 monitor="char_error_rate",
@@ -235,9 +254,11 @@ if __name__ == "__main__":
     parser.add_argument("--label_smoothing", type=float, default=0.0,
                         help="Label smoothing epsilon (0.0 indicates no smoothing)")
     parser.add_argument("--limit_train_batches", type=float, default=1.0)
+    parser.add_argument("--limit_val_batches", type=float, default=1.0)
     parser.add_argument("--early_stopping_patience", type=int, default=5)
     parser.add_argument("--num_sanity_val_steps", type=int, default=2)
     parser.add_argument("--save_all_checkpoints", action="store_true", default=False)
+    parser.add_argument("--use_cpu", action="store_true", default=False)
 
     # Program arguments.
     parser.add_argument("--data_dir", type=str)
