@@ -22,18 +22,21 @@ class MetaHTR(pl.LightningModule):
     def __init__(
         self,
         model: Union[torch.nn.Module, pl.LightningModule],
-        taskset: l2l.data.TaskDataset,
+        taskset_train: l2l.data.TaskDataset,
         ways: int = 8,
         shots: int = 16,
         inner_lr: float = 0.0001,
         outer_lr: float = 0.0001,
         num_inner_steps: int = 1,
         num_workers: int = 0,
+        taskset_eval: Optional[l2l.data.TaskDataset] = None,
+        taskset_test: Optional[l2l.data.TaskDataset] = None,
     ):
         super().__init__()
 
-        self.model = model
-        self.taskset = taskset
+        self.taskset_train = taskset_train
+        self.taskset_eval = taskset_eval
+        self.taskset_test = taskset_test
         self.ways = ways
         self.shots = shots
         self.inner_lr = inner_lr
@@ -43,6 +46,7 @@ class MetaHTR(pl.LightningModule):
 
         # self.automatic_optimization = False  # do manual optimization in training_step()
         self.maml = l2l.algorithms.MAML(model, inner_lr, first_order=False)
+        self.model = self.maml.module
 
         # Pytorch Lightning modules require at minimum one training dataloader, which is
         # why we have to use a small hack to make this work with a `TaskDataset`.
@@ -54,7 +58,7 @@ class MetaHTR(pl.LightningModule):
             "ways", "shots", "inner_lr", "outer_lr", "num_inner_steps"
         )
 
-    def meta_learn(self, batch, batch_idx):
+    def meta_learn(self, batch, batch_idx, mode="train"):
         outer_loss = 0
 
         imgs, target, writer_ids = batch
@@ -67,9 +71,8 @@ class MetaHTR(pl.LightningModule):
 
             # Separate data into support/query set.
             support_indices = np.zeros(imgs_.size(0), dtype=bool)
-            support_indices[
-                np.arange(self.shots) * 2
-            ] = True  # select even indices for support set
+            # Select even indices for support set.
+            support_indices[np.arange(self.shots) * 2] = True
             query_indices = torch.from_numpy(~support_indices)
             support_indices = torch.from_numpy(support_indices)
             support_imgs, support_tgts = (
@@ -89,14 +92,20 @@ class MetaHTR(pl.LightningModule):
                 loss = learner.module.training_step(
                     [support_imgs, support_tgts], batch_idx, log_results=False
                 )
-                learner.adapt(
-                    loss
-                )  # calculates gradients and takes an optimization step
+                # Calculate gradients and take an optimization step.
+                learner.adapt(loss)
 
             # Outer loop.
-            loss = learner.module.training_step(
-                [query_imgs, query_tgts], batch_idx, log_results=False
-            )
+            if mode == "train":
+                loss = learner.module.training_step(
+                    [query_imgs, query_tgts], batch_idx, log_results=True
+                )
+            else:  # val/test
+                torch.set_grad_enabled(False)
+                loss = learner.module.validation_step(
+                    [query_imgs, query_tgts], batch_idx
+                )
+                torch.set_grad_enabled(True)
             outer_loss += (1 / self.ways) * loss
 
             # optimizer = self.optimizers(use_pl_optimizer=True)
@@ -108,15 +117,19 @@ class MetaHTR(pl.LightningModule):
         return outer_loss
 
     def training_step(self, batch, batch_idx):
-        loss = self.meta_learn(batch, batch_idx)
-        # TODO: logging
+        loss = self.meta_learn(batch, batch_idx, mode="train")
         return loss
 
-    # def forward(self, imgs: Tensor):
-    #     pass  # TODO
-    #
-    # def validation_step(self, batch, batch_idx):
-    #     pass  # TODO
+    def validation_step(self, batch, batch_idx):
+        # Validation requires finetuning a model in the inner loop, hence we need to
+        # enable gradients.
+        torch.set_grad_enabled(True)
+        loss = self.meta_learn(batch, batch_idx, mode="val")
+        torch.set_grad_enabled(False)
+        return loss
+
+    def forward(self, imgs: Tensor):
+        return self.maml.module(imgs)
 
     def train_dataloader(self):
         # Since we are using a l2l TaskDataset which already batches the data,
@@ -126,7 +139,7 @@ class MetaHTR(pl.LightningModule):
         # prepared by the TaskDataset. This is a bit of an ugly hack and not ideal,
         # but should suffice for the time being.
         return DataLoader(
-            self.taskset,
+            self.taskset_train,
             batch_size=1,
             shuffle=False,
             # num_workers=self.num_workers,
@@ -137,6 +150,28 @@ class MetaHTR(pl.LightningModule):
         # return self.taskset
         # return self.datamodule.train_dataloader()
         # return TaskDataloader(self.taskset, self.taskset.num_tasks // self.ways)
+
+    def val_dataloader(self):
+        if self.taskset_eval is not None:
+            return DataLoader(
+                self.taskset_eval,
+                batch_size=1,
+                shuffle=False,
+                num_workers=0,
+                collate_fn=identity_collate_fn,
+                pin_memory=False,
+            )
+
+    def test_dataloader(self):
+        if self.taskset_test is not None:
+            return DataLoader(
+                self.taskset_test,
+                batch_size=1,
+                shuffle=False,
+                num_workers=0,
+                collate_fn=identity_collate_fn,
+                pin_memory=False,
+            )
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(self.maml.parameters(), lr=self.outer_lr)

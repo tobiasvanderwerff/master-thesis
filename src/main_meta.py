@@ -85,7 +85,8 @@ def main(args):
         ds_eval.dataset = copy(ds)
         ds_eval.dataset.set_transforms_for_split("eval")
 
-    dataset = l2l.data.MetaDataset(ds)  # any Pytorch dataset
+    ds_meta_train = l2l.data.MetaDataset(ds_train)
+    ds_meta_eval = l2l.data.MetaDataset(ds_eval)
 
     model = LitFullPageHTREncoderDecoder(
         label_encoder=ds.label_enc,
@@ -115,26 +116,42 @@ def main(args):
         },
     )
 
-    transforms = [  # learn2learn transforms
+    # Define learn2learn task transforms.
+    train_tsk_trnsf = [
         # Nways picks N random labels (writers in this case)
-        l2l.data.transforms.NWays(dataset, n=args.ways),
+        l2l.data.transforms.NWays(ds_meta_train, n=args.ways),
         # Keeps K samples for each present label.
-        l2l.data.transforms.KShots(dataset, k=args.shots * 2),
+        l2l.data.transforms.KShots(ds_meta_train, k=args.shots * 2),
         # Load the data.
-        l2l.data.transforms.LoadData(dataset),
+        l2l.data.transforms.LoadData(ds_meta_train),
         # Given samples from K classes, maps the labels to 0, ..., K.
-        # l2l.data.transforms.RemapLabels(dataset),
+        # l2l.data.transforms.RemapLabels(ds_meta_train),
         # Re-orders the samples in the task description such that they are sorted in
         # consecutive order.
-        # l2l.data.transforms.ConsecutiveLabels(dataset),
+        # l2l.data.transforms.ConsecutiveLabels(ds_meta_train),
     ]
-    taskset = l2l.data.TaskDataset(
-        dataset, transforms, num_tasks=args.max_iterations, task_collate=collate_fn
+    eval_tsk_trnsf = [  # learn2learn transforms
+        l2l.data.transforms.NWays(ds_meta_eval, n=args.ways),
+        l2l.data.transforms.KShots(ds_meta_eval, k=args.shots * 2),
+        l2l.data.transforms.LoadData(ds_meta_eval),
+    ]
+    taskset_train = l2l.data.TaskDataset(
+        ds_meta_train,
+        train_tsk_trnsf,
+        num_tasks=args.max_iterations,
+        task_collate=collate_fn,
+    )
+    taskset_eval = l2l.data.TaskDataset(
+        ds_meta_eval,
+        eval_tsk_trnsf,
+        num_tasks=args.max_iterations,
+        task_collate=collate_fn,
     )
 
     learner = MetaHTR(
         model,
-        taskset,
+        taskset_train,
+        taskset_eval=taskset_eval,
         ways=args.ways,
         shots=args.shots,
         inner_lr=args.inner_lr,
@@ -190,6 +207,7 @@ def main(args):
             ),
         ],
         enable_model_summary=False,
+        val_check_interval=args.val_check_interval,
         # overfit_batches=1,
         # profiler="simple",  # set this to get a profiler report showing mean duration of function calls
     )
@@ -230,6 +248,9 @@ if __name__ == "__main__":
     parser.add_argument("--early_stopping_patience", type=int, default=5)
     parser.add_argument("--num_sanity_val_steps", type=int, default=2)
     parser.add_argument("--save_all_checkpoints", action="store_true", default=False)
+    parser.add_argument("--val_check_interval", type=int, default=10,
+                        help="After how many train batches to run validation")
+
 
     # Program arguments.
     parser.add_argument("--data_dir", type=str)

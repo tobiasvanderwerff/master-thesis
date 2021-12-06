@@ -8,7 +8,7 @@ from math import ceil
 from functools import partial
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Union, Tuple, Dict, Sequence, Optional
+from typing import Union, Tuple, Dict, Sequence, Optional, List
 
 import pandas as pd
 import cv2 as cv
@@ -231,6 +231,10 @@ class IAMDataset(Dataset):
     def vocab(self):
         return self.label_enc.classes_.tolist()
 
+    @property
+    def writer_ids(self) -> List[int]:
+        return list(self.data["writer_id"].unique())
+
     @staticmethod
     def collate_fn(
         batch: Sequence[Tuple[np.ndarray, np.ndarray]],
@@ -440,81 +444,3 @@ class IAMDataset(Dataset):
             if word is not None:
                 return html.unescape(word.get("text"))
         return None
-
-
-class SyntheticDataGenerator:
-    # TODO: make a synthetic data generator. Some considerations:
-    # 1. At what level to concatentate (e.g. word, line, sentence). What effect will
-    #    this choice have on the language model that is trained?
-    # 2. What heuristics to apply, e.g. minimum line length to avoid lines that are
-    #    only one or a few words.
-
-    def __init__(
-        self, iam_root: str, max_line_width: int = 500, space_between_words: int = 20
-    ):
-        self.max_line_width = max_line_width
-        self.space_between_words = space_between_words
-        # self.images = IAMDataset(
-        #     iam_root,
-        #     "word",
-        #     "test",
-        #     use_cache=False,
-        #     skip_bad_segmentation=True,
-        # )
-
-    def sample_image(self) -> Tuple[np.ndarray, str]:
-        idx = random.randint(0, len(self.images))
-        img, target = self.images[idx]
-        target = "".join(self.images.label_enc.inverse_transform(target))
-        return img, target
-
-    def generate_line(self):
-        curr_pos = 0
-        imgs, targets, img_stack = [], [], []
-
-        # Sample images.
-        while curr_pos < self.max_line_width:
-            # With 25% probability, pop an image from the stack (a closing quote).
-            if len(img_stack) != 0 and (not random.randint(0, 3)):
-                img, tgt = img_stack.pop()
-            else:  # sample a random image
-                img, tgt = self.sample_image()
-            h, w = img.shape
-
-            if curr_pos + w > self.max_line_width:
-                if img_stack != []:
-                    pass
-                    # for img, tgt in img_stack:
-                    # TODO
-                    #
-                    # Empty the stack
-                break
-
-            # When sampling quotes, close them at a random point.
-            if tgt in ['"', "'"]:
-                img_stack.append((img, tgt))
-
-            imgs.append(img)
-            targets.append(tgt)
-            curr_pos += w + self.space_between_words
-
-        # Concatenate the images into a line.
-        max_h = max(im.shape[0] for im in imgs)
-        line = np.ones((max_h, self.max_line_width))
-        curr_pos = 0
-        for img, tgt in zip(imgs, targets):
-            h, w = img.shape
-            start_h = int((max_h - h) / 2)
-
-            # If sampled a comma or dot, place them at the bottom of the line
-            if tgt in [",", "."]:
-                start_h = max_h - h
-            # If sampled a quote, place them at the top of the line
-            if tgt in ['"', "'"]:
-                start_h = 0
-
-            # Concatenate the sampled word image to the line.
-            line[start_h : start_h + h, curr_pos : curr_pos + w] = img
-
-            curr_pos += w + self.space_between_words
-        return line, " ".join(targets)
