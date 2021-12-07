@@ -12,3 +12,4 @@ scikit-learn
 Pillow
 matplotlib
 learn2learn
+rich

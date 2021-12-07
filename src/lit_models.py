@@ -1,6 +1,5 @@
 from typing import Callable, Optional, Dict, Union, Any
-
-from torch.utils.data import DataLoader
+from pathlib import Path
 
 from models import FullPageHTREncoder, FullPageHTRDecoder
 from metrics import CharacterErrorRate, WordErrorRate
@@ -13,6 +12,7 @@ import torch.optim as optim
 import pytorch_lightning as pl
 import numpy as np
 from torch import Tensor
+from torch.utils.data import DataLoader
 from sklearn.preprocessing import LabelEncoder
 
 import learn2learn as l2l
@@ -46,7 +46,6 @@ class MetaHTR(pl.LightningModule):
 
         # self.automatic_optimization = False  # do manual optimization in training_step()
         self.maml = l2l.algorithms.MAML(model, inner_lr, first_order=False)
-        self.model = self.maml.module
 
         # Pytorch Lightning modules require at minimum one training dataloader, which is
         # why we have to use a small hack to make this work with a `TaskDataset`.
@@ -57,6 +56,7 @@ class MetaHTR(pl.LightningModule):
         self.save_hyperparameters(
             "ways", "shots", "inner_lr", "outer_lr", "num_inner_steps"
         )
+        self.save_hyperparameters(model.hparams)
 
     def meta_learn(self, batch, batch_idx, mode="train"):
         outer_loss = 0
@@ -98,13 +98,15 @@ class MetaHTR(pl.LightningModule):
             # Outer loop.
             if mode == "train":
                 loss = learner.module.training_step(
-                    [query_imgs, query_tgts], batch_idx, log_results=True
+                    [query_imgs, query_tgts], batch_idx, log_results=False
                 )
             else:  # val/test
                 torch.set_grad_enabled(False)
-                loss = learner.module.validation_step(
+                loss, metrics = learner.module.validation_step(
                     [query_imgs, query_tgts], batch_idx
                 )
+                for metric, val in metrics.items():
+                    self.log(metric, val, prog_bar=True)
                 torch.set_grad_enabled(True)
             outer_loss += (1 / self.ways) * loss
 
@@ -118,6 +120,7 @@ class MetaHTR(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss = self.meta_learn(batch, batch_idx, mode="train")
+        self.log("train_loss", loss, sync_dist=True, prog_bar=False, logger=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -126,10 +129,20 @@ class MetaHTR(pl.LightningModule):
         torch.set_grad_enabled(True)
         loss = self.meta_learn(batch, batch_idx, mode="val")
         torch.set_grad_enabled(False)
+        self.log("val_loss", loss, sync_dist=True, prog_bar=True)
         return loss
 
     def forward(self, imgs: Tensor):
-        return self.maml.module(imgs)
+        """Adapt a model to"""
+        logits, _ = self.maml.module(imgs)
+        _, preds = logits.max(-1)
+        # torch.set_grad_enabled(True)
+        # loss = self.meta_learn(imgs, batch_idx=-1, mode="val")
+        # torch.set_grad_enabled(False)
+        # return self.maml.module(imgs)
+
+    def save_checkpoint(self, filepath: Union[Path, str]):
+        torch.save(self.maml.module.state_dict(), filepath)
 
     def train_dataloader(self):
         # Since we are using a l2l TaskDataset which already batches the data,
@@ -278,6 +291,11 @@ class LitFullPageHTREncoderDecoder(pl.LightningModule):
             logits[:, : targets.size(1), :].transpose(1, 2),
             targets[:, : logits.size(1)],
         )
+        metrics = {
+            "char_error_rate": cer,
+            "word_error_rate": wer,
+        }
+
         # Log metrics and loss.
         self.log("char_error_rate", cer, prog_bar=True)
         self.log("word_error_rate", wer)
@@ -286,7 +304,7 @@ class LitFullPageHTREncoderDecoder(pl.LightningModule):
             "hp_metric", wer
         )  # this will show up in the Tensorboard hparams tab, used for comparing different models
 
-        return loss
+        return loss, metrics
 
     def configure_optimizers(self):
         # By default use the optimizer parameters specified in Singh et al. (2021).

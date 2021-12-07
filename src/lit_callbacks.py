@@ -1,13 +1,11 @@
 import math
 from typing import Tuple, Optional
 
-import torch
-
 from util import matplotlib_imshow
 
+import torch
 import matplotlib.pyplot as plt
-from torch.utils.data import DataLoader, Dataset
-from pytorch_lightning.callbacks import Callback
+from pytorch_lightning.callbacks import Callback, ModelCheckpoint
 from sklearn.preprocessing import LabelEncoder
 
 

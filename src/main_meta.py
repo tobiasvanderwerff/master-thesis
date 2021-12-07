@@ -9,6 +9,7 @@ from models import *
 from lit_models import LitFullPageHTREncoderDecoder, MetaHTR
 from lit_callbacks import LogModelPredictions
 from data import IAMDataset
+from lit_util import MAMLCheckpointIO
 
 import pytorch_lightning as pl
 import pandas as pd
@@ -20,7 +21,6 @@ from pytorch_lightning.plugins import DDPPlugin
 
 import learn2learn as l2l
 
-
 LOGGING_DIR = "lightning_logs/"
 LOGMODELPREDICTIONS_TO_SAMPLE = 8
 
@@ -29,9 +29,22 @@ def main(args):
 
     seed_everything(args.seed)
 
+    log_dir_root = Path(__file__).parent.parent.resolve()
     tb_logger = pl_loggers.TensorBoardLogger(LOGGING_DIR, name="")
 
+    assert Path(
+        args.trained_model_path
+    ).is_file(), f"{args.trained_model_path} does not point to a file."
+
+    # Load the label encoder for the trained model.
     label_enc = None
+    le_path = Path(args.trained_model_path).parent.parent / "label_encoder.pkl"
+    assert le_path.is_file(), (
+        f"Label encoder file not found at {le_path}. "
+        f"Make sure 'label_encoder.pkl' exists in the lightning_logs directory."
+    )
+    label_enc = pd.read_pickle(le_path)
+
     ds = IAMDataset(
         args.data_dir,
         "word",
@@ -88,32 +101,16 @@ def main(args):
     ds_meta_train = l2l.data.MetaDataset(ds_train)
     ds_meta_eval = l2l.data.MetaDataset(ds_eval)
 
-    model = LitFullPageHTREncoderDecoder(
+    # Load the model. Note that the vocab length and special tokens given below
+    # are derived from the saved label encoder associated with the checkpoint.
+    model = LitFullPageHTREncoderDecoder.load_from_checkpoint(
+        args.trained_model_path,
+        hparams_file=str(Path(args.trained_model_path).parent.parent / "hparams.yaml"),
         label_encoder=ds.label_enc,
-        encoder_name=args.encoder,
         vocab_len=len(ds.vocab),
-        d_model=args.d_model,
-        max_seq_len=IAMDataset.MAX_SEQ_LENS[args.data_format],
         eos_tkn_idx=eos_tkn_idx,
         sos_tkn_idx=sos_tkn_idx,
         pad_tkn_idx=pad_tkn_idx,
-        num_layers=args.num_layers,
-        nhead=args.nhead,
-        dim_feedforward=args.dim_feedforward,
-        drop_enc=args.drop_enc,
-        drop_dec=args.drop_dec,
-        params_to_log={
-            "ways": args.shots * args.ways,  # no. of images per batch
-            "data_format": args.data_format,
-            "seed": args.seed,
-            "splits": ("Aachen" if args.use_aachen_splits else "random"),
-            "max_iterations": args.max_iterations,
-            "num_nodes": args.num_nodes,
-            "precision": args.precision,
-            "accumulate_grad_batches": args.accumulate_grad_batches,
-            "early_stopping_patience": args.early_stopping_patience,
-            "label_smoothing": args.label_smoothing,
-        },
     )
 
     # Define learn2learn task transforms.
@@ -144,7 +141,7 @@ def main(args):
     taskset_eval = l2l.data.TaskDataset(
         ds_meta_eval,
         eval_tsk_trnsf,
-        num_tasks=args.max_iterations,
+        num_tasks=len(ds_eval.writer_ids) / args.ways,
         task_collate=collate_fn,
     )
 
@@ -159,6 +156,12 @@ def main(args):
         num_workers=args.num_workers,
     )
 
+    # This checkpoint plugin is necessary to save the weights obtained using MAML in
+    # the proper way. The weights should be stored in the same format as they would
+    # be saved without using MAML, to make it straightforward to load the model
+    # weights later on.
+    checkpoint_io = MAMLCheckpointIO()
+
     trainer = pl.Trainer(
         logger=tb_logger,
         strategy=(
@@ -171,49 +174,38 @@ def main(args):
         accumulate_grad_batches=args.accumulate_grad_batches,
         limit_train_batches=args.limit_train_batches,
         num_sanity_val_steps=args.num_sanity_val_steps,
+        plugins=[checkpoint_io],
         callbacks=[
             ModelCheckpoint(
                 save_top_k=(-1 if args.save_all_checkpoints else 3),
                 mode="min",
                 monitor="char_error_rate",
-                filename="{epoch}-{char_error_rate:.4f}-{word_error_rate:.4f}",
-            ),
-            LogModelPredictions(
-                ds.label_enc,
-                test_batch=next(
-                    iter(
-                        DataLoader(
-                            Subset(
-                                ds_eval,
-                                random.sample(
-                                    range(len(ds_eval)), LOGMODELPREDICTIONS_TO_SAMPLE
-                                ),
-                            ),
-                            batch_size=LOGMODELPREDICTIONS_TO_SAMPLE,
-                            shuffle=False,
-                            collate_fn=collate_fn,
-                            num_workers=args.num_workers,
-                            pin_memory=True,
-                        )
-                    )
-                ),
-                include_train=True,
+                filename="MAML-{step}-{char_error_rate:.4f}-{word_error_rate:.4f}",
+                every_n_train_steps=args.val_check_interval,
+                save_weights_only=True,
             ),
             EarlyStopping(
                 monitor="char_error_rate",
                 patience=args.early_stopping_patience,
                 verbose=True,
                 mode="min",
+                check_on_train_epoch_end=False,  # check at the end of validation
             ),
+            # LogModelPredictions(
+            #     ds.label_enc,
+            #     val_batch=next(iter(learner.val_dataloader())),
+            #     use_gpu=(False if args.use_cpu else True),
+            # )
         ],
         enable_model_summary=False,
         val_check_interval=args.val_check_interval,
         # overfit_batches=1,
         # profiler="simple",  # set this to get a profiler report showing mean duration of function calls
     )
+    trainer.logger._default_hp_metric = None
 
     if args.validate:  # validate a trained model
-        trainer.validate(learner)
+        trainer.validate(learner)  # TODO: check if this works properly
     else:  # train a model
         trainer.fit(learner)
 
@@ -253,13 +245,16 @@ if __name__ == "__main__":
 
 
     # Program arguments.
+    parser.add_argument("--trained_model_path", type=str,
+                        help=("Path to a model checkpoint, which will be used as a "
+                              "starting point for MAML/MetaHTR."))
     parser.add_argument("--data_dir", type=str)
+    parser.add_argument("--validate", action="store_true", default=False)
     parser.add_argument("--data_format", type=str, choices=["form", "line", "word"], default="word")
     parser.add_argument("--use_aachen_splits", action="store_true", default=False)
     parser.add_argument("--use_gpu", action="store_true", default=True)
     parser.add_argument("--debug_mode", action="store_true", default=False)
     parser.add_argument("--seed", type=int, default=1337)
-    parser.add_argument("--validate", type=str, help="Validate a trained model, specified by its checkpoint path.")
     args = parser.parse_args()
 
     main(args)
