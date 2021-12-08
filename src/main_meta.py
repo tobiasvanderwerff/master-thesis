@@ -1,4 +1,5 @@
 import argparse
+import pickle
 import shutil
 from copy import copy
 from pathlib import Path
@@ -43,6 +44,12 @@ def main(args):
         f"Make sure 'label_encoder.pkl' exists in the lightning_logs directory."
     )
     label_enc = pd.read_pickle(le_path)
+
+    # Save the label encoder in the logging directory.
+    log_dir = Path(tb_logger.log_dir)
+    log_dir.mkdir(exist_ok=True, parents=True)
+    with open(log_dir / "label_encoder.pkl", "wb") as f:
+        pickle.dump(label_enc, f)
 
     ds = IAMDataset(
         args.data_dir,
@@ -118,9 +125,7 @@ def main(args):
     # which we copy to the current logging directory so that we can load the model
     # later using the saved hyper parameters.
     model_hparams_file = Path(args.trained_model_path).parent.parent / "hparams.yaml"
-    save_dir = Path(tb_logger.log_dir)
-    save_dir.mkdir(exist_ok=True, parents=True)
-    shutil.copy(model_hparams_file, save_dir / "hparams.yaml")
+    shutil.copy(model_hparams_file, log_dir / "hparams.yaml")
 
     # Load the model. Note that the vocab length and special tokens given below
     # are derived from the saved label encoder associated with the checkpoint.
@@ -239,7 +244,6 @@ if __name__ == "__main__":
 
     # Trainer arguments.
     parser.add_argument("--max_iterations", type=int, default=1000)
-    parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--num_nodes", type=int, default=1, help="Number of nodes to train on.")
     parser.add_argument("--precision", type=int, default=32, help="How many bits of floating point precision to use.")
@@ -260,10 +264,8 @@ if __name__ == "__main__":
     parser.add_argument("--validate", action="store_true", default=False)
     parser.add_argument("--use_aachen_splits", action="store_true", default=False)
     parser.add_argument("--use_gpu", action="store_true", default=True)
-    parser.add_argument("--debug_mode", action="store_true", default=False)
     parser.add_argument("--seed", type=int, default=1337)
 
-    parser = LitFullPageHTREncoderDecoder.add_model_specific_args(parser)
     parser = MetaHTR.add_model_specific_args(parser)
 
     args = parser.parse_args()

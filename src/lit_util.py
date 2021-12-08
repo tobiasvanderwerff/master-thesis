@@ -32,14 +32,12 @@ class MAMLCheckpointIO(TorchCheckpointIO):
         """Turn parameter names of the form `maml.module.a.b.c` into `a.b.c` form."""
         new_dict = OrderedDict()
         state_dict = checkpoint["state_dict"]
-        # for k, p in checkpoint['state_dict'].items():
         while len(state_dict) > 0:
             k, p = state_dict.popitem()
             cmps = k.split(".")
             if k.startswith("maml.module."):
                 new_key = ".".join(cmps[2:])
                 new_dict[new_key] = p
-                # del checkpoint['state_dict'][k]
         checkpoint["state_dict"] = new_dict
         return checkpoint
 
