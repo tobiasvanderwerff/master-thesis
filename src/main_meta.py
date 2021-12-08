@@ -187,31 +187,29 @@ def main(args):
     # weights later on.
     checkpoint_io = MAMLCheckpointIO()
 
-    callbacks = (
-        [
-            LitProgressBar(),
-            ModelCheckpoint(
-                save_top_k=(-1 if args.save_all_checkpoints else 3),
-                mode="min",
-                monitor="char_error_rate",
-                filename="MAML-{step}-{char_error_rate:.4f}-{word_error_rate:.4f}",
-                every_n_train_steps=args.val_check_interval + 1,
-                save_weights_only=True,
-            ),
-            EarlyStopping(
-                monitor="char_error_rate",
-                patience=args.early_stopping_patience,
-                verbose=True,
-                mode="min",
-                check_on_train_epoch_end=False,  # check at the end of validation
-            ),
-            # LogModelPredictions(
-            #     ds.label_enc,
-            #     val_batch=next(iter(learner.val_dataloader())),
-            #     use_gpu=(False if args.use_cpu else True),
-            # )
-        ],
-    )
+    callbacks = [
+        LitProgressBar(),
+        ModelCheckpoint(
+            save_top_k=(-1 if args.save_all_checkpoints else 3),
+            mode="min",
+            monitor="char_error_rate",
+            filename="MAML-{step}-{char_error_rate:.4f}-{word_error_rate:.4f}",
+            every_n_train_steps=args.val_check_interval + 1,
+            save_weights_only=True,
+        ),
+        EarlyStopping(
+            monitor="char_error_rate",
+            patience=args.early_stopping_patience,
+            verbose=True,
+            mode="min",
+            check_on_train_epoch_end=False,  # check at the end of validation
+        ),
+        # LogModelPredictions(
+        #     ds.label_enc,
+        #     val_batch=next(iter(learner.val_dataloader())),
+        #     use_gpu=(False if args.use_cpu else True),
+        # )
+    ]
 
     trainer = pl.Trainer(
         logger=tb_logger,
