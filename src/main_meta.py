@@ -222,8 +222,6 @@ def main(args):
         num_nodes=args.num_nodes,
         gpus=(1 if args.use_gpu else 0),
         max_epochs=1,
-        accumulate_grad_batches=args.accumulate_grad_batches,
-        limit_train_batches=args.limit_train_batches,
         num_sanity_val_steps=args.num_sanity_val_steps,
         plugins=[checkpoint_io],
         enable_model_summary=False,
@@ -249,7 +247,6 @@ if __name__ == "__main__":
     parser.add_argument("--precision", type=int, default=32, help="How many bits of floating point precision to use.")
     parser.add_argument("--label_smoothing", type=float, default=0.0,
                         help="Label smoothing epsilon (0.0 indicates no smoothing)")
-    parser.add_argument("--limit_train_batches", type=float, default=1.0)
     parser.add_argument("--early_stopping_patience", type=int, default=5)
     parser.add_argument("--num_sanity_val_steps", type=int, default=2)
     parser.add_argument("--save_all_checkpoints", action="store_true", default=False)
