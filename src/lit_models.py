@@ -21,7 +21,7 @@ import learn2learn as l2l
 class MetaHTR(pl.LightningModule):
     def __init__(
         self,
-        model: Union[torch.nn.Module, pl.LightningModule],
+        model: torch.nn.Module,
         taskset_train: l2l.data.TaskDataset,
         ways: int = 8,
         shots: int = 16,
@@ -29,7 +29,8 @@ class MetaHTR(pl.LightningModule):
         outer_lr: float = 0.0001,
         num_inner_steps: int = 1,
         num_workers: int = 0,
-        taskset_eval: Optional[l2l.data.TaskDataset] = None,
+        params_to_log: Optional[Dict[str, Union[str, float, int]]] = None,
+        taskset_val: Optional[l2l.data.TaskDataset] = None,
         taskset_test: Optional[l2l.data.TaskDataset] = None,
     ):
         super().__init__()
@@ -37,7 +38,7 @@ class MetaHTR(pl.LightningModule):
         assert num_inner_steps >= 1
 
         self.taskset_train = taskset_train
-        self.taskset_eval = taskset_eval
+        self.taskset_val = taskset_val
         self.taskset_test = taskset_test
         self.ways = ways
         self.shots = shots
@@ -58,9 +59,10 @@ class MetaHTR(pl.LightningModule):
         self.save_hyperparameters(
             "ways", "shots", "inner_lr", "outer_lr", "num_inner_steps"
         )
-        self.save_hyperparameters(model.hparams)
+        if params_to_log is not None:
+            self.save_hyperparameters(params_to_log)
 
-    def meta_learn(self, batch, batch_idx, mode="train"):
+    def meta_learn(self, batch, mode="train"):
         outer_loss = 0.0
 
         imgs, target, writer_ids = batch
@@ -91,22 +93,23 @@ class MetaHTR(pl.LightningModule):
 
             # Inner loop.
             for _ in range(self.num_inner_steps):
-                support_loss = learner.module.training_step(
-                    [support_imgs, support_tgts], batch_idx, log_results=False
+                _, support_loss = learner.module.forward_teacher_forcing(
+                    support_imgs, support_tgts
                 )
                 # Calculate gradients and take an optimization step.
                 learner.adapt(support_loss)
 
             # Outer loop.
             if mode == "train":
-                query_loss = learner.module.training_step(
-                    [query_imgs, query_tgts], batch_idx, log_results=True
+                _, query_loss = learner.module.forward_teacher_forcing(
+                    query_imgs, query_tgts
                 )
             else:  # val/test
                 torch.set_grad_enabled(False)
-                query_loss, metrics = learner.module.validation_step(
-                    [query_imgs, query_tgts], batch_idx
-                )
+                _, preds, query_loss = learner(query_imgs, query_tgts)
+
+                # Log metrics.
+                metrics = learner.module.calculate_metrics(preds, query_tgts)
                 for metric, val in metrics.items():
                     self.log(metric, val, prog_bar=True)
                 torch.set_grad_enabled(True)
@@ -118,22 +121,21 @@ class MetaHTR(pl.LightningModule):
             # precision, etc...
             # self.manual_backward(loss)
             # optimizer.step()
-        self.log(f"{mode}_loss", outer_loss, sync_dist=True, prog_bar=False)
         return outer_loss
 
     def training_step(self, batch, batch_idx):
-        loss = self.meta_learn(batch, batch_idx, mode="train")
+        loss = self.meta_learn(batch, mode="train")
+        self.log("train_loss", loss, sync_dist=True, prog_bar=False)
         # self.log("train_loss", loss, on_epoch=False, on_step=True, logger=True)
-        # self.log("train_loss", loss.item(), sync_dist=True, prog_bar=False, logger=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         # Validation requires finetuning a model in the inner loop, hence we need to
         # enable gradients.
         torch.set_grad_enabled(True)
-        loss = self.meta_learn(batch, batch_idx, mode="val")
+        loss = self.meta_learn(batch, mode="val")
         torch.set_grad_enabled(False)
-        # self.log("val_loss", loss, sync_dist=True, prog_bar=True)
+        self.log("val_loss", loss, sync_dist=True, prog_bar=True)
         return loss
 
     def forward(self, imgs: Tensor):
@@ -141,7 +143,7 @@ class MetaHTR(pl.LightningModule):
         logits, _ = self.maml.module(imgs)
         _, preds = logits.max(-1)
         # torch.set_grad_enabled(True)
-        # loss = self.meta_learn(imgs, batch_idx=-1, mode="val")
+        # loss = self.meta_learn(imgs, mode="val")
         # torch.set_grad_enabled(False)
         # return self.maml.module(imgs)
 
@@ -169,9 +171,9 @@ class MetaHTR(pl.LightningModule):
         # return TaskDataloader(self.taskset, self.taskset.num_tasks // self.ways)
 
     def val_dataloader(self):
-        if self.taskset_eval is not None:
+        if self.taskset_val is not None:
             return DataLoader(
-                self.taskset_eval,
+                self.taskset_val,
                 batch_size=1,
                 shuffle=False,
                 num_workers=0,
@@ -193,6 +195,15 @@ class MetaHTR(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = optim.AdamW(self.maml.parameters(), lr=self.outer_lr)
         return optimizer
+
+    @staticmethod
+    def add_model_specific_args(parent_parser):
+        parser = parent_parser.add_argument_group("MetaHTR")
+        parser.add_argument("--shots", type=int, default=16)
+        parser.add_argument("--ways", type=int, default=8)
+        parser.add_argument("--inner_lr", type=float, default=0.0001)
+        parser.add_argument("--outer_lr", type=float, default=0.0001)
+        return parent_parser
 
 
 class LitFullPageHTREncoderDecoder(pl.LightningModule):
