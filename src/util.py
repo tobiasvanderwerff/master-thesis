@@ -4,10 +4,31 @@ import math
 from pathlib import Path
 from typing import Union, Tuple, Sequence, Any
 
+import pandas as pd
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2
+
+
+def filter_df_by_freq(df: pd.DataFrame, column: str, min_freq: int) -> pd.DataFrame:
+    """
+    Filters the DataFrame based on the value frequency in the specified column.
+
+    Taken from https://stackoverflow.com/questions/30485151/python-pandas-exclude
+    -rows-below-a-certain-frequency-count#answer-58809668.
+
+    :param df: DataFrame to be filtered.
+    :param column: Column name that should be frequency filtered.
+    :param min_freq: Minimal value frequency for the row to be accepted.
+    :return: Frequency filtered DataFrame.
+    """
+    # Frequencies of each value in the column.
+    freq = df[column].value_counts()
+    # Select frequent values. Value is in the index.
+    frequent_values = freq[freq >= min_freq].index
+    # Return only rows with value frequency above threshold.
+    return df[df[column].isin(frequent_values)]
 
 
 def identity_collate_fn(x: Sequence[Any]):

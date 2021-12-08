@@ -9,7 +9,7 @@ from models import *
 from lit_models import LitFullPageHTREncoderDecoder, MetaHTR
 from lit_callbacks import LogModelPredictions
 from data import IAMDataset
-from lit_util import MAMLCheckpointIO
+from lit_util import MAMLCheckpointIO, LitProgressBar
 
 import pytorch_lightning as pl
 import pandas as pd
@@ -20,6 +20,8 @@ from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.plugins import DDPPlugin
 
 import learn2learn as l2l
+
+from util import filter_df_by_freq
 
 LOGGING_DIR = "lightning_logs/"
 LOGMODELPREDICTIONS_TO_SAMPLE = 8
@@ -74,29 +76,43 @@ def main(args):
         validation_splits = (
             (aachen_path / "validation.uttlist").read_text().splitlines()
         )
-        test_splits = (aachen_path / "test.uttlist").read_text().splitlines()
+        # test_splits = (aachen_path / "test.uttlist").read_text().splitlines()
 
         data_train = ds.data[ds.data["img_id"].isin(train_splits)]
         data_eval = ds.data[ds.data["img_id"].isin(validation_splits)]
-        data_test = ds.data[ds.data["img_id"].isin(test_splits)]
+        # data_test = ds.data[ds.data["img_id"].isin(test_splits)]
 
         ds_train = copy(ds)
         ds_train.data = data_train
-        ds_train.set_transforms_for_split("train")
 
         ds_eval = copy(ds)
         ds_eval.data = data_eval
-        ds_eval.set_transforms_for_split("eval")
 
-        ds_test = copy(ds)
-        ds_test.data = data_test
-        ds_test.set_transforms_for_split("test")
+        # ds_test = copy(ds)
+        # ds_test.data = data_test
     else:
         ds_train, ds_eval = torch.utils.data.random_split(
             ds, [math.ceil(0.8 * len(ds)), math.floor(0.2 * len(ds))]
         )
         ds_eval.dataset = copy(ds)
+
+    # Exclude writers from the dataset that do not have sufficiently many samples.
+    ds_train.data = filter_df_by_freq(ds_train.data, "writer_id", args.shots * 2)
+    ds_eval.data = filter_df_by_freq(ds_eval.data, "writer_id", args.shots * 2)
+    # ds_test.data = filter_df_by_freq(ds_test.data, "writer_id", args.shots * 2)
+
+    # Set image transforms.
+    if args.use_aachen_splits:
+        ds_train.set_transforms_for_split("train")
+        ds_eval.set_transforms_for_split("eval")
+        # ds_test.set_transforms_for_split("test")
+    else:
+        ds_train.dataset.set_transforms_for_split("train")
         ds_eval.dataset.set_transforms_for_split("eval")
+
+    # Sanity check. Remove this later.
+    assert (ds_train.data["writer_id"].value_counts() >= args.shots * 2).all()
+    assert (ds_eval.data["writer_id"].value_counts() >= args.shots * 2).all()
 
     ds_meta_train = l2l.data.MetaDataset(ds_train)
     ds_meta_eval = l2l.data.MetaDataset(ds_eval)
@@ -176,6 +192,7 @@ def main(args):
         num_sanity_val_steps=args.num_sanity_val_steps,
         plugins=[checkpoint_io],
         callbacks=[
+            LitProgressBar(),
             ModelCheckpoint(
                 save_top_k=(-1 if args.save_all_checkpoints else 3),
                 mode="min",

@@ -4,6 +4,7 @@ via Image to Sequence Extraction" by Singh et al.
 """
 
 import math
+from typing import Dict, Any
 
 import torch
 import torch.nn as nn
@@ -306,13 +307,47 @@ class FullPageHTREncoderDecoder(nn.Module):
     encoder: FullPageHTREncoder
     decoder: FullPageHTRDecoder
 
-    def __init__(self, encoder: FullPageHTREncoder, decoder: FullPageHTRDecoder):
+    def __init__(
+        self,
+        encoder_name: str,
+        vocab_len: int,
+        max_seq_len: int,
+        eos_tkn_idx: int,
+        sos_tkn_idx: int,
+        pad_tkn_idx: int,
+        d_model: int,
+        num_layers: int,
+        nhead: int,
+        dim_feedforward: int,
+        drop_enc: int = 0.1,
+        drop_dec: int = 0.5,
+        activ_dec: str = "gelu",
+    ):
         super().__init__()
-        assert encoder.d_model == decoder.d_model
 
-        self.encoder = encoder
-        self.decoder = decoder
+        # Initialize models.
+        self.encoder = FullPageHTREncoder(
+            d_model, model_name=encoder_name, dropout=drop_enc
+        )
+        self.decoder = FullPageHTRDecoder(
+            vocab_len=vocab_len,
+            max_seq_len=max_seq_len,
+            eos_tkn_idx=eos_tkn_idx,
+            sos_tkn_idx=sos_tkn_idx,
+            pad_tkn_idx=pad_tkn_idx,
+            d_model=d_model,
+            num_layers=num_layers,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=drop_dec,
+            activation=activ_dec,
+        )
 
     def forward(self, imgs: Tensor):
         logits, sampled_ids = self.decoder(self.encoder(imgs))
         return logits, sampled_ids
+
+    @staticmethod
+    def full_page_htr_optimizer_params() -> Dict[str, Any]:
+        """See Singh et al, page 9."""
+        return {"optimizer_name": "AdamW", "lr": 0.0002, "betas": (0.9, 0.999)}

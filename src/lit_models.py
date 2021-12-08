@@ -1,7 +1,7 @@
 from typing import Callable, Optional, Dict, Union, Any
 from pathlib import Path
 
-from models import FullPageHTREncoder, FullPageHTRDecoder
+from models import FullPageHTREncoder, FullPageHTRDecoder, FullPageHTREncoderDecoder
 from metrics import CharacterErrorRate, WordErrorRate
 from lit_util import TaskDataloader
 from util import identity_collate_fn
@@ -34,6 +34,8 @@ class MetaHTR(pl.LightningModule):
     ):
         super().__init__()
 
+        assert num_inner_steps >= 1
+
         self.taskset_train = taskset_train
         self.taskset_eval = taskset_eval
         self.taskset_test = taskset_test
@@ -59,7 +61,7 @@ class MetaHTR(pl.LightningModule):
         self.save_hyperparameters(model.hparams)
 
     def meta_learn(self, batch, batch_idx, mode="train"):
-        outer_loss = 0
+        outer_loss = 0.0
 
         imgs, target, writer_ids = batch
         assert imgs.size(0) == 2 * self.ways * self.shots, imgs.size(0)
@@ -89,26 +91,26 @@ class MetaHTR(pl.LightningModule):
 
             # Inner loop.
             for _ in range(self.num_inner_steps):
-                loss = learner.module.training_step(
+                support_loss = learner.module.training_step(
                     [support_imgs, support_tgts], batch_idx, log_results=False
                 )
                 # Calculate gradients and take an optimization step.
-                learner.adapt(loss)
+                learner.adapt(support_loss)
 
             # Outer loop.
             if mode == "train":
-                loss = learner.module.training_step(
-                    [query_imgs, query_tgts], batch_idx, log_results=False
+                query_loss = learner.module.training_step(
+                    [query_imgs, query_tgts], batch_idx, log_results=True
                 )
             else:  # val/test
                 torch.set_grad_enabled(False)
-                loss, metrics = learner.module.validation_step(
+                query_loss, metrics = learner.module.validation_step(
                     [query_imgs, query_tgts], batch_idx
                 )
                 for metric, val in metrics.items():
                     self.log(metric, val, prog_bar=True)
                 torch.set_grad_enabled(True)
-            outer_loss += (1 / self.ways) * loss
+            outer_loss += (1 / self.ways) * query_loss
 
             # optimizer = self.optimizers(use_pl_optimizer=True)
             # optimizer.zero_grad()
@@ -116,11 +118,13 @@ class MetaHTR(pl.LightningModule):
             # precision, etc...
             # self.manual_backward(loss)
             # optimizer.step()
+        self.log(f"{mode}_loss", outer_loss, sync_dist=True, prog_bar=False)
         return outer_loss
 
     def training_step(self, batch, batch_idx):
         loss = self.meta_learn(batch, batch_idx, mode="train")
-        self.log("train_loss", loss, sync_dist=True, prog_bar=False, logger=True)
+        # self.log("train_loss", loss, on_epoch=False, on_step=True, logger=True)
+        # self.log("train_loss", loss.item(), sync_dist=True, prog_bar=False, logger=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -129,7 +133,7 @@ class MetaHTR(pl.LightningModule):
         torch.set_grad_enabled(True)
         loss = self.meta_learn(batch, batch_idx, mode="val")
         torch.set_grad_enabled(False)
-        self.log("val_loss", loss, sync_dist=True, prog_bar=True)
+        # self.log("val_loss", loss, sync_dist=True, prog_bar=True)
         return loss
 
     def forward(self, imgs: Tensor):
@@ -190,12 +194,6 @@ class MetaHTR(pl.LightningModule):
         optimizer = optim.AdamW(self.maml.parameters(), lr=self.outer_lr)
         return optimizer
 
-    def get_progress_bar_dict(self):
-        # Don't show the version number.
-        items = super().get_progress_bar_dict()
-        items.pop("v_num", None)
-        return items
-
 
 class LitFullPageHTREncoderDecoder(pl.LightningModule):
     encoder: FullPageHTREncoder
@@ -241,11 +239,9 @@ class LitFullPageHTREncoderDecoder(pl.LightningModule):
             "activ_dec",
         )
 
-        # Initialize models.
-        self.encoder = FullPageHTREncoder(
-            d_model, model_name=encoder_name, dropout=drop_enc
-        )
-        self.decoder = FullPageHTRDecoder(
+        model = FullPageHTREncoderDecoder(
+            label_encoder=label_encoder,
+            encoder_name=encoder_name,
             vocab_len=vocab_len,
             max_seq_len=max_seq_len,
             eos_tkn_idx=eos_tkn_idx,
@@ -255,8 +251,9 @@ class LitFullPageHTREncoderDecoder(pl.LightningModule):
             num_layers=num_layers,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
-            dropout=drop_dec,
-            activation=activ_dec,
+            drop_enc=drop_enc,
+            drop_dec=drop_dec,
+            activ_dec=activ_dec,
         )
 
         # Initialize metrics and loss function.
@@ -265,8 +262,7 @@ class LitFullPageHTREncoderDecoder(pl.LightningModule):
         self.loss_fn = nn.CrossEntropyLoss(ignore_index=self.decoder.pad_tkn_idx)
 
     def forward(self, imgs: Tensor):
-        logits, sampled_ids = self.decoder(self.encoder(imgs))
-        return logits, sampled_ids
+        return self(imgs)
 
     def training_step(self, batch, batch_idx, log_results=True):
         imgs, targets = batch
@@ -274,8 +270,8 @@ class LitFullPageHTREncoderDecoder(pl.LightningModule):
         logits = self.decoder.decode_teacher_forcing(memory, targets)
 
         loss = self.loss_fn(logits.transpose(1, 2), targets)
-        if log_results:
-            self.log("train_loss", loss, sync_dist=True, prog_bar=False)
+        # if log_results:
+        # self.log("train_loss", loss, sync_dist=True, prog_bar=False)
 
         return loss
 
@@ -297,12 +293,12 @@ class LitFullPageHTREncoderDecoder(pl.LightningModule):
         }
 
         # Log metrics and loss.
-        self.log("char_error_rate", cer, prog_bar=True)
-        self.log("word_error_rate", wer)
-        self.log("val_loss", loss, sync_dist=True, prog_bar=True)
-        self.log(
-            "hp_metric", wer
-        )  # this will show up in the Tensorboard hparams tab, used for comparing different models
+        # self.log("char_error_rate", cer, prog_bar=True)
+        # self.log("word_error_rate", wer)
+        # self.log("val_loss", loss, sync_dist=True, prog_bar=True)
+        # self.log(
+        #     "hp_metric", wer
+        # )  # this will show up in the Tensorboard hparams tab, used for comparing different models
 
         return loss, metrics
 
@@ -312,14 +308,3 @@ class LitFullPageHTREncoderDecoder(pl.LightningModule):
         optimizer_name = params.pop("optimizer_name")
         optimizer = getattr(optim, optimizer_name)(self.parameters(), **params)
         return optimizer
-
-    @staticmethod
-    def full_page_htr_optimizer_params() -> Dict[str, Any]:
-        """See Singh et al, page 9."""
-        return {"optimizer_name": "AdamW", "lr": 0.0002, "betas": (0.9, 0.999)}
-
-    def get_progress_bar_dict(self):
-        # Don't show the version number.
-        items = super().get_progress_bar_dict()
-        items.pop("v_num", None)
-        return items
