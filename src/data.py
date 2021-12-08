@@ -8,7 +8,7 @@ from math import ceil
 from functools import partial
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Union, Tuple, Dict, Sequence, Optional, List
+from typing import Union, Tuple, Dict, Sequence, Optional, List, Any
 
 import pandas as pd
 import cv2 as cv
@@ -444,3 +444,161 @@ class IAMDataset(Dataset):
             if word is not None:
                 return html.unescape(word.get("text"))
         return None
+
+
+class SyntheticDataGenerator:
+    # TODO: make a synthetic data generator. Some considerations:
+    # 1. At what level to concatentate (e.g. word, line, sentence). What effect will
+    #    this choice have on the language model that is trained?
+    # 2. What heuristics to apply, e.g. minimum line length to avoid lines that are
+    #    only one or a few words.
+
+    # TODO: sample several lines to create a full page image.
+
+    def __init__(
+        self,
+        iam_root: str,
+        words_per_line: Tuple[int, int] = (5, 13),
+        px_between_words: int = 50,
+    ):
+        self.words_per_line = words_per_line
+        self.px_between_words = px_between_words
+        self.images = IAMDataset(
+            iam_root,
+            "word",
+            "test",
+            use_cache=False,
+            skip_bad_segmentation=True,
+        )
+        self.images.transforms = None
+
+    def sample_image(self) -> Tuple[np.ndarray, str]:
+        idx = random.randint(0, len(self.images))
+        img, target = self.images[idx]
+        target = "".join(self.images.label_enc.inverse_transform(target))
+        return img, target
+
+    @dataclass
+    class TemporalStack:
+        """A stack where each item on the stack has an associated age."""
+
+        @dataclass
+        class StackItem:
+            value: Any
+            age: int = 0
+
+        items: List[StackItem] = field(default_factory=list)
+
+        def time_step(self):
+            # Increment age by 1 for each item on the stack.
+            for item in self.items:
+                item.age += 1
+
+        def add_item(self, x: Any):
+            self.items.append(self.StackItem(x))
+
+        def is_empty(self):
+            return len(self) == 0
+
+        def pop(self):
+            return self.items.pop().value
+
+        def __len__(self):
+            return len(self.items)
+
+    def generate_line(self):
+        curr_pos, n_sampled_words = 0, 0
+        imgs, targets = [], []
+        target_str, last_target = "", ""
+        last_target_popped = False
+        img_stack = self.TemporalStack()
+
+        # Init random number generator.
+        rng = np.random.default_rng()
+
+        # Determine the amount of words in the line by sampling from a uniform
+        # distribution.
+        n_words_to_sample = rng.uniform(*self.words_per_line)
+
+        # TODO: right now words are sampled randomly. Instead, use a language model to
+        # guide the sampled words. Temperature of the LM should be set to encourage
+        # variation, since otherwise some words may never be sampled.
+        # Sample images.
+        while n_sampled_words < n_words_to_sample:
+            # Probability of sampling from the stack is determined by an exponential
+            # function of the age of the youngest item on the stack.
+            min_age = 0 if img_stack.is_empty() else img_stack.items[-1].age
+            pop_the_stack = (not img_stack.is_empty()) and rng.binomial(
+                1, 1 - (0.5 ** (min_age - 1))
+            )
+            if pop_the_stack:
+                img, tgt = img_stack.pop()
+            else:  # sample a random image
+                img, tgt = self.sample_image()
+            h, w = img.shape
+
+            # Some basic heuristics to avoid strange looking sentences.
+            if (
+                last_target in [".", ",", ";", ":"] and tgt in [".", ",", ";", ":"]
+            ) or last_target == tgt:
+                continue
+
+            if tgt in ['"', "'"] and not pop_the_stack:
+                # When sampling quotation symbols, close them at a random point,
+                # by adding them to a stack that will be popped later.
+                img_stack.add_item((img, tgt))
+
+            if (
+                pop_the_stack
+                or tgt in [".", ",", "?", "!"]
+                or (last_target in ['"', "'"] and not last_target_popped)
+            ):
+                # Surrounding quotes should not have spaces on at least one side,
+                # so they should be "glued" to the next or previous target word.
+                target_str += tgt
+            else:
+                target_str += " " + tgt
+            targets.append(tgt)
+            imgs.append(img)
+
+            n_sampled_words += 1
+            curr_pos += w + self.px_between_words
+            last_target = tgt
+            last_target_popped = True if pop_the_stack else False
+            img_stack.time_step()
+
+        # Append the remaining images from the stack to the line.
+        while not img_stack.is_empty():
+            img, tgt = img_stack.pop()
+            imgs.append(img)
+            targets.append(tgt)
+            target_str += tgt
+            curr_pos += img.shape[1]
+
+        # Concatenate the images into a line.
+        max_h = max(im.shape[0] for im in imgs)
+        line = np.ones((max_h, curr_pos), dtype=imgs[0].dtype) * 255
+        curr_pos = 0
+        assert len(imgs) == len(targets)
+        for img, tgt in zip(imgs, targets):
+            h, w = img.shape
+            start_h = int((max_h - h) / 2)  # center the image in the middle of the line
+
+            # TODO: smaller spacing for leestekens (', ", ;, etc.)
+            # If sampled a comma or dot, place them at the bottom of the line.
+            if tgt in [",", "."]:
+                start_h = max_h - h
+            # If sampled a quote, place them at the top of the line.
+            if tgt in ['"', "'"]:
+                start_h = 0
+
+            # Concatenate the word image to the line.
+            line[start_h : start_h + h, curr_pos : curr_pos + w] = img
+
+            curr_pos += w + self.px_between_words
+
+        # Apply random brightness and contrast adjustment in an attempt to smooth out
+        # the background of the image.
+        line = A.RandomBrightnessContrast(always_apply=True)(image=line)["image"]
+
+        return line, target_str

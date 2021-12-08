@@ -4,11 +4,13 @@ via Image to Sequence Extraction" by Singh et al.
 """
 
 import math
-from typing import Dict, Any
+from typing import Dict, Any, Tuple, Optional, Union, Callable
+from metrics import CharacterErrorRate, WordErrorRate
 
 import torch
 import torch.nn as nn
 import torchvision
+from sklearn.preprocessing import LabelEncoder
 from torch import Tensor
 
 
@@ -127,11 +129,11 @@ class FullPageHTRDecoder(nn.Module):
         eos_tkn_idx: int,
         sos_tkn_idx: int,
         pad_tkn_idx: int,
-        d_model: int = 260,
-        num_layers: int = 6,
-        nhead: int = 4,
-        dim_feedforward: int = 1024,
-        dropout: float = 0.5,
+        d_model: int,
+        num_layers: int,
+        nhead: int,
+        dim_feedforward: int,
+        dropout: float,
         activation: str = "gelu",
     ):
         super().__init__()
@@ -256,14 +258,7 @@ class FullPageHTREncoder(nn.Module):
     d_model: int
     model_name: str
 
-    # TODO: default dropout rate is taken from the original Transformers paper, because
-    # it was not provided in Singh et al. However, the decoder in Singh et al. uses
-    # dropout=0.5, which makes me think perhaps the dropout rate for the encoder should
-    # be higher.
-
-    def __init__(
-        self, d_model: int, model_name: str = "resnet18", dropout: float = 0.1
-    ):
+    def __init__(self, d_model: int, model_name: str, dropout: float):
         super().__init__()
 
         assert d_model % 4 == 0
@@ -306,31 +301,54 @@ class FullPageHTREncoder(nn.Module):
 class FullPageHTREncoderDecoder(nn.Module):
     encoder: FullPageHTREncoder
     decoder: FullPageHTRDecoder
+    cer_metric: CharacterErrorRate
+    wer_metric: WordErrorRate
+    loss_fn: Callable
 
     def __init__(
         self,
-        encoder_name: str,
-        vocab_len: int,
-        max_seq_len: int,
-        eos_tkn_idx: int,
-        sos_tkn_idx: int,
-        pad_tkn_idx: int,
-        d_model: int,
-        num_layers: int,
-        nhead: int,
-        dim_feedforward: int,
-        drop_enc: int = 0.1,
+        label_encoder: LabelEncoder,
+        max_seq_len: int = 500,
+        d_model: int = 260,
+        num_layers: int = 6,
+        nhead: int = 4,
+        dim_feedforward: int = 1024,
+        encoder_name: str = "resnet18",
+        drop_enc: int = 0.5,
         drop_dec: int = 0.5,
         activ_dec: str = "gelu",
     ):
+        """
+        Model used in Singh et al. (2021). The default hyperparameters are those used
+        in the paper, whenever they were available.
+
+        Args:
+            label_encoder (LabelEncoder): Sklearn label encoder, which provides an
+                integer encoding of token values.
+            d_model (int): the number of expected features in the decoder inputs
+            num_layers (int): the number of sub-decoder-layers in the decoder
+            nhead (int): the number of heads in the multi-head attention models
+            dim_feedforward (int): the dimension of the feedforward network model in
+                the decoder
+            encoder_name (str): name of the ResNet decoder to use. Choices:
+                (resnet18, resnet34, resnet50)
+            drop_enc (int): dropout rate used in the encoder
+            drop_dec (int): dropout rate used in the decoder
+            activ_dec (str): activation function of the decoder
+        """
         super().__init__()
 
-        # Initialize models.
+        # Obtain special token indices.
+        eos_tkn_idx, sos_tkn_idx, pad_tkn_idx = label_encoder.transform(
+            ["<EOS>", "<SOS>", "<PAD>"]
+        ).tolist()
+
+        # Initialize encoder and decoder.
         self.encoder = FullPageHTREncoder(
             d_model, model_name=encoder_name, dropout=drop_enc
         )
         self.decoder = FullPageHTRDecoder(
-            vocab_len=vocab_len,
+            vocab_len=len(label_encoder.classes_.tolist()),
             max_seq_len=max_seq_len,
             eos_tkn_idx=eos_tkn_idx,
             sos_tkn_idx=sos_tkn_idx,
@@ -343,11 +361,57 @@ class FullPageHTREncoderDecoder(nn.Module):
             activation=activ_dec,
         )
 
-    def forward(self, imgs: Tensor):
+        # Initialize metrics and loss function.
+        self.cer_metric = CharacterErrorRate(label_encoder)
+        self.wer_metric = WordErrorRate(label_encoder)
+        self.loss_fn = nn.CrossEntropyLoss(ignore_index=pad_tkn_idx)
+
+    def forward(
+        self, imgs: Tensor, targets: Optional[Tensor] = None
+    ) -> Tuple[Tensor, Tensor, Union[Tensor, None]]:
+        """
+        Run inference on the model using greedy decoding.
+
+        Returns:
+            - logits, obtained at each time step during decoding
+            - sampled class indices, i.e. model predictions, obtained by applying
+                  greedy decoding (argmax on logits) at each time step
+            - loss value (only calculated when specifiying `targets`, otherwise
+                  defaults to None)
+        """
         logits, sampled_ids = self.decoder(self.encoder(imgs))
-        return logits, sampled_ids
+        loss = None
+        if targets is not None:
+            loss = self.loss_fn(
+                logits[:, : targets.size(1), :].transpose(1, 2),
+                targets[:, : logits.size(1)],
+            )
+        return logits, sampled_ids, loss
+
+    def forward_teacher_forcing(
+        self, imgs: Tensor, targets: Tensor
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Run inference on the model using greedy decoding and teacher forcing.
+
+        Teacher forcing implies that at each decoding time step, the ground truth
+        target of the previous time step is fed as input to the model.
+
+        Returns:
+            - logits, obtained at each time step during decoding
+            - loss value
+        """
+        memory = self.encoder(imgs)
+        logits = self.decoder.decode_teacher_forcing(memory, targets)
+        loss = self.loss_fn(logits.transpose(1, 2), targets)
+        return logits, loss
+
+    def calculate_metrics(self, preds: Tensor, targets: Tensor) -> Dict[str, float]:
+        cer = self.cer_metric(preds, targets)
+        wer = self.wer_metric(preds, targets)
+        return {"char_error_rate": cer, "word_error_rate": wer}
 
     @staticmethod
     def full_page_htr_optimizer_params() -> Dict[str, Any]:
-        """See Singh et al, page 9."""
+        """Optimizer parameters used in Singh et al., see page 9."""
         return {"optimizer_name": "AdamW", "lr": 0.0002, "betas": (0.9, 0.999)}
