@@ -9,6 +9,22 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2
+from pytorch_lightning.callbacks import TQDMProgressBar
+
+
+class LitProgressBar(TQDMProgressBar):
+    def get_metrics(self, trainer, model):
+        # don't show the version number
+        items = super().get_metrics(trainer, model)
+        items.pop("v_num", None)
+        return items
+
+
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def filter_df_by_freq(df: pd.DataFrame, column: str, min_freq: int) -> pd.DataFrame:
