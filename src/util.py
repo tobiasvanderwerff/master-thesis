@@ -1,6 +1,7 @@
 import xml.etree.ElementTree as ET
 import random
 import math
+import pickle
 from pathlib import Path
 from typing import Union, Tuple, Sequence, Any
 
@@ -10,6 +11,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import cv2
 from pytorch_lightning.callbacks import TQDMProgressBar
+
+
+def pickle_save(obj, file):
+    with open(file, "wb") as f:
+        pickle.dump(obj, f)
+
+
+def pickle_load(file) -> Any:
+    with open(file, "rb") as f:
+        return pickle.load(f)
 
 
 class LitProgressBar(TQDMProgressBar):

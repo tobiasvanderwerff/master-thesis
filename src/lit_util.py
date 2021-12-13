@@ -1,7 +1,6 @@
 from typing import Optional, Dict, Any
 from collections import OrderedDict
 
-import pytorch_lightning as pl
 import learn2learn as l2l
 from pytorch_lightning.callbacks import TQDMProgressBar
 from torch.utils.data import Dataset
@@ -42,26 +41,14 @@ class MAMLCheckpointIO(TorchCheckpointIO):
         return checkpoint
 
 
-class TaskDataloader(pl.LightningDataModule):
+class PtTaskDataset(Dataset):
     def __init__(self, taskset: l2l.data.TaskDataset, epoch_length: int):
         super().__init__()
         self.taskset = taskset
         self.epoch_length = epoch_length
 
-    @staticmethod
-    def load(taskset: l2l.data.TaskDataset, epoch_length: int):
-        class Loader(Dataset):
-            def __init__(self, taskset, length):
-                self.tasks = taskset
-                self.length = length
+    def __getitem__(self, *args, **kwargs):
+        return self.taskset.sample()
 
-            def __getitem__(self, *args, **kwargs):
-                return self.tasks.sample()
-
-            def __len__(self):
-                return self.length
-
-        return Loader(taskset, epoch_length)
-
-    def train_dataloader(self):
-        return TaskDataloader.load(self.taskset, self.epoch_length)
+    def __len__(self):
+        return self.epoch_length

@@ -40,12 +40,14 @@ class LogModelPredictions(Callback):
         val_batch: Tuple[torch.Tensor, torch.Tensor],
         use_gpu: bool = True,
         data_format: str = "word",
+        enable_grad: bool = False,
         train_batch: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ):
         self.label_encoder = label_encoder
         self.val_batch = val_batch
         self.use_gpu = use_gpu
         self.data_format = data_format
+        self.enable_grad = enable_grad
         self.train_batch = train_batch
 
     def on_validation_epoch_end(
@@ -66,14 +68,18 @@ class LogModelPredictions(Callback):
 
         # Make predictions.
         if split == "train":
-            imgs, targets = self.train_batch
+            # imgs, targets = self.train_batch
+            batch = self.train_batch
         else:  # split == "val"
-            imgs, targets = self.val_batch
-        with torch.no_grad():
-            pl_module.eval()
-            _, preds, _ = pl_module(imgs.cuda() if self.use_gpu else imgs)
+            # imgs, targets = self.val_batch
+            batch = self.val_batch
+        pl_module.eval()
+        torch.set_grad_enabled(self.enable_grad)
+        _, preds, *_ = pl_module(*[t.cuda() if self.use_gpu else t for t in batch])
+        torch.set_grad_enabled(False)
 
         # Find padding and <EOS> positions in predictions and targets.
+        imgs, targets, *_ = batch
         eos_idxs_pred = (
             (preds == pl_module.decoder.eos_tkn_idx).float().argmax(1).tolist()
         )

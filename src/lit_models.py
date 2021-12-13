@@ -1,18 +1,14 @@
-from pathlib import Path
-from typing import Optional, Dict, Union
+from typing import Optional, Dict, Union, Tuple
 
 from models import FullPageHTREncoderDecoder
-from metrics import CharacterErrorRate, WordErrorRate
-from lit_util import TaskDataloader
 from util import identity_collate_fn
 
 import torch
-import torch.nn as nn
 import torch.optim as optim
 import pytorch_lightning as pl
 import numpy as np
 from torch import Tensor
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from sklearn.preprocessing import LabelEncoder
 
 import learn2learn as l2l
@@ -21,8 +17,10 @@ import learn2learn as l2l
 class MetaHTR(pl.LightningModule):
     def __init__(
         self,
-        model: torch.nn.Module,
-        taskset_train: l2l.data.TaskDataset,
+        model: FullPageHTREncoderDecoder,
+        taskset_train: Union[l2l.data.TaskDataset, Dataset],
+        taskset_val: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
+        taskset_test: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
         ways: int = 8,
         shots: int = 16,
         inner_lr: float = 0.0001,
@@ -30,8 +28,6 @@ class MetaHTR(pl.LightningModule):
         num_inner_steps: int = 1,
         num_workers: int = 0,
         params_to_log: Optional[Dict[str, Union[str, float, int]]] = None,
-        taskset_val: Optional[l2l.data.TaskDataset] = None,
-        taskset_test: Optional[l2l.data.TaskDataset] = None,
     ):
         super().__init__()
 
@@ -47,8 +43,10 @@ class MetaHTR(pl.LightningModule):
         self.num_inner_steps = num_inner_steps
         self.num_workers = num_workers
 
-        # self.automatic_optimization = False  # do manual optimization in training_step()
-        self.maml = l2l.algorithms.MAML(model, inner_lr, first_order=False)
+        self.automatic_optimization = False  # do manual optimization in training_step()
+        self.maml = l2l.algorithms.MAML(
+            model, inner_lr, first_order=False, allow_nograd=True
+        )
 
         # Pytorch Lightning modules require at minimum one training dataloader, which is
         # why we have to use a small hack to make this work with a `TaskDataset`.
@@ -105,28 +103,38 @@ class MetaHTR(pl.LightningModule):
                     query_imgs, query_tgts
                 )
             else:  # val/test
-                torch.set_grad_enabled(False)
-                _, preds, query_loss = learner(query_imgs, query_tgts)
+                learner.eval()
+                with torch.inference_mode():
+                    _, preds, query_loss = learner(query_imgs, query_tgts)
 
                 # Log metrics.
                 metrics = learner.module.calculate_metrics(preds, query_tgts)
                 for metric, val in metrics.items():
                     self.log(metric, val, prog_bar=True)
-                torch.set_grad_enabled(True)
             outer_loss += (1 / self.ways) * query_loss
 
-            # optimizer = self.optimizers(use_pl_optimizer=True)
-            # optimizer.zero_grad()
-            # Use `manual_backward()` instead of `loss.backward` to automate half
-            # precision, etc...
-            # self.manual_backward(loss)
-            # optimizer.step()
         return outer_loss
 
+    @property
+    def encoder(self):
+        return self.maml.module.encoder
+
+    @property
+    def decoder(self):
+        return self.maml.module.decoder
+
     def training_step(self, batch, batch_idx):
+        optimizer = self.optimizers(use_pl_optimizer=True)
+        optimizer.zero_grad()
+
         loss = self.meta_learn(batch, mode="train")
+
+        # Use `manual_backward()` instead of `loss.backward` to automate half
+        # precision, etc...
+        self.manual_backward(loss)
+        optimizer.step()
+
         self.log("train_loss", loss, sync_dist=True, prog_bar=False)
-        # self.log("train_loss", loss, on_epoch=False, on_step=True, logger=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -138,17 +146,44 @@ class MetaHTR(pl.LightningModule):
         self.log("val_loss", loss, sync_dist=True, prog_bar=True)
         return loss
 
-    def forward(self, imgs: Tensor):
-        """Adapt a model to"""
-        logits, _ = self.maml.module(imgs)
-        _, preds = logits.max(-1)
-        # torch.set_grad_enabled(True)
-        # loss = self.meta_learn(imgs, mode="val")
-        # torch.set_grad_enabled(False)
-        # return self.maml.module(imgs)
+    def forward(
+        self,
+        adaptation_imgs: Tensor,
+        adaptation_targets: Tensor,
+        inference_imgs: Tensor,
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Do meta learning on a set of images and run inference on another set.
 
-    def save_checkpoint(self, filepath: Union[Path, str]):
-        torch.save(self.maml.module.state_dict(), filepath)
+        Args:
+            adaptation_imgs (Tensor): images to do adaptation on
+            adaptation_targets (Tensor): targets for `adaptation_imgs`
+            inference_imgs (Tensor): images to make predictions on
+        Returns:
+            predictions on `inference_imgs`, in the form of a 2-tuple:
+                - logits, obtained at each time step during decoding
+                - sampled class indices, i.e. model predictions, obtained by applying
+                      greedy decoding (argmax on logits) at each time step
+        """
+        learner = self.maml.clone()
+        learner.train()
+
+        # Adapt the model.
+        # For some reason using a autograd context manager like torch.enable_grad()
+        # here does not work, perhaps due to some unexpected interaction between
+        # Pytorch Lightning and the learn2learn lib. Therefore gradient
+        # calculation should be set beforehand, outside of the current function.
+        _, adaptation_loss = learner.module.forward_teacher_forcing(
+            adaptation_imgs, adaptation_targets
+        )
+        learner.adapt(adaptation_loss)
+
+        # Run inference on the adapted model.
+        learner.eval()
+        with torch.inference_mode():
+            logits, sampled_ids, _ = learner(inference_imgs)
+
+        return logits, sampled_ids
 
     def train_dataloader(self):
         # Since we are using a l2l TaskDataset which already batches the data,
@@ -161,14 +196,10 @@ class MetaHTR(pl.LightningModule):
             self.taskset_train,
             batch_size=1,
             shuffle=False,
-            # num_workers=self.num_workers,
-            num_workers=0,  # not sure if higher num_workers is useful in this context
+            num_workers=self.num_workers,
             collate_fn=identity_collate_fn,
             pin_memory=False,
         )
-        # return self.taskset
-        # return self.datamodule.train_dataloader()
-        # return TaskDataloader(self.taskset, self.taskset.num_tasks // self.ways)
 
     def val_dataloader(self):
         if self.taskset_val is not None:
@@ -176,7 +207,7 @@ class MetaHTR(pl.LightningModule):
                 self.taskset_val,
                 batch_size=1,
                 shuffle=False,
-                num_workers=0,
+                num_workers=self.num_workers,
                 collate_fn=identity_collate_fn,
                 pin_memory=False,
             )
@@ -187,7 +218,7 @@ class MetaHTR(pl.LightningModule):
                 self.taskset_test,
                 batch_size=1,
                 shuffle=False,
-                num_workers=0,
+                num_workers=self.num_workers,
                 collate_fn=identity_collate_fn,
                 pin_memory=False,
             )

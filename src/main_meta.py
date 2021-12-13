@@ -8,19 +8,19 @@ from functools import partial
 from models import *
 from lit_models import LitFullPageHTREncoderDecoder, MetaHTR
 from data import IAMDataset
-from lit_util import MAMLCheckpointIO, LitProgressBar
+from lit_util import MAMLCheckpointIO, LitProgressBar, PtTaskDataset
+from lit_callbacks import LogModelPredictions
+from util import filter_df_by_freq, pickle_load, pickle_save
 
 import pytorch_lightning as pl
 import pandas as pd
+import learn2learn as l2l
 from torch.utils.data import DataLoader
 from pytorch_lightning import seed_everything
 from pytorch_lightning import loggers as pl_loggers
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.plugins import DDPPlugin
 
-import learn2learn as l2l
-
-from util import filter_df_by_freq
 
 LOGGING_DIR = "lightning_logs/"
 LOGMODELPREDICTIONS_TO_SAMPLE = 8
@@ -118,8 +118,26 @@ def main(args):
     assert (ds_train.data["writer_id"].value_counts() >= args.shots * 2).all()
     assert (ds_val.data["writer_id"].value_counts() >= args.shots * 2).all()
 
-    ds_meta_train = l2l.data.MetaDataset(ds_train)
-    ds_meta_val = l2l.data.MetaDataset(ds_val)
+    # Initalize meta dataset and cache the result.
+    # TODO: skip previous data initializaiton steps when cache is present.
+    cache_dir = Path(args.cache_dir) if args.cache_dir else log_dir / "cache"
+    cache_dir.mkdir(exist_ok=True, parents=True)
+    ds_meta_train_path = cache_dir / "ds_meta_train.pkl"
+    ds_meta_val_path = cache_dir / "ds_meta_val.pkl"
+    if ds_meta_train_path.is_file():
+        print("Loading cached train meta dataset.")
+        ds_meta_train = pickle_load(ds_meta_train_path)
+    else:
+        print("Creating train meta dataset...")
+        ds_meta_train = l2l.data.MetaDataset(ds_train)
+        pickle_save(ds_meta_train, ds_meta_train_path)
+    if ds_meta_val_path.is_file():
+        print("Loading cached val meta dataset.")
+        ds_meta_val = pickle_load(ds_meta_val_path)
+    else:
+        print("Creating val meta dataset...")
+        ds_meta_val = l2l.data.MetaDataset(ds_val)
+        pickle_save(ds_meta_val, ds_meta_val_path)
 
     # Copy hyper parameters. The loaded model has an associated `hparams.yaml` file,
     # which we copy to the current logging directory so that we can load the model
@@ -146,13 +164,8 @@ def main(args):
         l2l.data.transforms.KShots(ds_meta_train, k=args.shots * 2),
         # Load the data.
         l2l.data.transforms.LoadData(ds_meta_train),
-        # Given samples from K classes, maps the labels to 0, ..., K.
-        # l2l.data.transforms.RemapLabels(ds_meta_train),
-        # Re-orders the samples in the task description such that they are sorted in
-        # consecutive order.
-        # l2l.data.transforms.ConsecutiveLabels(ds_meta_train),
     ]
-    val_tsk_trnsf = [  # learn2learn transforms
+    val_tsk_trnsf = [
         l2l.data.transforms.NWays(ds_meta_val, n=args.ways),
         l2l.data.transforms.KShots(ds_meta_val, k=args.shots * 2),
         l2l.data.transforms.LoadData(ds_meta_val),
@@ -160,14 +173,25 @@ def main(args):
     taskset_train = l2l.data.TaskDataset(
         ds_meta_train,
         train_tsk_trnsf,
-        num_tasks=args.max_iterations,
+        num_tasks=-1,
         task_collate=collate_fn,
     )
     taskset_val = l2l.data.TaskDataset(
         ds_meta_val,
         val_tsk_trnsf,
-        num_tasks=len(ds_val.writer_ids) / args.ways,
+        num_tasks=-1,
         task_collate=collate_fn,
+    )
+
+    # Wrap the task datasets into a simple class that sets a length for the dataset (
+    # other than 1, which is the default if setting num_tasks=-1).
+    # This is necessary because the dataset length is used by Pytorch dataloaders to
+    # determine how many batches are in the dataset per epoch.
+    taskset_train = PtTaskDataset(
+        taskset_train, epoch_length=int(len(ds_train.writer_ids) / args.ways)
+    )
+    taskset_val = PtTaskDataset(
+        taskset_val, epoch_length=int(len(ds_val.writer_ids) / args.ways)
     )
 
     learner = MetaHTR(
@@ -187,43 +211,53 @@ def main(args):
     # weights later on.
     checkpoint_io = MAMLCheckpointIO()
 
+    im, t, _ = next(iter(learner.val_dataloader()))
+    val_batch = [im[: args.shots], t[: args.shots], im[args.shots : args.shots * 2]]
+    # train_batch = next(iter(learner.train_dataloader()))
+
     callbacks = [
         LitProgressBar(),
         ModelCheckpoint(
             save_top_k=(-1 if args.save_all_checkpoints else 3),
             mode="min",
-            monitor="char_error_rate",
+            monitor="word_error_rate",
             filename="MAML-{step}-{char_error_rate:.4f}-{word_error_rate:.4f}",
-            every_n_train_steps=args.val_check_interval + 1,
+            # every_n_train_steps=args.val_check_interval + 1,
             save_weights_only=True,
         ),
-        EarlyStopping(
-            monitor="char_error_rate",
-            patience=args.early_stopping_patience,
-            verbose=True,
-            mode="min",
-            check_on_train_epoch_end=False,  # check at the end of validation
+        # EarlyStopping(
+        #     monitor="word_error_rate",
+        #     patience=args.early_stopping_patience,
+        #     verbose=True,
+        #     mode="min",
+        #     # check_on_train_epoch_end=False,  # check at the end of validation
+        # ),
+        LogModelPredictions(
+            # Make predictions for a single writer.
+            ds.label_enc,
+            val_batch=val_batch,
+            # train_batch=train_batch,
+            use_gpu=(False if args.use_cpu else True),
+            enable_grad=True,
         ),
-        # LogModelPredictions(
-        #     ds.label_enc,
-        #     val_batch=next(iter(learner.val_dataloader())),
-        #     use_gpu=(False if args.use_cpu else True),
-        # )
     ]
 
     trainer = pl.Trainer(
         logger=tb_logger,
+        plugins=[checkpoint_io],
         strategy=(
             DDPPlugin(find_unused_parameters=False) if args.num_nodes != 1 else None
         ),  # ddp = Distributed Data Parallel
         precision=args.precision,  # default is 32 bit
         num_nodes=args.num_nodes,
-        gpus=(1 if args.use_gpu else 0),
-        max_epochs=1,
+        gpus=(0 if args.use_cpu else 1),
+        max_epochs=args.max_epochs,
+        # val_check_interval=args.val_check_interval,
         num_sanity_val_steps=args.num_sanity_val_steps,
-        plugins=[checkpoint_io],
+        limit_train_batches=args.limit_train_batches,
+        limit_val_batches=args.limit_val_batches,
+        log_every_n_steps=10,
         enable_model_summary=False,
-        val_check_interval=args.val_check_interval,
         callbacks=callbacks,
     )
     trainer.logger._default_hp_metric = None
@@ -239,7 +273,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     # Trainer arguments.
-    parser.add_argument("--max_iterations", type=int, default=1000)
+    parser.add_argument("--max_epochs", type=int, default=100)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--num_nodes", type=int, default=1, help="Number of nodes to train on.")
     parser.add_argument("--precision", type=int, default=32, help="How many bits of floating point precision to use.")
@@ -248,17 +282,20 @@ if __name__ == "__main__":
     parser.add_argument("--early_stopping_patience", type=int, default=5)
     parser.add_argument("--num_sanity_val_steps", type=int, default=2)
     parser.add_argument("--save_all_checkpoints", action="store_true", default=False)
-    parser.add_argument("--val_check_interval", type=int, default=10,
-                        help="After how many train batches to run validation")
+    parser.add_argument("--limit_train_batches", type=float, default=1.0)
+    parser.add_argument("--limit_val_batches", type=float, default=1.0)
+    # parser.add_argument("--val_check_interval", type=int, default=10,
+    #                     help="After how many train batches to run validation")
 
     # Program arguments.
     parser.add_argument("--trained_model_path", type=str,
                         help=("Path to a model checkpoint, which will be used as a "
                               "starting point for MAML/MetaHTR."))
     parser.add_argument("--data_dir", type=str)
+    parser.add_argument("--cache_dir", type=str)
     parser.add_argument("--validate", action="store_true", default=False)
     parser.add_argument("--use_aachen_splits", action="store_true", default=False)
-    parser.add_argument("--use_gpu", action="store_true", default=True)
+    parser.add_argument("--use_cpu", action="store_true", default=False)
     parser.add_argument("--seed", type=int, default=1337)
 
     parser = MetaHTR.add_model_specific_args(parser)
