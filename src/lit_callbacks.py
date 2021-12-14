@@ -41,6 +41,7 @@ class LogModelPredictions(Callback):
         use_gpu: bool = True,
         data_format: str = "word",
         enable_grad: bool = False,
+        on_start_train: bool = False,
         train_batch: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ):
         self.label_encoder = label_encoder
@@ -48,6 +49,7 @@ class LogModelPredictions(Callback):
         self.use_gpu = use_gpu
         self.data_format = data_format
         self.enable_grad = enable_grad
+        self.predict_on_train_start = on_start_train
         self.train_batch = train_batch
 
     def on_validation_epoch_end(
@@ -60,6 +62,10 @@ class LogModelPredictions(Callback):
     ):
         if self.train_batch is not None:
             self._predict_intermediate(trainer, pl_module, split="train")
+
+    def on_train_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"):
+        if self.predict_on_train_start:
+            self._predict_intermediate(trainer, pl_module, split="val")
 
     def _predict_intermediate(
         self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", split="val"

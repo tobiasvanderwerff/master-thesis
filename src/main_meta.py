@@ -241,6 +241,7 @@ def main(args):
             # train_batch=train_batch,
             use_gpu=(False if args.use_cpu else True),
             enable_grad=True,
+            on_start_train=True,
         ),
     ]
 
