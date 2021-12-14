@@ -17,6 +17,10 @@ After downloading IAM, install the requirements:
 pip install -r requirements.txt
 ```
 
+NOTE: it's very important not to use Torch 1.10; using this version will lead to a
+memory leak that crashes training. Therefore, installing the Torch version specified
+in `requirements.txt` is necessary.
+
 Now run the main script, e.g.
 
 ```shell

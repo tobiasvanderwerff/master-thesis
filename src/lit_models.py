@@ -43,16 +43,9 @@ class MetaHTR(pl.LightningModule):
         self.num_inner_steps = num_inner_steps
         self.num_workers = num_workers
 
-        self.automatic_optimization = False  # do manual optimization in training_step()
         self.maml = l2l.algorithms.MAML(
             model, inner_lr, first_order=False, allow_nograd=True
         )
-
-        # Pytorch Lightning modules require at minimum one training dataloader, which is
-        # why we have to use a small hack to make this work with a `TaskDataset`.
-        # Namely, we use a wrapper class `TaskDataLoader`, which does little more than
-        # provide a `__getitem__()` and `__len__()` method for a TaskDataset.
-        # self.datamodule = TaskDataloader(taskset, ways)
 
         self.save_hyperparameters(
             "ways", "shots", "inner_lr", "outer_lr", "num_inner_steps"
@@ -60,16 +53,15 @@ class MetaHTR(pl.LightningModule):
         if params_to_log is not None:
             self.save_hyperparameters(params_to_log)
 
-    def meta_learn(self, batch, mode="train"):
+    def meta_learn(self, batch, mode="train") -> Tensor:
         outer_loss = 0.0
 
         imgs, target, writer_ids = batch
         assert imgs.size(0) == 2 * self.ways * self.shots, imgs.size(0)
         # Split the batch into N different writers, where N = ways.
-        for task in range(self.ways):
+        for task in range(self.ways):  # tasks correpond to different writers
             task_slice = slice(2 * self.shots * task, 2 * self.shots * (task + 1))
             imgs_, target_ = imgs[task_slice], target[task_slice]
-            # imgs, target, writer_ids = self.taskset.sample()  # sample a task (writer)
 
             # Separate data into support/query set.
             support_indices = np.zeros(imgs_.size(0), dtype=bool)
@@ -98,12 +90,24 @@ class MetaHTR(pl.LightningModule):
                 learner.adapt(support_loss)
 
             # Outer loop.
+            # To me it is not fully clear whether to set the model to eval() for
+            # the outer loop. The primary change is in the deactivation of dropout
+            # layers and the usage of running activation statistics for
+            # normalization instead of per-batch statistics.
+            #
+            # It seems logical that the outer loop activations are not recorded as
+            # part of the running statistics for norm layers (since the adapted
+            # parameters are not the same parameters obtained after doing a
+            # gradient step). Deactivating dropout also seems reasonable since the
+            # outer loop can be seen as a kind of evaluation of the updated model
+            # from the inner loop. Therefore I choose to use model.eval() in the
+            # outer loop.
+            learner.eval()
             if mode == "train":
                 _, query_loss = learner.module.forward_teacher_forcing(
                     query_imgs, query_tgts
                 )
             else:  # val/test
-                learner.eval()
                 with torch.inference_mode():
                     _, preds, query_loss = learner(query_imgs, query_tgts)
 
@@ -124,16 +128,7 @@ class MetaHTR(pl.LightningModule):
         return self.maml.module.decoder
 
     def training_step(self, batch, batch_idx):
-        optimizer = self.optimizers(use_pl_optimizer=True)
-        optimizer.zero_grad()
-
         loss = self.meta_learn(batch, mode="train")
-
-        # Use `manual_backward()` instead of `loss.backward` to automate half
-        # precision, etc...
-        self.manual_backward(loss)
-        optimizer.step()
-
         self.log("train_loss", loss, sync_dist=True, prog_bar=False)
         return loss
 
@@ -169,7 +164,7 @@ class MetaHTR(pl.LightningModule):
         learner.train()
 
         # Adapt the model.
-        # For some reason using a autograd context manager like torch.enable_grad()
+        # For some reason using an autograd context manager like torch.enable_grad()
         # here does not work, perhaps due to some unexpected interaction between
         # Pytorch Lightning and the learn2learn lib. Therefore gradient
         # calculation should be set beforehand, outside of the current function.
@@ -224,8 +219,17 @@ class MetaHTR(pl.LightningModule):
             )
 
     def configure_optimizers(self):
-        optimizer = optim.AdamW(self.maml.parameters(), lr=self.outer_lr)
-        return optimizer
+        scheduler_step = 20
+        scheduler_decay = 1.0
+
+        optimizer = optim.AdamW(self.parameters(), lr=self.outer_lr)
+        lr_scheduler = optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=scheduler_step,
+            gamma=scheduler_decay,
+        )
+        return [optimizer], [lr_scheduler]
+        # return optimizer
 
     @staticmethod
     def add_model_specific_args(parent_parser):

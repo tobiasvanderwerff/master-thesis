@@ -48,8 +48,7 @@ def main(args):
     # Save the label encoder in the logging directory.
     log_dir = Path(tb_logger.log_dir)
     log_dir.mkdir(exist_ok=True, parents=True)
-    with open(log_dir / "label_encoder.pkl", "wb") as f:
-        pickle.dump(label_enc, f)
+    pickle_save(label_enc, log_dir / "label_encoder.pkl")
 
     ds = IAMDataset(
         args.data_dir,
@@ -114,7 +113,6 @@ def main(args):
         ds_train.dataset.set_transforms_for_split("train")
         ds_val.dataset.set_transforms_for_split("val")
 
-    # Sanity check. TODO: remove this later.
     assert (ds_train.data["writer_id"].value_counts() >= args.shots * 2).all()
     assert (ds_val.data["writer_id"].value_counts() >= args.shots * 2).all()
 
@@ -143,13 +141,17 @@ def main(args):
     # which we copy to the current logging directory so that we can load the model
     # later using the saved hyper parameters.
     model_hparams_file = Path(args.trained_model_path).parent.parent / "hparams.yaml"
-    shutil.copy(model_hparams_file, log_dir / "hparams.yaml")
+    shutil.copy(model_hparams_file, log_dir / "model_hparams.yaml")
 
     # Load the model. Note that the vocab length and special tokens given below
     # are derived from the saved label encoder associated with the checkpoint.
     model = LitFullPageHTREncoderDecoder.load_from_checkpoint(
         args.trained_model_path,
-        hparams_file=str(model_hparams_file),
+        hparams_file=(
+            str(model_hparams_file)
+            if model_hparams_file.is_file()
+            else model_hparams_file.parent / "model_hparams.yaml"
+        ),
         label_encoder=ds.label_enc,
     )
     # The `LitFullPageHTREncoderDecoder` class is a simple wrapper around a Pytorch
