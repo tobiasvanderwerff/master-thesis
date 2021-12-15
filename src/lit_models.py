@@ -1,4 +1,5 @@
 from typing import Optional, Dict, Union, Tuple
+from pathlib import Path
 
 from models import FullPageHTREncoderDecoder
 from util import identity_collate_fn
@@ -48,7 +49,11 @@ class MetaHTR(pl.LightningModule):
         )
 
         self.save_hyperparameters(
-            "ways", "shots", "inner_lr", "outer_lr", "num_inner_steps"
+            "ways",
+            "shots",
+            "inner_lr",
+            "outer_lr",
+            "num_inner_steps",
         )
         if params_to_log is not None:
             self.save_hyperparameters(params_to_log)
@@ -230,6 +235,21 @@ class MetaHTR(pl.LightningModule):
         )
         return [optimizer], [lr_scheduler]
         # return optimizer
+
+    @staticmethod
+    def init_with_fphtr_from_checkpoint(
+        fphtr_checkpoint_path: Union[str, Path],
+        fphtr_hparams_file: Union[str, Path],
+        label_encoder: LabelEncoder,
+        *args,
+        **kwargs
+    ):
+        fphtr = LitFullPageHTREncoderDecoder.load_from_checkpoint(
+            fphtr_checkpoint_path,
+            hparams_file=fphtr_hparams_file,
+            label_encoder=label_encoder,
+        )
+        return MetaHTR(fphtr.model, *args, **kwargs)
 
     @staticmethod
     def add_model_specific_args(parent_parser):

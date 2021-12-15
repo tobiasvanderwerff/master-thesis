@@ -136,27 +136,6 @@ def main(args):
         ds_meta_val = l2l.data.MetaDataset(ds_val)
         pickle_save(ds_meta_val, ds_meta_val_path)
 
-    # Copy hyper parameters. The loaded model has an associated `hparams.yaml` file,
-    # which we copy to the current logging directory so that we can load the model
-    # later using the saved hyper parameters.
-    model_hparams_file = Path(args.trained_model_path).parent.parent / "hparams.yaml"
-    shutil.copy(model_hparams_file, log_dir / "model_hparams.yaml")
-
-    # Load the model. Note that the vocab length and special tokens given below
-    # are derived from the saved label encoder associated with the checkpoint.
-    model = LitFullPageHTREncoderDecoder.load_from_checkpoint(
-        args.trained_model_path,
-        hparams_file=(
-            str(model_hparams_file)
-            if model_hparams_file.is_file()
-            else model_hparams_file.parent / "model_hparams.yaml"
-        ),
-        label_encoder=ds.label_enc,
-    )
-    # The `LitFullPageHTREncoderDecoder` class is a simple wrapper around a Pytorch
-    # module, which we pass to the MAML learner.
-    model = model.model
-
     # Define learn2learn task transforms.
     train_tsk_trnsf = [
         # Nways picks N random labels (writers in this case)
@@ -195,8 +174,22 @@ def main(args):
         taskset_val, epoch_length=int(len(ds_val.writer_ids) / args.ways)
     )
 
-    learner = MetaHTR(
-        model,
+    # Copy hyper parameters. The loaded model has an associated `hparams.yaml` file,
+    # which we copy to the current logging directory so that we can load the model
+    # later using the saved hyper parameters.
+    model_hparams_file = Path(args.trained_model_path).parent.parent / "hparams.yaml"
+    shutil.copy(model_hparams_file, log_dir / "model_hparams.yaml")
+
+    # Initialize MAML with a trained FPHTR model.
+    hparams_file = (
+        str(model_hparams_file)
+        if model_hparams_file.is_file()
+        else model_hparams_file.parent / "model_hparams.yaml"
+    )
+    learner = MetaHTR.init_with_fphtr_from_checkpoint(
+        args.trained_model_path,
+        hparams_file,
+        ds.label_enc,
         taskset_train,
         taskset_val=taskset_val,
         ways=args.ways,
@@ -265,7 +258,6 @@ def main(args):
         enable_model_summary=False,
         callbacks=callbacks,
     )
-    trainer.logger._default_hp_metric = None
 
     if args.validate:  # validate a trained model
         trainer.validate(learner)  # TODO: check if this works properly
