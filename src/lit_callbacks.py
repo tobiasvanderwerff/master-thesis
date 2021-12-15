@@ -6,6 +6,7 @@ from util import matplotlib_imshow
 import torch
 import pytorch_lightning as pl
 import matplotlib.pyplot as plt
+from torch import Tensor
 from pytorch_lightning.callbacks import Callback
 from sklearn.preprocessing import LabelEncoder
 
@@ -26,7 +27,7 @@ class LogWorstPredictions(Callback):
         # TODO
 
 
-class LogModelPredictions(Callback):
+class LogModelPredictionsMAML(Callback):
     """
     Use a fixed test batch to monitor model predictions at the end of every epoch.
 
@@ -37,19 +38,19 @@ class LogModelPredictions(Callback):
     def __init__(
         self,
         label_encoder: "LabelEncoder",
-        val_batch: Tuple[torch.Tensor, torch.Tensor],
+        val_batch: Tuple[Tensor, Tensor, Tensor, Tensor],
         use_gpu: bool = True,
         data_format: str = "word",
         enable_grad: bool = False,
-        on_start_train: bool = False,
-        train_batch: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        predict_on_train_start: bool = False,
+        train_batch: Optional[Tuple[Tensor, Tensor, Tensor, Tensor]] = None,
     ):
         self.label_encoder = label_encoder
         self.val_batch = val_batch
         self.use_gpu = use_gpu
         self.data_format = data_format
         self.enable_grad = enable_grad
-        self.predict_on_train_start = on_start_train
+        self.predict_on_train_start = predict_on_train_start
         self.train_batch = train_batch
 
     def on_validation_epoch_end(
@@ -66,45 +67,93 @@ class LogModelPredictions(Callback):
     def on_train_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"):
         if self.predict_on_train_start:
             self._predict_intermediate(trainer, pl_module, split="val")
+            if self.train_batch is not None:
+                self._predict_intermediate(trainer, pl_module, split="train")
+
+        # Log the support images once at the start of training.
+        imgs, targets, *_ = self.val_batch
+        self._log_intermediate(
+            trainer, pl_module, imgs, targets, split="val", plot_title="support batch"
+        )
+        if self.train_batch is not None:
+            imgs, targets, *_ = self.train_batch
+            self._log_intermediate(
+                trainer,
+                pl_module,
+                imgs,
+                targets,
+                split="train",
+                plot_title="support batch",
+            )
 
     def _predict_intermediate(
         self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", split="val"
     ):
-        """Make predictions on a fixed batch of data and log the results to Tensorboard."""
+        """Make predictions on a fixed batch of data; log the results to Tensorboard."""
 
-        # Make predictions.
         if split == "train":
-            # imgs, targets = self.train_batch
             batch = self.train_batch
         else:  # split == "val"
-            # imgs, targets = self.val_batch
             batch = self.val_batch
+
+        # Make predictions.
+        support_imgs, support_tgts, query_imgs, query_tgts = batch
         pl_module.eval()
         torch.set_grad_enabled(self.enable_grad)
-        _, preds, *_ = pl_module(*[t.cuda() if self.use_gpu else t for t in batch])
+        _, preds, *_ = pl_module(
+            *[
+                t.cuda() if self.use_gpu else t
+                for t in [support_imgs, support_tgts, query_imgs]
+            ]
+        )
         torch.set_grad_enabled(False)
 
-        # Find padding and <EOS> positions in predictions and targets.
+        # Log the results.
         imgs, targets, *_ = batch
-        eos_idxs_pred = (
-            (preds == pl_module.decoder.eos_tkn_idx).float().argmax(1).tolist()
+        self._log_intermediate(
+            trainer, pl_module, query_imgs, query_tgts, preds, split=split
         )
+
+    def _log_intermediate(
+        self,
+        trainer: "pl.Trainer",
+        pl_module: "pl.LightningModule",
+        imgs: Tensor,
+        targets: Tensor,
+        preds: Optional[Tensor] = None,
+        split: str = "val",
+        plot_title: str = "query predictions vs targets",
+    ):
+        """Log a batch of images along with their targets to Tensorboard."""
+
+        # Find padding and <EOS> positions in predictions and targets.
+        eos_idxs_pred = None
+        if preds is not None:
+            eos_idxs_pred = (
+                (preds == pl_module.decoder.eos_tkn_idx).float().argmax(1).tolist()
+            )
         eos_idxs_tgt = (
             (targets == pl_module.decoder.eos_tkn_idx).float().argmax(1).tolist()
         )
 
-        # Decode predictions and generate a plot.
+        # Generate plot.
         fig = plt.figure(figsize=(12, 16))
-        for i, (p, t) in enumerate(zip(preds.tolist(), targets.tolist())):
+        for i, t in enumerate(targets.tolist()):
             # Decode predictions and targets.
-            max_pred_idx, max_target_idx = eos_idxs_pred[i], eos_idxs_tgt[i]
-            p = p[1:]  # skip the initial <SOS> token, which is added by default
-            if max_pred_idx != 0:
-                pred_str = "".join(
-                    self.label_encoder.inverse_transform(p)[:max_pred_idx]
-                )
-            else:
-                pred_str = "".join(self.label_encoder.inverse_transform(p))
+            p = None
+            if preds is not None:
+                p = preds.tolist()[i]
+            max_target_idx = eos_idxs_tgt[i]
+            pred_str = None
+            if eos_idxs_pred:
+                max_pred_idx = eos_idxs_pred[i]
+                p = p[1:]  # skip the initial <SOS> token, which is added by default
+                if max_pred_idx != 0:
+                    pred_str = "".join(
+                        self.label_encoder.inverse_transform(p)[:max_pred_idx]
+                    )
+                else:
+                    pred_str = "".join(self.label_encoder.inverse_transform(p))
             if max_target_idx != 0:
                 target_str = "".join(
                     self.label_encoder.inverse_transform(t)[:max_target_idx]
@@ -114,13 +163,14 @@ class LogModelPredictions(Callback):
 
             # Create plot.
             ncols = 2 if self.data_format == "word" else 1
-            nrows = math.ceil(preds.size(0) / ncols)
+            nrows = math.ceil(targets.size(0) / ncols)
             ax = fig.add_subplot(nrows, ncols, i + 1, xticks=[], yticks=[])
             matplotlib_imshow(imgs[i])
-            ax.set_title(f"Pred: {pred_str}\nTarget: {target_str}")
+            ttl = f"Target: {target_str}"
+            if pred_str is not None:
+                ttl = f"Pred: {pred_str}\n" + ttl
+            ax.set_title(ttl)
 
         # Log the results to Tensorboard.
         tensorboard = trainer.logger.experiment
-        tensorboard.add_figure(
-            f"{split}: predictions vs targets", fig, trainer.global_step
-        )
+        tensorboard.add_figure(f"{split}: {plot_title}", fig, trainer.global_step)

@@ -1,5 +1,4 @@
 import argparse
-import pickle
 import shutil
 from copy import copy
 from pathlib import Path
@@ -9,7 +8,7 @@ from models import *
 from lit_models import LitFullPageHTREncoderDecoder, MetaHTR
 from data import IAMDataset
 from lit_util import MAMLCheckpointIO, LitProgressBar, PtTaskDataset
-from lit_callbacks import LogModelPredictions
+from lit_callbacks import LogModelPredictionsMAML
 from util import filter_df_by_freq, pickle_load, pickle_save
 
 import pytorch_lightning as pl
@@ -18,7 +17,7 @@ import learn2learn as l2l
 from torch.utils.data import DataLoader
 from pytorch_lightning import seed_everything
 from pytorch_lightning import loggers as pl_loggers
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.plugins import DDPPlugin
 
 
@@ -214,7 +213,12 @@ def main(args):
     checkpoint_io = MAMLCheckpointIO()
 
     im, t, _ = next(iter(learner.val_dataloader()))
-    val_batch = [im[: args.shots], t[: args.shots], im[args.shots : args.shots * 2]]
+    val_batch = (
+        im[: args.shots],
+        t[: args.shots],
+        im[args.shots : args.shots * 2],
+        t[args.shots : args.shots * 2],
+    )
     # train_batch = next(iter(learner.train_dataloader()))
 
     callbacks = [
@@ -234,14 +238,12 @@ def main(args):
         #     mode="min",
         #     # check_on_train_epoch_end=False,  # check at the end of validation
         # ),
-        LogModelPredictions(
-            # Make predictions for a single writer.
+        LogModelPredictionsMAML(
             ds.label_enc,
             val_batch=val_batch,
-            # train_batch=train_batch,
             use_gpu=(False if args.use_cpu else True),
             enable_grad=True,
-            on_start_train=True,
+            predict_on_train_start=True,
         ),
     ]
 
