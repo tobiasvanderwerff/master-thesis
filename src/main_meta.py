@@ -255,7 +255,6 @@ def main(args):
         enable_model_summary=False,
         callbacks=callbacks,
     )
-    trainer.logger._default_hp_metric = None
 
     if args.validate:  # validate a trained model
         trainer.validate(learner)  # TODO: check if this works properly
