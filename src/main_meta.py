@@ -214,6 +214,8 @@ def main(args):
     val_batch = (
         im[: args.shots],
         t[: args.shots],
+        # TODO: this is incorrect, because the batch contains examples for several
+        #  writers. I assumed here that the batch contains one writer.
         im[args.shots : args.shots + NUM_QUERY_PREDICTIONS_TO_LOG],
         t[args.shots : args.shots + NUM_QUERY_PREDICTIONS_TO_LOG],
     )

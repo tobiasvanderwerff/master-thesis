@@ -62,10 +62,15 @@ class MetaHTR(pl.LightningModule):
         outer_loss = 0.0
 
         imgs, target, writer_ids = batch
+        writer_ids_uniq = writer_ids.unique().tolist()
+
         assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
+        assert len(writer_ids.unique().tolist()) == self.ways
+
         # Split the batch into N different writers, where N = ways.
         for task in range(self.ways):  # tasks correspond to different writers
-            task_slice = slice(2 * self.shots * task, 2 * self.shots * (task + 1))
+            wrtr_id = writer_ids_uniq[task]
+            task_slice = writer_ids == wrtr_id
             imgs_, target_ = imgs[task_slice], target[task_slice]
 
             # Separate data into support/query set.
@@ -107,7 +112,7 @@ class MetaHTR(pl.LightningModule):
             # outer loop can be seen as a kind of evaluation of the updated model
             # from the inner loop. Therefore I choose to use model.eval() in the
             # outer loop.
-            learner.eval()
+            # learner.eval()
             if mode == "train":
                 _, query_loss = learner.module.forward_teacher_forcing(
                     query_imgs, query_tgts
@@ -179,7 +184,7 @@ class MetaHTR(pl.LightningModule):
         learner.adapt(adaptation_loss)
 
         # Run inference on the adapted model.
-        learner.eval()
+        # learner.eval()
         with torch.inference_mode():
             logits, sampled_ids, _ = learner(inference_imgs)
 
