@@ -39,19 +39,19 @@ class LogModelPredictionsMAML(Callback):
         self,
         label_encoder: "LabelEncoder",
         val_batch: Tuple[Tensor, Tensor, Tensor, Tensor],
+        train_batch: Optional[Tuple[Tensor, Tensor, Tensor, Tensor]] = None,
         use_gpu: bool = True,
         data_format: str = "word",
         enable_grad: bool = False,
         predict_on_train_start: bool = False,
-        train_batch: Optional[Tuple[Tensor, Tensor, Tensor, Tensor]] = None,
     ):
         self.label_encoder = label_encoder
         self.val_batch = val_batch
+        self.train_batch = train_batch
         self.use_gpu = use_gpu
         self.data_format = data_format
         self.enable_grad = enable_grad
         self.predict_on_train_start = predict_on_train_start
-        self.train_batch = train_batch
 
     def on_validation_epoch_end(
         self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"

@@ -196,6 +196,12 @@ def main(args):
         inner_lr=args.inner_lr,
         outer_lr=args.outer_lr,
         num_workers=args.num_workers,
+        params_to_log={
+            "seed": args.seed,
+            "splits": ("Aachen" if args.use_aachen_splits else "random"),
+            "max_epochs": args.max_epochs,
+            "model_path": args.trained_model_path,
+        },
     )
 
     # This checkpoint plugin is necessary to save the weights obtained using MAML in
@@ -211,7 +217,13 @@ def main(args):
         im[args.shots : args.shots + NUM_QUERY_PREDICTIONS_TO_LOG],
         t[args.shots : args.shots + NUM_QUERY_PREDICTIONS_TO_LOG],
     )
-    # train_batch = next(iter(learner.train_dataloader()))
+    im, t, _ = next(iter(learner.train_dataloader()))
+    train_batch = (
+        im[: args.shots],
+        t[: args.shots],
+        im[args.shots : args.shots + NUM_QUERY_PREDICTIONS_TO_LOG],
+        t[args.shots : args.shots + NUM_QUERY_PREDICTIONS_TO_LOG],
+    )
 
     callbacks = [
         LitProgressBar(),
@@ -232,6 +244,7 @@ def main(args):
         LogModelPredictionsMAML(
             ds.label_enc,
             val_batch=val_batch,
+            train_batch=train_batch,
             use_gpu=(False if args.use_cpu else True),
             enable_grad=True,
             predict_on_train_start=True,
