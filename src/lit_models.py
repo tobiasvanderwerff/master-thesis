@@ -62,15 +62,15 @@ class MetaHTR(pl.LightningModule):
         outer_loss = 0.0
 
         imgs, target, writer_ids = batch
-        assert imgs.size(0) == 2 * self.ways * self.shots, imgs.size(0)
+        assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
         # Split the batch into N different writers, where N = ways.
-        for task in range(self.ways):  # tasks correpond to different writers
+        for task in range(self.ways):  # tasks correspond to different writers
             task_slice = slice(2 * self.shots * task, 2 * self.shots * (task + 1))
             imgs_, target_ = imgs[task_slice], target[task_slice]
 
             # Separate data into support/query set.
             support_indices = np.zeros(imgs_.size(0), dtype=bool)
-            # Select even indices for support set.
+            # Select first k even indices for support set.
             support_indices[np.arange(self.shots) * 2] = True
             query_indices = torch.from_numpy(~support_indices)
             support_indices = torch.from_numpy(support_indices)

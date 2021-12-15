@@ -5,7 +5,7 @@ from pathlib import Path
 from functools import partial
 
 from models import *
-from lit_models import LitFullPageHTREncoderDecoder, MetaHTR
+from lit_models import MetaHTR
 from data import IAMDataset
 from lit_util import MAMLCheckpointIO, LitProgressBar, PtTaskDataset
 from lit_callbacks import LogModelPredictionsMAML
@@ -22,7 +22,7 @@ from pytorch_lightning.plugins import DDPPlugin
 
 
 LOGGING_DIR = "lightning_logs/"
-LOGMODELPREDICTIONS_TO_SAMPLE = 8
+NUM_QUERY_PREDICTIONS_TO_LOG = 10
 
 
 def main(args):
@@ -140,14 +140,13 @@ def main(args):
     train_tsk_trnsf = [
         # Nways picks N random labels (writers in this case)
         l2l.data.transforms.NWays(ds_meta_train, n=args.ways),
-        # Keeps K samples for each present label.
+        # Keeps K samples for each present writer.
         l2l.data.transforms.KShots(ds_meta_train, k=args.shots * 2),
         # Load the data.
         l2l.data.transforms.LoadData(ds_meta_train),
     ]
     val_tsk_trnsf = [
         l2l.data.transforms.NWays(ds_meta_val, n=args.ways),
-        l2l.data.transforms.KShots(ds_meta_val, k=args.shots * 2),
         l2l.data.transforms.LoadData(ds_meta_val),
     ]
     taskset_train = l2l.data.TaskDataset(
@@ -209,8 +208,8 @@ def main(args):
     val_batch = (
         im[: args.shots],
         t[: args.shots],
-        im[args.shots : args.shots * 2],
-        t[args.shots : args.shots * 2],
+        im[args.shots : args.shots + NUM_QUERY_PREDICTIONS_TO_LOG],
+        t[args.shots : args.shots + NUM_QUERY_PREDICTIONS_TO_LOG],
     )
     # train_batch = next(iter(learner.train_dataloader()))
 
@@ -221,7 +220,6 @@ def main(args):
             mode="min",
             monitor="word_error_rate",
             filename="MAML-{step}-{char_error_rate:.4f}-{word_error_rate:.4f}",
-            # every_n_train_steps=args.val_check_interval + 1,
             save_weights_only=True,
         ),
         # EarlyStopping(
@@ -250,7 +248,6 @@ def main(args):
         num_nodes=args.num_nodes,
         gpus=(0 if args.use_cpu else 1),
         max_epochs=args.max_epochs,
-        # val_check_interval=args.val_check_interval,
         num_sanity_val_steps=args.num_sanity_val_steps,
         limit_train_batches=args.limit_train_batches,
         limit_val_batches=args.limit_val_batches,
@@ -258,6 +255,7 @@ def main(args):
         enable_model_summary=False,
         callbacks=callbacks,
     )
+    trainer.logger._default_hp_metric = None
 
     if args.validate:  # validate a trained model
         trainer.validate(learner)  # TODO: check if this works properly
@@ -281,8 +279,6 @@ if __name__ == "__main__":
     parser.add_argument("--save_all_checkpoints", action="store_true", default=False)
     parser.add_argument("--limit_train_batches", type=float, default=1.0)
     parser.add_argument("--limit_val_batches", type=float, default=1.0)
-    # parser.add_argument("--val_check_interval", type=int, default=10,
-    #                     help="After how many train batches to run validation")
 
     # Program arguments.
     parser.add_argument("--trained_model_path", type=str,
