@@ -11,18 +11,21 @@ from lit_util import MAMLCheckpointIO, LitProgressBar, PtTaskDataset
 from lit_callbacks import LogModelPredictionsMAML
 from util import filter_df_by_freq, pickle_load, pickle_save
 
-import pytorch_lightning as pl
 import pandas as pd
 import learn2learn as l2l
 from torch.utils.data import DataLoader
-from pytorch_lightning import seed_everything
+from pytorch_lightning import seed_everything, Trainer
 from pytorch_lightning import loggers as pl_loggers
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.plugins import DDPPlugin
 
 
 LOGGING_DIR = "lightning_logs/"
-NUM_QUERY_PREDICTIONS_TO_LOG = 10
+PREDICTIONS_TO_LOG = {
+    "word": 8,
+    "line": 6,
+    "form": 1,
+}
 
 
 def main(args):
@@ -30,7 +33,9 @@ def main(args):
     seed_everything(args.seed)
 
     log_dir_root = Path(__file__).parent.parent.resolve()
-    tb_logger = pl_loggers.TensorBoardLogger(log_dir_root / LOGGING_DIR, name="")
+    tb_logger = pl_loggers.TensorBoardLogger(
+        str(log_dir_root / LOGGING_DIR), name="", version=args.experiment_name
+    )
 
     assert Path(
         args.trained_model_path
@@ -49,18 +54,86 @@ def main(args):
     log_dir.mkdir(exist_ok=True, parents=True)
     pickle_save(label_enc, log_dir / "label_encoder.pkl")
 
-    ds = IAMDataset(
-        args.data_dir,
-        "word",
-        "train",
-        use_cache=False,
-        label_enc=label_enc,
-        skip_bad_segmentation=False,
-        return_writer_id=True,
-    )
+    # Initalize meta dataset and cache the result.
+    cache_dir = Path(args.cache_dir) if args.cache_dir else log_dir / "cache"
+    cache_dir.mkdir(exist_ok=True, parents=True)
+    ds_meta_train_path = cache_dir / "ds_meta_train.pkl"
+    ds_meta_val_path = cache_dir / "ds_meta_val.pkl"
 
-    eos_tkn_idx, sos_tkn_idx, pad_tkn_idx = ds.label_enc.transform(
-        [ds._eos_token, ds._sos_token, ds._pad_token]
+    # Check for cached dataset. If it does not exist, init a new dataset.
+    if ds_meta_train_path.is_file() and ds_meta_train_path.is_file():
+        print("Loading cached meta-datasets.")
+        ds_meta_train = pickle_load(ds_meta_train_path)
+        ds_meta_val = pickle_load(ds_meta_val_path)
+    else:  # initialize a new dataset
+        ds = IAMDataset(
+            args.data_dir,
+            "word",
+            "train",
+            use_cache=False,
+            label_enc=label_enc,
+            skip_bad_segmentation=False,
+            return_writer_id=True,
+        )
+
+        # Split the dataset into train/val/(test).
+        if args.use_aachen_splits:
+            # Use the Aachen splits for the IAM dataset. It should be noted that these
+            # splits do not encompass the complete IAM dataset.
+            aachen_path = Path(__file__).parent.parent / "aachen_splits"
+            train_splits = (aachen_path / "train.uttlist").read_text().splitlines()
+            validation_splits = (
+                (aachen_path / "validation.uttlist").read_text().splitlines()
+            )
+            # test_splits = (aachen_path / "test.uttlist").read_text().splitlines()
+
+            data_train = ds.data[ds.data["img_id"].isin(train_splits)]
+            data_val = ds.data[ds.data["img_id"].isin(validation_splits)]
+            # data_test = ds.data[ds.data["img_id"].isin(test_splits)]
+
+            ds_train = copy(ds)
+            ds_train.data = data_train
+
+            ds_val = copy(ds)
+            ds_val.data = data_val
+
+            # ds_test = copy(ds)
+            # ds_test.data = data_test
+        else:
+            ds_train, ds_val = torch.utils.data.random_split(
+                ds, [math.ceil(0.8 * len(ds)), math.floor(0.2 * len(ds))]
+            )
+            ds_val.dataset = copy(ds)
+
+        # Exclude writers from the dataset that do not have sufficiently many samples.
+        ds_train.data = filter_df_by_freq(ds_train.data, "writer_id", args.shots * 2)
+        ds_val.data = filter_df_by_freq(ds_val.data, "writer_id", args.shots * 2)
+        # ds_test.data = filter_df_by_freq(ds_test.data, "writer_id", args.shots * 2)
+
+        # Set image transforms.
+        if args.use_aachen_splits:
+            ds_train.set_transforms_for_split("train")
+            ds_val.set_transforms_for_split("val")
+            # ds_test.set_transforms_for_split("test")
+        else:
+            ds_train.dataset.set_transforms_for_split("train")
+            ds_val.dataset.set_transforms_for_split("val")
+
+        assert (ds_train.data["writer_id"].value_counts() >= args.shots * 2).all()
+        assert (ds_val.data["writer_id"].value_counts() >= args.shots * 2).all()
+
+        ds_meta_train = l2l.data.MetaDataset(ds_train)
+        ds_meta_val = l2l.data.MetaDataset(ds_val)
+
+        # Cache the loaded data.
+        pickle_save(ds_meta_train, ds_meta_train_path)
+        pickle_save(ds_meta_val, ds_meta_val_path)
+
+    ds_train = ds_meta_train.dataset
+    ds_val = ds_meta_val.dataset
+
+    eos_tkn_idx, sos_tkn_idx, pad_tkn_idx = ds_train.label_enc.transform(
+        [ds_train._eos_token, ds_train._sos_token, ds_train._pad_token]
     ).tolist()
     collate_fn = partial(
         IAMDataset.collate_fn,
@@ -68,73 +141,6 @@ def main(args):
         eos_tkn_idx=eos_tkn_idx,
         dataset_returns_writer_id=True,
     )
-
-    # Split the dataset into train/val/(test).
-    if args.use_aachen_splits:
-        # Use the Aachen splits for the IAM dataset. It should be noted that these
-        # splits do not encompass the complete IAM dataset.
-        aachen_path = Path(__file__).parent.parent / "aachen_splits"
-        train_splits = (aachen_path / "train.uttlist").read_text().splitlines()
-        validation_splits = (
-            (aachen_path / "validation.uttlist").read_text().splitlines()
-        )
-        # test_splits = (aachen_path / "test.uttlist").read_text().splitlines()
-
-        data_train = ds.data[ds.data["img_id"].isin(train_splits)]
-        data_val = ds.data[ds.data["img_id"].isin(validation_splits)]
-        # data_test = ds.data[ds.data["img_id"].isin(test_splits)]
-
-        ds_train = copy(ds)
-        ds_train.data = data_train
-
-        ds_val = copy(ds)
-        ds_val.data = data_val
-
-        # ds_test = copy(ds)
-        # ds_test.data = data_test
-    else:
-        ds_train, ds_val = torch.utils.data.random_split(
-            ds, [math.ceil(0.8 * len(ds)), math.floor(0.2 * len(ds))]
-        )
-        ds_val.dataset = copy(ds)
-
-    # Exclude writers from the dataset that do not have sufficiently many samples.
-    ds_train.data = filter_df_by_freq(ds_train.data, "writer_id", args.shots * 2)
-    ds_val.data = filter_df_by_freq(ds_val.data, "writer_id", args.shots * 2)
-    # ds_test.data = filter_df_by_freq(ds_test.data, "writer_id", args.shots * 2)
-
-    # Set image transforms.
-    if args.use_aachen_splits:
-        ds_train.set_transforms_for_split("train")
-        ds_val.set_transforms_for_split("val")
-        # ds_test.set_transforms_for_split("test")
-    else:
-        ds_train.dataset.set_transforms_for_split("train")
-        ds_val.dataset.set_transforms_for_split("val")
-
-    assert (ds_train.data["writer_id"].value_counts() >= args.shots * 2).all()
-    assert (ds_val.data["writer_id"].value_counts() >= args.shots * 2).all()
-
-    # Initalize meta dataset and cache the result.
-    # TODO: skip previous data initializaiton steps when cache is present.
-    cache_dir = Path(args.cache_dir) if args.cache_dir else log_dir / "cache"
-    cache_dir.mkdir(exist_ok=True, parents=True)
-    ds_meta_train_path = cache_dir / "ds_meta_train.pkl"
-    ds_meta_val_path = cache_dir / "ds_meta_val.pkl"
-    if ds_meta_train_path.is_file():
-        print("Loading cached train meta dataset.")
-        ds_meta_train = pickle_load(ds_meta_train_path)
-    else:
-        print("Creating train meta dataset...")
-        ds_meta_train = l2l.data.MetaDataset(ds_train)
-        pickle_save(ds_meta_train, ds_meta_train_path)
-    if ds_meta_val_path.is_file():
-        print("Loading cached val meta dataset.")
-        ds_meta_val = pickle_load(ds_meta_val_path)
-    else:
-        print("Creating val meta dataset...")
-        ds_meta_val = l2l.data.MetaDataset(ds_val)
-        pickle_save(ds_meta_val, ds_meta_val_path)
 
     # Define learn2learn task transforms.
     train_tsk_trnsf = [
@@ -188,7 +194,7 @@ def main(args):
     learner = MetaHTR.init_with_fphtr_from_checkpoint(
         args.trained_model_path,
         hparams_file,
-        ds.label_enc,
+        ds_train.label_enc,
         taskset_train,
         taskset_val=taskset_val,
         ways=args.ways,
@@ -201,6 +207,7 @@ def main(args):
             "splits": ("Aachen" if args.use_aachen_splits else "random"),
             "max_epochs": args.max_epochs,
             "model_path": args.trained_model_path,
+            "gradient_clip_val": args.gradient_clip_val,
         },
     )
 
@@ -216,15 +223,15 @@ def main(args):
         t[: args.shots],
         # TODO: this is incorrect, because the batch contains examples for several
         #  writers. I assumed here that the batch contains one writer.
-        im[args.shots : args.shots + NUM_QUERY_PREDICTIONS_TO_LOG],
-        t[args.shots : args.shots + NUM_QUERY_PREDICTIONS_TO_LOG],
+        im[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
+        t[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
     )
     im, t, _ = next(iter(learner.train_dataloader()))
     train_batch = (
         im[: args.shots],
         t[: args.shots],
-        im[args.shots : args.shots + NUM_QUERY_PREDICTIONS_TO_LOG],
-        t[args.shots : args.shots + NUM_QUERY_PREDICTIONS_TO_LOG],
+        im[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
+        t[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
     )
 
     callbacks = [
@@ -244,7 +251,7 @@ def main(args):
         #     # check_on_train_epoch_end=False,  # check at the end of validation
         # ),
         LogModelPredictionsMAML(
-            ds.label_enc,
+            ds_train.label_enc,
             val_batch=val_batch,
             train_batch=train_batch,
             use_gpu=(False if args.use_cpu else True),
@@ -253,19 +260,14 @@ def main(args):
         ),
     ]
 
-    trainer = pl.Trainer(
+    trainer = Trainer.from_argparse_args(
+        args,
         logger=tb_logger,
         plugins=[checkpoint_io],
         strategy=(
             DDPPlugin(find_unused_parameters=False) if args.num_nodes != 1 else None
         ),  # ddp = Distributed Data Parallel
-        precision=args.precision,  # default is 32 bit
-        num_nodes=args.num_nodes,
         gpus=(0 if args.use_cpu else 1),
-        max_epochs=args.max_epochs,
-        num_sanity_val_steps=args.num_sanity_val_steps,
-        limit_train_batches=args.limit_train_batches,
-        limit_val_batches=args.limit_val_batches,
         log_every_n_steps=10,
         enable_model_summary=False,
         callbacks=callbacks,
@@ -281,19 +283,6 @@ if __name__ == "__main__":
     # fmt: off
     parser = argparse.ArgumentParser()
 
-    # Trainer arguments.
-    parser.add_argument("--max_epochs", type=int, default=100)
-    parser.add_argument("--num_workers", type=int, default=0)
-    parser.add_argument("--num_nodes", type=int, default=1, help="Number of nodes to train on.")
-    parser.add_argument("--precision", type=int, default=32, help="How many bits of floating point precision to use.")
-    parser.add_argument("--label_smoothing", type=float, default=0.0,
-                        help="Label smoothing epsilon (0.0 indicates no smoothing)")
-    parser.add_argument("--early_stopping_patience", type=int, default=5)
-    parser.add_argument("--num_sanity_val_steps", type=int, default=2)
-    parser.add_argument("--save_all_checkpoints", action="store_true", default=False)
-    parser.add_argument("--limit_train_batches", type=float, default=1.0)
-    parser.add_argument("--limit_val_batches", type=float, default=1.0)
-
     # Program arguments.
     parser.add_argument("--trained_model_path", type=str,
                         help=("Path to a model checkpoint, which will be used as a "
@@ -301,12 +290,19 @@ if __name__ == "__main__":
     parser.add_argument("--data_dir", type=str)
     parser.add_argument("--cache_dir", type=str)
     parser.add_argument("--validate", action="store_true", default=False)
+    parser.add_argument("--early_stopping_patience", type=int, default=10)
     parser.add_argument("--use_aachen_splits", action="store_true", default=False)
+    parser.add_argument("--save_all_checkpoints", action="store_true", default=False)
+    parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--use_cpu", action="store_true", default=False)
     parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--experiment_name", type=str, default=None,
+                        help="Experiment name, used as the name of the folder in "
+                             "which logs are stored.")
+    # fmt: on
 
     parser = MetaHTR.add_model_specific_args(parser)
+    parser = Trainer.add_argparse_args(parser)  # adds Pytorch Lightning arguments
 
     args = parser.parse_args()
     main(args)
-    # fmt: on

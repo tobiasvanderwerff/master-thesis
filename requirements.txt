@@ -1,5 +1,5 @@
 torch==1.9
-torchvision
+torchvision==0.10
 pytorch-lightning>=1.5.1
 editdistance
 torchmetrics

@@ -1,15 +1,13 @@
 import xml.etree.ElementTree as ET
 import random
-import math
 import pickle
 from pathlib import Path
-from typing import Union, Tuple, Sequence, Any
+from typing import Union, Sequence, Any
 
 import pandas as pd
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
-import cv2
 from pytorch_lightning.callbacks import TQDMProgressBar
 
 

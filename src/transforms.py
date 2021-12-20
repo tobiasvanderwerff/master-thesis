@@ -35,7 +35,7 @@ def randomly_displace_and_pad(
     return res
 
 
-def dpi_adjusting(img: np.ndarray, scale: int, **kwargs) -> np.ndarray:
+def dpi_adjusting(img: np.ndarray, scale: float, **kwargs) -> np.ndarray:
     height, width = img.shape[:2]
     new_height, new_width = math.ceil(height * scale), math.ceil(width * scale)
     return cv.resize(img, (new_width, new_height))
@@ -79,7 +79,6 @@ class IAMImageTransforms:
             self.train_trnsf = A.Compose(
                 [
                     A.Lambda(partial(dpi_adjusting, scale=scale)),
-                    A.RandomScale(scale_limit=random_scale_limit, p=0.5),
                     A.SafeRotate(
                         limit=random_rotate_limit,
                         border_mode=cv.BORDER_CONSTANT,
