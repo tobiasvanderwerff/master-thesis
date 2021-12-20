@@ -14,16 +14,19 @@ from data import IAMDataset, IAMDatasetSynthetic
 from util import LitProgressBar
 
 import torch
-import pytorch_lightning as pl
 import pandas as pd
 from torch.utils.data import DataLoader, Subset
-from pytorch_lightning import seed_everything
+from pytorch_lightning import seed_everything, Trainer
 from pytorch_lightning import loggers as pl_loggers
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.plugins import DDPPlugin
 
 LOGGING_DIR = "lightning_logs/"
-LOGMODELPREDICTIONS_TO_SAMPLE = 8
+PREDICTIONS_TO_LOG = {
+    "word": 8,
+    "line": 6,
+    "form": 1,
+}
 
 
 def main(args):
@@ -31,7 +34,9 @@ def main(args):
     seed_everything(args.seed)
 
     log_dir_root = Path(__file__).parent.parent.resolve()
-    tb_logger = pl_loggers.TensorBoardLogger(log_dir_root / LOGGING_DIR, name="")
+    tb_logger = pl_loggers.TensorBoardLogger(
+        str(log_dir_root / LOGGING_DIR), name="", version=args.experiment_name
+    )
 
     label_enc = None
     if args.validate:
@@ -152,6 +157,7 @@ def main(args):
                 "early_stopping_patience": args.early_stopping_patience,
                 # "label_smoothing": args.label_smoothing,
                 "synthetic_augmentation_proba": args.synthetic_augmentation_proba,
+                "gradient_clip_val": args.gradient_clip_val,
             },
         )
 
@@ -178,10 +184,10 @@ def main(args):
                         Subset(
                             ds_val,
                             random.sample(
-                                range(len(ds_val)), LOGMODELPREDICTIONS_TO_SAMPLE
+                                range(len(ds_val)), PREDICTIONS_TO_LOG[args.data_format]
                             ),
                         ),
-                        batch_size=LOGMODELPREDICTIONS_TO_SAMPLE,
+                        batch_size=PREDICTIONS_TO_LOG[args.data_format],
                         shuffle=False,
                         collate_fn=collate_fn,
                         num_workers=args.num_workers,
@@ -195,10 +201,11 @@ def main(args):
                         Subset(
                             ds_train,
                             random.sample(
-                                range(len(ds_train)), LOGMODELPREDICTIONS_TO_SAMPLE
+                                range(len(ds_train)),
+                                PREDICTIONS_TO_LOG[args.data_format],
                             ),
                         ),
-                        batch_size=LOGMODELPREDICTIONS_TO_SAMPLE,
+                        batch_size=PREDICTIONS_TO_LOG[args.data_format],
                         shuffle=False,
                         collate_fn=collate_fn,
                         num_workers=args.num_workers,
@@ -211,19 +218,13 @@ def main(args):
         ),
     ]
 
-    trainer = pl.Trainer(
+    trainer = Trainer.from_argparse_args(
+        args,
         logger=tb_logger,
         strategy=(
             DDPPlugin(find_unused_parameters=False) if args.num_nodes != 1 else None
         ),  # ddp = Distributed Data Parallel
-        precision=args.precision,  # default is 32 bit
-        num_nodes=args.num_nodes,
         gpus=(0 if args.use_cpu else 1),
-        max_epochs=args.max_epochs,
-        accumulate_grad_batches=args.accumulate_grad_batches,
-        limit_train_batches=args.limit_train_batches,
-        limit_val_batches=args.limit_val_batches,
-        num_sanity_val_steps=args.num_sanity_val_steps,
         callbacks=callbacks,
     )
 
@@ -234,38 +235,35 @@ def main(args):
 
 
 if __name__ == "__main__":
-    # fmt: off
     parser = argparse.ArgumentParser()
 
-    # Trainer arguments.
-    parser.add_argument("--max_epochs", type=int, default=999)
+    # fmt: off
+    parser.add_argument("--data_dir", type=str)
+    parser.add_argument("--data_format", type=str, choices=["form", "line", "word"],
+                        default="word")
     parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--num_workers", type=int, default=0)
-    parser.add_argument("--num_nodes", type=int, default=1, help="Number of nodes to train on.")
-    parser.add_argument("--precision", type=int, default=16, help="How many bits of floating point precision to use.")
+    parser.add_argument("--synthetic_augmentation_proba", type=float, default=0.0,
+                        help=("Probability of sampling synthetic IAM line/form images "
+                              "during training."))
     # parser.add_argument("--label_smoothing", type=float, default=0.0,
     #                     help="Label smoothing epsilon (0.0 indicates no smoothing)")
-    parser.add_argument("--accumulate_grad_batches", type=int, default=1)
-    parser.add_argument("--limit_train_batches", type=float, default=1.0)
-    parser.add_argument("--limit_val_batches", type=float, default=1.0)
-    parser.add_argument("--early_stopping_patience", type=int, default=5)
-    parser.add_argument("--num_sanity_val_steps", type=int, default=2)
-    parser.add_argument("--save_all_checkpoints", action="store_true", default=False)
-    parser.add_argument("--use_cpu", action="store_true", default=False)
-
-    # Program arguments.
-    parser.add_argument("--data_dir", type=str)
-    parser.add_argument("--data_format", type=str, choices=["form", "line", "word"], default="word")
+    parser.add_argument("--validate", type=str, default=None,
+                        help="Validate a trained model, specified by its checkpoint "
+                             "path.")
     parser.add_argument("--use_aachen_splits", action="store_true", default=False)
+    parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--early_stopping_patience", type=int, default=10)
+    parser.add_argument("--save_all_checkpoints", action="store_true", default=False)
     parser.add_argument("--seed", type=int, default=1337)
-    parser.add_argument("--validate", type=str, help="Validate a trained model, specified by its checkpoint path.")
-    parser.add_argument("--synthetic_augmentation_proba", type=float, default=0.0,
-                        help=("With the given probability, sample synthetic "
-                              "lines/forms as an additional source of data"))
+    parser.add_argument("--use_cpu", action="store_true", default=False)
+    parser.add_argument("--experiment_name", type=str, default=None,
+                        help="Experiment name, used as the name of the folder in "
+                             "which logs are stored.")
+    # fmt: on
 
     parser = LitFullPageHTREncoderDecoder.add_model_specific_args(parser)
+    parser = Trainer.add_argparse_args(parser)  # adds Pytorch Lightning arguments
 
     args = parser.parse_args()
 
     main(args)
-    # fmt: on

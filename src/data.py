@@ -1,11 +1,7 @@
-#!/usr/bin/env python3
-
 import xml.etree.ElementTree as ET
 import html
 import pickle
 import random
-from math import ceil
-from functools import partial
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Union, Tuple, Dict, Sequence, Optional, List, Any
@@ -20,123 +16,8 @@ from sklearn.preprocessing import LabelEncoder
 from torch.utils.data import Dataset
 from PIL import Image
 
-from util import (
-    read_xml,
-    find_child_by_tag,
-    randomly_displace_and_pad,
-    dpi_adjusting,
-    set_seed,
-)
-
-
-@dataclass
-class IAMImageTransforms:
-    """Image transforms for the IAM dataset.
-
-    All images are padded to the same size. Images are randomly displaced
-    before padding during training, and centered during validation and
-    testing.
-    """
-
-    max_img_size: Tuple[int, int]  # (h, w)
-    parse_method: Optional[str] = ""
-    scale: int = (
-        0.5  # assuming A4 paper, this gives ~140 DPI (see Singh et al. p. 8, section 4)
-    )
-    random_scale_limit: float = 0.1
-    random_rotate_limit: int = 10
-    normalize_params: Tuple[float, float] = (
-        0.5,
-        0.5,
-    )  # TODO: find proper normalization params
-    train_trnsf: A.Compose = field(init=False)
-    test_trnsf: A.Compose = field(init=False)
-
-    def __post_init__(self):
-        scale, random_scale_limit, random_rotate_limit, normalize_params = (
-            self.scale,
-            self.random_scale_limit,
-            self.random_rotate_limit,
-            self.normalize_params,
-        )
-        max_img_h, max_img_w = self.max_img_size
-
-        max_scale = scale + scale * random_scale_limit
-        padded_h, padded_w = ceil(max_scale * max_img_h), ceil(max_scale * max_img_w)
-
-        if self.parse_method == "word":
-            self.train_trnsf = A.Compose(
-                [
-                    A.Lambda(partial(dpi_adjusting, scale=scale)),
-                    A.SafeRotate(
-                        limit=random_rotate_limit,
-                        border_mode=cv.BORDER_CONSTANT,
-                        value=0,
-                    ),
-                    A.RandomBrightnessContrast(),
-                    A.GaussNoise(),
-                    A.Normalize(*normalize_params),
-                ]
-            )
-            self.test_trnsf = A.Compose(
-                [
-                    A.Lambda(partial(dpi_adjusting, scale=scale)),
-                    A.Normalize(*normalize_params),
-                ]
-            )
-        elif self.parse_method == "line":
-            self.train_trnsf = A.Compose(
-                [
-                    A.Lambda(partial(dpi_adjusting, scale=scale)),
-                    A.RandomScale(scale_limit=random_scale_limit, p=0.5),
-                    A.SafeRotate(
-                        limit=random_rotate_limit,
-                        border_mode=cv.BORDER_CONSTANT,
-                        value=0,
-                    ),
-                    A.RandomBrightnessContrast(),
-                    A.GaussNoise(),
-                    A.Normalize(*normalize_params),
-                ]
-            )
-            self.test_trnsf = A.Compose(
-                [
-                    A.Lambda(partial(dpi_adjusting, scale=scale)),
-                    A.Normalize(*normalize_params),
-                ]
-            )
-        else:  # forms by default
-            self.train_trnsf = A.Compose(
-                [
-                    A.Lambda(partial(dpi_adjusting, scale=scale)),
-                    A.RandomScale(scale_limit=random_scale_limit, p=0.5),
-                    # SafeRotate is preferred over Rotate because it does not cut off text
-                    # when it extends out of the frame after rotation.
-                    A.SafeRotate(
-                        limit=random_scale_limit,
-                        border_mode=cv.BORDER_CONSTANT,
-                        value=0,
-                    ),
-                    A.RandomBrightnessContrast(),
-                    A.Perspective(scale=(0.03, 0.05)),
-                    A.GaussNoise(),
-                    A.Lambda(
-                        image=partial(
-                            randomly_displace_and_pad, padded_size=(padded_h, padded_w)
-                        )
-                    ),
-                    A.Normalize(*normalize_params),
-                ]
-            )
-            self.test_trnsf = A.Compose(
-                [
-                    A.Lambda(partial(dpi_adjusting, scale=scale)),
-                    A.PadIfNeeded(
-                        padded_h, padded_w, border_mode=cv.BORDER_CONSTANT, value=0
-                    ),
-                    A.Normalize(*normalize_params),
-                ]
-            )
+from util import read_xml, find_child_by_tag, set_seed
+from transforms import IAMImageTransforms
 
 
 class IAMDataset(Dataset):
@@ -484,7 +365,14 @@ class TemporalStack:
         return len(self.items)
 
 
-class SyntheticDataGenerator(Dataset):
+class IAMSyntheticDataGenerator(Dataset):
+    """
+    Data generator that creates synthetic line/form images by stitching together word
+    images from the IAM dataset.
+    Calling `__getitem__()` samples a newly generated synthetic image every time
+    it is called.
+    """
+
     PUNCTUATION = [",", ".", ";", ":", "'", '"', "!", "?"]
 
     def __init__(
@@ -492,8 +380,8 @@ class SyntheticDataGenerator(Dataset):
         iam_root: Union[str, Path],
         label_encoder: Optional[LabelEncoder] = None,
         transforms: Optional[A.Compose] = None,
-        words_per_line: Tuple[int, int] = (5, 13),
-        lines_per_form: Tuple[int, int] = (3, 9),
+        words_per_line: Tuple[int, int] = (4, 10),
+        lines_per_form: Tuple[int, int] = (3, 10),
         px_between_lines: Tuple[int, int] = (50, 100),
         px_between_words: int = 50,
         sample_form: bool = False,
@@ -520,21 +408,21 @@ class SyntheticDataGenerator(Dataset):
         self.images.transforms = None
         self.rng = np.random.default_rng(rng_seed)
 
-    def __getitem__(self, idx):
-        # Note that idx is not used, rather a new image is generated every time this
-        # method is called.
+    def __getitem__(self, *args, **kwargs):
+        """By calling this method, a newly generated synthetic image is sampled."""
         if self.sample_form:
             img, target = self.generate_form()
         else:
             img, target = self.generate_line()
         if self.transforms is not None:
             img = self.transforms(image=img)["image"]
+        # Encode the target sequence using the label encoder.
         target_enc = self.label_encoder.transform([c for c in target.lower()])
         return img, target_enc
 
     def __len__(self):
         # This dataset does not have a finite length since it can generate random
-        # images at will, so simply return 1.
+        # images at will, so return 1.
         return 1
 
     @property
@@ -557,21 +445,24 @@ class SyntheticDataGenerator(Dataset):
         self.rng = np.random.default_rng(seed)
 
     def sample_image(self) -> Tuple[np.ndarray, str]:
-        idx = random.randint(0, len(self.images))
+        idx = random.randint(0, len(self.images) - 1)
         img, target = self.images[idx]
         target = "".join(self.images.label_enc.inverse_transform(target))
         return img, target
 
-    def generate_line(self) -> Tuple[np.ndarray, str]:
+    def generate_line(
+        self, n_words_to_sample: Optional[int] = None
+    ) -> Tuple[np.ndarray, str]:
         curr_pos, n_sampled_words = 0, 0
         imgs, targets = [], []
         target_str, last_target = "", ""
         last_target_popped = False
         img_stack = TemporalStack()
 
-        # Determine the amount of words in the line by sampling from a discrete uniform
-        # distribution.
-        n_words_to_sample = self.rng.integers(*self.words_per_line)
+        # If the number of words to sample is not given, determine the amount of words
+        # in the line by sampling from a discrete uniform distribution.
+        if n_words_to_sample is None:
+            n_words_to_sample = self.rng.integers(*self.words_per_line)
 
         # TODO: right now words are sampled randomly. Instead, use a language model to
         # guide the sampled words. Temperature of the LM should be set to encourage
@@ -669,13 +560,20 @@ class SyntheticDataGenerator(Dataset):
         target = ""
         lines = []
         n_lines_to_sample = self.rng.integers(*self.lines_per_form)
+        n_words_to_sample = self.rng.integers(*self.words_per_line)
         px_between_lines = self.rng.integers(*self.px_between_lines)
-
-        # TODO: make the numbers of words per line (roughly) uniform.
 
         # Sample line images.
         for i in range(n_lines_to_sample):
-            line_img, line_target = self.generate_line()
+            line_img, line_target = self.generate_line(n_words_to_sample)
+            h, w = line_img.shape
+            if h > IAMDataset.MAX_FORM_HEIGHT or w > IAMDataset.MAX_FORM_WIDTH:
+                # It is possible that the generated synthetic form exceeds the
+                # maximum width. This is because the generated images are based on
+                # a specified number of words per line. Depending on the length of
+                # the words, the generated image may be too wide. If this is the
+                # case, simply generate another form.
+                return self.generate_form()  # generate another form
             lines.append(line_img)
             target += line_target + "\n"
         form_w = max(l.shape[1] for l in lines)
@@ -694,12 +592,15 @@ class SyntheticDataGenerator(Dataset):
 
 class IAMDatasetSynthetic(Dataset):
     """
-    A Pytorch dataset combining the IAM dataset with the SyntheticDataGenerator
+    A Pytorch dataset combining the IAM dataset with the IAMSyntheticDataGenerator
     dataset.
+
+    The distribution of real/synthetic images can be controlled by setting the
+    `synth_prob` argument.
     """
 
     iam_dataset: IAMDataset
-    synth_dataset: SyntheticDataGenerator
+    synth_dataset: IAMSyntheticDataGenerator
     synth_prob: float
 
     def __init__(self, iam_dataset: IAMDataset, synth_prob: float = 0.3):
@@ -711,7 +612,7 @@ class IAMDatasetSynthetic(Dataset):
         """
         self.iam_dataset = iam_dataset
         self.synth_prob = synth_prob
-        self.synth_dataset = SyntheticDataGenerator(
+        self.synth_dataset = IAMSyntheticDataGenerator(
             iam_root=iam_dataset.root,
             label_encoder=iam_dataset.label_enc,
             transforms=iam_dataset.transforms,
