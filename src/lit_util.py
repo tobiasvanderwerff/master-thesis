@@ -39,7 +39,7 @@ class MAMLCheckpointIO(TorchCheckpointIO):
             k, p = state_dict.popitem()
             cmps = k.split(".")
             if k.startswith("maml.module."):
-                new_key = "model" + ".".join(cmps[2:])
+                new_key = "model." + ".".join(cmps[2:])
                 new_dict[new_key] = p
         checkpoint["state_dict"] = new_dict
         return checkpoint
