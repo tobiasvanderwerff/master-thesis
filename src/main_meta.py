@@ -66,6 +66,7 @@ def main(args):
         ds_meta_train = pickle_load(ds_meta_train_path)
         ds_meta_val = pickle_load(ds_meta_val_path)
     else:  # initialize a new dataset
+        print("Initializing dataset...")
         ds = IAMDataset(
             args.data_dir,
             "word",
@@ -121,6 +122,8 @@ def main(args):
 
         assert (ds_train.data["writer_id"].value_counts() >= args.shots * 2).all()
         assert (ds_val.data["writer_id"].value_counts() >= args.shots * 2).all()
+        # Intersection of writer sets should be the empty set, thus length 0.
+        assert len(set(ds_train.writer_ids) & set(ds_val.writer_ids)) == 0
 
         ds_meta_train = l2l.data.MetaDataset(ds_train)
         ds_meta_val = l2l.data.MetaDataset(ds_val)
@@ -195,7 +198,7 @@ def main(args):
         args.trained_model_path,
         hparams_file,
         ds_train.label_enc,
-        taskset_train,
+        taskset_train=taskset_train,
         taskset_val=taskset_val,
         ways=args.ways,
         shots=args.shots,
@@ -210,6 +213,7 @@ def main(args):
             "gradient_clip_val": args.gradient_clip_val,
         },
     )
+    # learner.freeze_all_layers_except_classifier()
 
     # This checkpoint plugin is necessary to save the weights obtained using MAML in
     # the proper way. The weights should be stored in the same format as they would
@@ -240,7 +244,7 @@ def main(args):
             save_top_k=(-1 if args.save_all_checkpoints else 3),
             mode="min",
             monitor="word_error_rate",
-            filename="MAML-{step}-{char_error_rate:.4f}-{word_error_rate:.4f}",
+            filename="MAML-{epoch}-{char_error_rate:.4f}-{word_error_rate:.4f}",
             save_weights_only=True,
         ),
         # EarlyStopping(
@@ -274,7 +278,7 @@ def main(args):
     )
 
     if args.validate:  # validate a trained model
-        trainer.validate(learner)  # TODO: check if this works properly
+        trainer.validate(learner)
     else:  # train a model
         trainer.fit(learner)
 
@@ -283,12 +287,11 @@ if __name__ == "__main__":
     # fmt: off
     parser = argparse.ArgumentParser()
 
-    # Program arguments.
-    parser.add_argument("--trained_model_path", type=str,
+    parser.add_argument("--trained_model_path", type=str, required=True,
                         help=("Path to a model checkpoint, which will be used as a "
                               "starting point for MAML/MetaHTR."))
-    parser.add_argument("--data_dir", type=str)
-    parser.add_argument("--cache_dir", type=str)
+    parser.add_argument("--data_dir", type=str, required=True)
+    parser.add_argument("--cache_dir", type=str, required=True)
     parser.add_argument("--validate", action="store_true", default=False)
     parser.add_argument("--early_stopping_patience", type=int, default=10)
     parser.add_argument("--use_aachen_splits", action="store_true", default=False)

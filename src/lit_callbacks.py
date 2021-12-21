@@ -109,7 +109,6 @@ class LogModelPredictionsMAML(Callback):
         torch.set_grad_enabled(False)
 
         # Log the results.
-        imgs, targets, *_ = batch
         self._log_intermediate(
             trainer, pl_module, query_imgs, query_tgts, preds, split=split
         )

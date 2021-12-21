@@ -6,9 +6,21 @@ from typing import Union, Sequence, Any
 
 import pandas as pd
 import torch
+import torch.nn as nn
 import matplotlib.pyplot as plt
 import numpy as np
 from pytorch_lightning.callbacks import TQDMProgressBar
+
+
+def set_norm_layers_to_train(module: nn.Module):
+    """
+    Use batch statistics rather than running statistics for normalization
+    layers (batchnorm, layernorm).
+    """
+    for n, m in module.named_modules():
+        mn = n.split(".")[-1]
+        if "bn" in mn or "norm" in mn:
+            m.training = True
 
 
 def pickle_save(obj, file):

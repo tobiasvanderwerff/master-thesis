@@ -2,7 +2,7 @@ from typing import Optional, Dict, Union, Tuple
 from pathlib import Path
 
 from models import FullPageHTREncoderDecoder
-from util import identity_collate_fn
+from util import identity_collate_fn, set_norm_layers_to_train
 
 import torch
 import torch.optim as optim
@@ -64,8 +64,9 @@ class MetaHTR(pl.LightningModule):
         imgs, target, writer_ids = batch
         writer_ids_uniq = writer_ids.unique().tolist()
 
+        assert mode in ["train", "val", "test"]
         assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
-        assert len(writer_ids.unique().tolist()) == self.ways
+        assert len(writer_ids_uniq) == self.ways
 
         # Split the batch into N different writers, where N = ways.
         for task in range(self.ways):  # tasks correspond to different writers
@@ -89,13 +90,25 @@ class MetaHTR(pl.LightningModule):
             # computation of derivatives of the new modules' parameters w.r.t. the
             # original parameters.
             learner = self.maml.clone()
-            learner.train()
+
+            learner.eval()
+            # set_norm_layers_to_train(learner)
+            # learner.train()
 
             # Inner loop.
             for _ in range(self.num_inner_steps):
-                _, support_loss = learner.module.forward_teacher_forcing(
+                # _, support_loss = learner.module.forward_teacher_forcing(
+                _, support_loss = learner.forward_teacher_forcing(
                     support_imgs, support_tgts
                 )
+
+                # buf = dict(learner.module.named_buffers())
+                # running_mean = buf["encoder.encoder.1.running_mean"]
+                # running_var = buf["encoder.encoder.1.running_var"]
+                # print(running_mean.mean().item(), running_var.mean().item(),
+                #       buf["encoder.encoder.1.num_batches_tracked"])
+                # print(f"{mode.capitalize()} - Inner loss: {support_loss}")
+
                 # Calculate gradients and take an optimization step.
                 learner.adapt(support_loss)
 
@@ -171,7 +184,9 @@ class MetaHTR(pl.LightningModule):
                       greedy decoding (argmax on logits) at each time step
         """
         learner = self.maml.clone()
-        learner.train()
+        learner.eval()
+        # set_norm_layers_to_train(learner)
+        # learner.train()
 
         # Adapt the model.
         # For some reason using an autograd context manager like torch.enable_grad()
@@ -240,6 +255,11 @@ class MetaHTR(pl.LightningModule):
         )
         return [optimizer], [lr_scheduler]
         # return optimizer
+
+    def freeze_all_layers_except_classifier(self):
+        for n, p in self.named_parameters():
+            if not n.split(".")[-2] == "clf":
+                p.requires_grad = False
 
     @staticmethod
     def init_with_fphtr_from_checkpoint(
