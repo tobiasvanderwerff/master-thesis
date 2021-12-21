@@ -221,22 +221,20 @@ def main(args):
     # weights later on.
     checkpoint_io = MAMLCheckpointIO()
 
+    # Prepare fixed batches used for monitoring model predictions during training.
     im, t, _ = next(iter(learner.val_dataloader()))
-    val_batch = (
-        im[: args.shots],
-        t[: args.shots],
-        # TODO: this is incorrect, because the batch contains examples for several
-        #  writers. I assumed here that the batch contains one writer.
-        im[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
-        t[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
-    )
+    val_batch = (im[: args.shots * 2], t[: args.shots * 2])  # select the first writer
     im, t, _ = next(iter(learner.train_dataloader()))
-    train_batch = (
-        im[: args.shots],
-        t[: args.shots],
-        im[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
-        t[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
-    )
+    train_batch = (im[: args.shots * 2], t[: args.shots * 2])  # select the first writer
+    val_batch, train_batch = [
+        (
+            im[: args.shots],
+            t[: args.shots],
+            im[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
+            t[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
+        )
+        for (im, t) in [val_batch, train_batch]
+    ]
 
     callbacks = [
         LitProgressBar(),

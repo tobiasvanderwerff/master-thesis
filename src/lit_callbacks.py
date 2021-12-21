@@ -135,9 +135,11 @@ class LogModelPredictionsMAML(Callback):
             (targets == pl_module.decoder.eos_tkn_idx).float().argmax(1).tolist()
         )
 
+        assert imgs.shape[0] == targets.shape[0]
+
         # Generate plot.
         fig = plt.figure(figsize=(12, 16))
-        for i, t in enumerate(targets.tolist()):
+        for i, (tgt, im) in enumerate(zip(targets.tolist(), imgs)):
             # Decode predictions and targets.
             p = None
             if preds is not None:
@@ -155,16 +157,16 @@ class LogModelPredictionsMAML(Callback):
                     pred_str = "".join(self.label_encoder.inverse_transform(p))
             if max_target_idx != 0:
                 target_str = "".join(
-                    self.label_encoder.inverse_transform(t)[:max_target_idx]
+                    self.label_encoder.inverse_transform(tgt)[:max_target_idx]
                 )
             else:
-                target_str = "".join(self.label_encoder.inverse_transform(t))
+                target_str = "".join(self.label_encoder.inverse_transform(tgt))
 
             # Create plot.
             ncols = 2 if self.data_format == "word" else 1
             nrows = math.ceil(targets.size(0) / ncols)
             ax = fig.add_subplot(nrows, ncols, i + 1, xticks=[], yticks=[])
-            matplotlib_imshow(imgs[i])
+            matplotlib_imshow(im)
             ttl = f"Target: {target_str}"
             if pred_str is not None:
                 ttl = f"Pred: {pred_str}\n" + ttl
