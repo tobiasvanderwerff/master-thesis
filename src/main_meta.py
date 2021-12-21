@@ -16,7 +16,7 @@ import learn2learn as l2l
 from torch.utils.data import DataLoader
 from pytorch_lightning import seed_everything, Trainer
 from pytorch_lightning import loggers as pl_loggers
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.plugins import DDPPlugin
 
 
@@ -245,13 +245,13 @@ def main(args):
             filename="MAML-{epoch}-{char_error_rate:.4f}-{word_error_rate:.4f}",
             save_weights_only=True,
         ),
-        # EarlyStopping(
-        #     monitor="word_error_rate",
-        #     patience=args.early_stopping_patience,
-        #     verbose=True,
-        #     mode="min",
-        #     # check_on_train_epoch_end=False,  # check at the end of validation
-        # ),
+        EarlyStopping(
+            monitor="word_error_rate",
+            patience=args.early_stopping_patience,
+            verbose=True,
+            mode="min",
+            # check_on_train_epoch_end=False,  # check at the end of validation
+        ),
         LogModelPredictionsMAML(
             ds_train.label_enc,
             val_batch=val_batch,
