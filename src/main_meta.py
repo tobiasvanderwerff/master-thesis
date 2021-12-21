@@ -73,7 +73,7 @@ def main(args):
             "train",
             use_cache=False,
             label_enc=label_enc,
-            skip_bad_segmentation=False,
+            skip_bad_segmentation=True,
             return_writer_id=True,
         )
 
