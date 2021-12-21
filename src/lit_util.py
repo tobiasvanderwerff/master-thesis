@@ -23,19 +23,23 @@ class MAMLCheckpointIO(TorchCheckpointIO):
         path: _PATH,
         storage_options: Optional[Any] = None,
     ) -> None:
-        checkpoint = self._remove_redundant_prefix_from_weight_names(checkpoint)
+        checkpoint = self._add_correct_prefix_for_weight_names(checkpoint)
         super().save_checkpoint(checkpoint, path, storage_options)
 
     @staticmethod
-    def _remove_redundant_prefix_from_weight_names(checkpoint: Dict[str, Any]):
-        """Turn parameter names of the form `maml.module.a.b.c` into `a.b.c` form."""
+    def _add_correct_prefix_for_weight_names(checkpoint: Dict[str, Any]):
+        """
+        Turn parameter names of the form `maml.module.a.b.c` into `model.a.b.c`
+        form. This makes it possible to load the weights using the
+        `LitFullPageHTREncoderDecoder` class.
+        """
         new_dict = OrderedDict()
         state_dict = checkpoint["state_dict"]
         while len(state_dict) > 0:
             k, p = state_dict.popitem()
             cmps = k.split(".")
             if k.startswith("maml.module."):
-                new_key = ".".join(cmps[2:])
+                new_key = "model" + ".".join(cmps[2:])
                 new_dict[new_key] = p
         checkpoint["state_dict"] = new_dict
         return checkpoint
