@@ -2,7 +2,7 @@ from typing import Optional, Dict, Union, Tuple
 from pathlib import Path
 
 from models import FullPageHTREncoderDecoder
-from util import identity_collate_fn, set_norm_layers_to_train
+from util import identity_collate_fn, set_norm_layers_to_train, LabelEncoder
 
 import torch
 import torch.optim as optim
@@ -10,7 +10,6 @@ import pytorch_lightning as pl
 import numpy as np
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
-from sklearn.preprocessing import LabelEncoder
 
 import learn2learn as l2l
 
@@ -310,6 +309,7 @@ class LitFullPageHTREncoderDecoder(pl.LightningModule):
         drop_enc: int = 0.5,
         drop_dec: int = 0.5,
         activ_dec: str = "gelu",
+        vocab_len: Optional[int] = None,  # if not specified len(label_encoder) is used
         params_to_log: Optional[Dict[str, Union[str, float, int]]] = None,
     ):
         super().__init__()
@@ -343,7 +343,11 @@ class LitFullPageHTREncoderDecoder(pl.LightningModule):
             drop_enc=drop_enc,
             drop_dec=drop_dec,
             activ_dec=activ_dec,
+            vocab_len=vocab_len,
         )
+
+        self.all_logits = None
+        self.all_targets = None
 
     @property
     def encoder(self):
@@ -383,7 +387,7 @@ class LitFullPageHTREncoderDecoder(pl.LightningModule):
         return loss, metrics
 
     def configure_optimizers(self):
-        return optim.AdamW(self.parameters(), lr=self.learning_rate)
+        return optim.Adam(self.parameters(), lr=self.learning_rate)
 
     @staticmethod
     def add_model_specific_args(parent_parser):

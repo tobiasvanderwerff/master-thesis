@@ -1,14 +1,13 @@
 import math
 from typing import Tuple, Optional
 
-from util import matplotlib_imshow
+from util import matplotlib_imshow, LabelEncoder
 
 import torch
 import pytorch_lightning as pl
 import matplotlib.pyplot as plt
 from torch import Tensor
 from pytorch_lightning.callbacks import Callback
-from sklearn.preprocessing import LabelEncoder
 
 
 class LogWorstPredictions(Callback):
@@ -23,7 +22,8 @@ class LogWorstPredictions(Callback):
     def on_validation_epoch_end(
         self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
     ):
-        pass
+        if pl_module.all_logits is None or pl_module.all_targets is None:
+            ...
         # TODO
 
 
@@ -37,9 +37,9 @@ class LogModelPredictionsMAML(Callback):
 
     def __init__(
         self,
-        label_encoder: "LabelEncoder",
         val_batch: Tuple[Tensor, Tensor, Tensor, Tensor],
         train_batch: Optional[Tuple[Tensor, Tensor, Tensor, Tensor]] = None,
+        label_encoder: LabelEncoder,
         use_gpu: bool = True,
         data_format: str = "word",
         enable_grad: bool = False,
@@ -175,3 +175,4 @@ class LogModelPredictionsMAML(Callback):
         # Log the results to Tensorboard.
         tensorboard = trainer.logger.experiment
         tensorboard.add_figure(f"{split}: {plot_title}", fig, trainer.global_step)
+        plt.close(fig)
