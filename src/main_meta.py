@@ -9,14 +9,13 @@ from lit_models import MetaHTR
 from data import IAMDataset
 from lit_util import MAMLCheckpointIO, LitProgressBar, PtTaskDataset
 from lit_callbacks import LogModelPredictionsMAML
-from util import filter_df_by_freq, pickle_load, pickle_save
+from util import filter_df_by_freq, pickle_load, pickle_save, LabelEncoder
 
-import pandas as pd
 import learn2learn as l2l
 from torch.utils.data import DataLoader
 from pytorch_lightning import seed_everything, Trainer
 from pytorch_lightning import loggers as pl_loggers
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, ModelSummary
 from pytorch_lightning.plugins import DDPPlugin
 
 
@@ -42,17 +41,20 @@ def main(args):
     ).is_file(), f"{args.trained_model_path} does not point to a file."
 
     # Load the label encoder for the trained model.
-    le_path = Path(args.trained_model_path).parent.parent / "label_encoder.pkl"
-    assert le_path.is_file(), (
-        f"Label encoder file not found at {le_path}. "
-        f"Make sure 'label_encoder.pkl' exists in the lightning_logs directory."
+    model_path = Path(args.validate) if args.validate else Path(args.trained_model_path)
+    le_path_1 = model_path.parent.parent / "label_encoding.txt"
+    le_path_2 = model_path.parent.parent / "label_encoder.pkl"
+    assert le_path_1.is_file() or le_path_2.is_file(), (
+        f"Label encoder file not found at {le_path_1} or {le_path_2}. "
+        f"Make sure 'label_encoding.txt' exists in the lightning_logs directory."
     )
-    label_enc = pd.read_pickle(le_path)
+    le_path = le_path_2 if le_path_2.is_file() else le_path_1
+    label_enc = LabelEncoder().read_encoding(le_path)
 
     # Save the label encoder in the logging directory.
     log_dir = Path(tb_logger.log_dir)
     log_dir.mkdir(exist_ok=True, parents=True)
-    pickle_save(label_enc, log_dir / "label_encoder.pkl")
+    label_enc.dump(log_dir)
 
     # Initalize meta dataset and cache the result.
     cache_dir = Path(args.cache_dir) if args.cache_dir else log_dir / "cache"
@@ -71,10 +73,10 @@ def main(args):
             args.data_dir,
             "word",
             "train",
-            use_cache=False,
             label_enc=label_enc,
             skip_bad_segmentation=True,
             return_writer_id=True,
+            only_lowercase=args.use_lowercase,
         )
 
         # Split the dataset into train/val/(test).
@@ -137,7 +139,7 @@ def main(args):
 
     eos_tkn_idx, sos_tkn_idx, pad_tkn_idx = ds_train.label_enc.transform(
         [ds_train._eos_token, ds_train._sos_token, ds_train._pad_token]
-    ).tolist()
+    )
     collate_fn = partial(
         IAMDataset.collate_fn,
         pad_val=pad_tkn_idx,
@@ -211,6 +213,8 @@ def main(args):
             "max_epochs": args.max_epochs,
             "model_path": args.trained_model_path,
             "gradient_clip_val": args.gradient_clip_val,
+            "early_stopping_patience": args.early_stopping_patience,
+            "only_lowercase": args.use_lowercase,
         },
     )
     # learner.freeze_all_layers_except_classifier()
@@ -237,6 +241,7 @@ def main(args):
     ]
 
     callbacks = [
+        ModelSummary(max_depth=2),
         LitProgressBar(),
         ModelCheckpoint(
             save_top_k=(-1 if args.save_all_checkpoints else 3),
@@ -245,15 +250,8 @@ def main(args):
             filename="MAML-{epoch}-{char_error_rate:.4f}-{word_error_rate:.4f}",
             save_weights_only=True,
         ),
-        EarlyStopping(
-            monitor="word_error_rate",
-            patience=args.early_stopping_patience,
-            verbose=True,
-            mode="min",
-            # check_on_train_epoch_end=False,  # check at the end of validation
-        ),
         LogModelPredictionsMAML(
-            ds_train.label_enc,
+            label_encoder=ds_train.label_enc,
             val_batch=val_batch,
             train_batch=train_batch,
             use_gpu=(False if args.use_cpu else True),
@@ -261,6 +259,16 @@ def main(args):
             predict_on_train_start=True,
         ),
     ]
+    if args.early_stopping_patience != -1:
+        callbacks.append(
+            EarlyStopping(
+                monitor="word_error_rate",
+                patience=args.early_stopping_patience,
+                verbose=True,
+                mode="min",
+                # check_on_train_epoch_end=False,  # check at the end of validation
+            )
+        )
 
     trainer = Trainer.from_argparse_args(
         args,
@@ -290,9 +298,16 @@ if __name__ == "__main__":
                               "starting point for MAML/MetaHTR."))
     parser.add_argument("--data_dir", type=str, required=True)
     parser.add_argument("--cache_dir", type=str, required=True)
-    parser.add_argument("--validate", action="store_true", default=False)
-    parser.add_argument("--early_stopping_patience", type=int, default=10)
+    parser.add_argument("--validate", type=str, default=None,
+                        help="Validate a trained model, specified by its checkpoint "
+                             "path.")
+    parser.add_argument("--early_stopping_patience", type=int, default=10,
+                        help="Number of checks with no improvement after which "
+                             "training will be stopped. Setting this to -1 will disable "
+                             "early stopping.")
     parser.add_argument("--use_aachen_splits", action="store_true", default=False)
+    parser.add_argument("--use_lowercase", action="store_true", default=False,
+                        help="Convert all target label sequences to lowercase.")
     parser.add_argument("--save_all_checkpoints", action="store_true", default=False)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--use_cpu", action="store_true", default=False)
