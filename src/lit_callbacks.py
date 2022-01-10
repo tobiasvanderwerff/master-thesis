@@ -1,4 +1,5 @@
 import math
+import re
 from typing import Tuple, Optional
 
 from util import matplotlib_imshow, LabelEncoder
@@ -37,9 +38,9 @@ class LogModelPredictionsMAML(Callback):
 
     def __init__(
         self,
+        label_encoder: LabelEncoder,
         val_batch: Tuple[Tensor, Tensor, Tensor, Tensor],
         train_batch: Optional[Tuple[Tensor, Tensor, Tensor, Tensor]] = None,
-        label_encoder: LabelEncoder,
         use_gpu: bool = True,
         data_format: str = "word",
         enable_grad: bool = False,
@@ -175,4 +176,30 @@ class LogModelPredictionsMAML(Callback):
         # Log the results to Tensorboard.
         tensorboard = trainer.logger.experiment
         tensorboard.add_figure(f"{split}: {plot_title}", fig, trainer.global_step)
+        plt.close(fig)
+
+
+class LogLayerWiseLearningRates(Callback):
+    def on_train_epoch_end(
+        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
+    ):
+        # Collect all inner loop learning rates.
+        lrs = []
+        for n, p in pl_module.state_dict().items():
+            if n.startswith("model.compute_update"):
+                ix = int(re.search(r"[0-9]+", n).group(0))
+                lrs.append((ix, p.item()))
+        assert lrs != []
+
+        # Plot the learning rates.
+        xs, ys = zip(*lrs)
+        fig = plt.figure()
+        plt.bar(xs, ys, align="edge", alpha=0.5)
+        plt.grid(True)
+        plt.xlabel("layer index")
+        plt.ylabel("learning rate")
+
+        # Log to Tensorboard.
+        tensorboard = trainer.logger.experiment
+        tensorboard.add_figure(f"Inner loop learning rates", fig, trainer.global_step)
         plt.close(fig)

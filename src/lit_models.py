@@ -1,8 +1,8 @@
-from typing import Optional, Dict, Union, Tuple
+from typing import Optional, Dict, Union, Tuple, Any
 from pathlib import Path
 
 from models import FullPageHTREncoderDecoder
-from util import identity_collate_fn, set_norm_layers_to_train, LabelEncoder
+from util import identity_collate_fn, LabelEncoder, LayerWiseLRTransform
 
 import torch
 import torch.optim as optim
@@ -15,6 +15,8 @@ import learn2learn as l2l
 
 
 class MetaHTR(pl.LightningModule):
+    model: l2l.algorithms.GBML
+
     def __init__(
         self,
         model: FullPageHTREncoderDecoder,
@@ -23,11 +25,10 @@ class MetaHTR(pl.LightningModule):
         taskset_test: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
         ways: int = 8,
         shots: int = 16,
-        inner_lr: float = 0.0001,
         outer_lr: float = 0.0001,
         num_inner_steps: int = 1,
         num_workers: int = 0,
-        params_to_log: Optional[Dict[str, Union[str, float, int]]] = None,
+        prms_to_log: Optional[Dict[str, Union[str, float, int]]] = None,
     ):
         super().__init__()
 
@@ -38,24 +39,27 @@ class MetaHTR(pl.LightningModule):
         self.taskset_test = taskset_test
         self.ways = ways
         self.shots = shots
-        self.inner_lr = inner_lr
         self.outer_lr = outer_lr
         self.num_inner_steps = num_inner_steps
         self.num_workers = num_workers
 
-        self.maml = l2l.algorithms.MAML(
-            model, inner_lr, first_order=False, allow_nograd=True
+        self.model = l2l.algorithms.GBML(
+            model,
+            transform=LayerWiseLRTransform(),
+            lr=1.0,  # this lr is replaced by a learnable one
+            adapt_transform=True,  # updates the inner loop learning rate(s)
+            first_order=False,
+            allow_nograd=True,
         )
 
         self.save_hyperparameters(
             "ways",
             "shots",
-            "inner_lr",
             "outer_lr",
             "num_inner_steps",
         )
-        if params_to_log is not None:
-            self.save_hyperparameters(params_to_log)
+        if prms_to_log is not None:
+            self.save_hyperparameters(prms_to_log)
 
     def meta_learn(self, batch, mode="train") -> Tensor:
         outer_loss = 0.0
@@ -85,10 +89,10 @@ class MetaHTR(pl.LightningModule):
             )
             query_imgs, query_tgts = imgs_[query_indices], target_[query_indices]
 
-            # Calling `maml.clone()` allows updating the module while still allowing
+            # Calling `model.clone()` allows updating the module while still allowing
             # computation of derivatives of the new modules' parameters w.r.t. the
             # original parameters.
-            learner = self.maml.clone()
+            learner = self.model.clone()
 
             learner.eval()
             # set_norm_layers_to_train(learner)
@@ -96,8 +100,7 @@ class MetaHTR(pl.LightningModule):
 
             # Inner loop.
             for _ in range(self.num_inner_steps):
-                # _, support_loss = learner.module.forward_teacher_forcing(
-                _, support_loss = learner.forward_teacher_forcing(
+                _, support_loss = learner.module.forward_teacher_forcing(
                     support_imgs, support_tgts
                 )
 
@@ -143,11 +146,11 @@ class MetaHTR(pl.LightningModule):
 
     @property
     def encoder(self):
-        return self.maml.module.encoder
+        return self.model.module.encoder
 
     @property
     def decoder(self):
-        return self.maml.module.decoder
+        return self.model.module.decoder
 
     def training_step(self, batch, batch_idx):
         loss = self.meta_learn(batch, mode="train")
@@ -182,7 +185,7 @@ class MetaHTR(pl.LightningModule):
                 - sampled class indices, i.e. model predictions, obtained by applying
                       greedy decoding (argmax on logits) at each time step
         """
-        learner = self.maml.clone()
+        learner = self.model.clone()
         learner.eval()
         # set_norm_layers_to_train(learner)
         # learner.train()
@@ -262,25 +265,45 @@ class MetaHTR(pl.LightningModule):
 
     @staticmethod
     def init_with_fphtr_from_checkpoint(
-        fphtr_checkpoint_path: Union[str, Path],
+        checkpoint_path: Union[str, Path],
         fphtr_hparams_file: Union[str, Path],
         label_encoder: LabelEncoder,
+        load_meta_weights: bool = False,
+        fphtr_params_to_log: Optional[Dict[str, Any]] = None,
         *args,
         **kwargs
     ):
+        # Load FPHTR model.
         fphtr = LitFullPageHTREncoderDecoder.load_from_checkpoint(
-            fphtr_checkpoint_path,
+            checkpoint_path,
             hparams_file=fphtr_hparams_file,
+            # `strict=False` because MAML checkpoints contain additional parameters
+            # in the state_dict (namely the learnable inner loop learning rates), which
+            # should be ignored when loading FPHTR.
+            strict=False,
             label_encoder=label_encoder,
+            params_to_log=fphtr_params_to_log,
         )
-        return MetaHTR(fphtr.model, *args, **kwargs)
+
+        model = MetaHTR(fphtr.model, *args, **kwargs)
+
+        if load_meta_weights:
+            # Load weights specific to the meta-learning algorithm.
+            _meta_weights = ["model.compute_update"]
+            ckpt = torch.load(
+                checkpoint_path, map_location=lambda storage, loc: storage
+            )
+            for n, p in ckpt["state_dict"].items():
+                if any(n.startswith(wn) for wn in _meta_weights):
+                    with torch.no_grad():
+                        model.state_dict()[n] = p
+        return model
 
     @staticmethod
     def add_model_specific_args(parent_parser):
         parser = parent_parser.add_argument_group("MetaHTR")
         parser.add_argument("--shots", type=int, default=16)
         parser.add_argument("--ways", type=int, default=8)
-        parser.add_argument("--inner_lr", type=float, default=0.0001)
         parser.add_argument("--outer_lr", type=float, default=0.0001)
         return parent_parser
 

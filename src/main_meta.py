@@ -7,9 +7,15 @@ from functools import partial
 from models import *
 from lit_models import MetaHTR
 from data import IAMDataset
-from lit_util import MAMLCheckpointIO, LitProgressBar, PtTaskDataset
-from lit_callbacks import LogModelPredictionsMAML
-from util import filter_df_by_freq, pickle_load, pickle_save, LabelEncoder
+from lit_util import MAMLCheckpointIO, LitProgressBar
+from lit_callbacks import LogModelPredictionsMAML, LogLayerWiseLearningRates
+from util import (
+    filter_df_by_freq,
+    pickle_load,
+    pickle_save,
+    LabelEncoder,
+    PtTaskDataset,
+)
 
 import learn2learn as l2l
 from torch.utils.data import DataLoader
@@ -17,6 +23,7 @@ from pytorch_lightning import seed_everything, Trainer
 from pytorch_lightning import loggers as pl_loggers
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, ModelSummary
 from pytorch_lightning.plugins import DDPPlugin
+from pytorch_lightning.core.saving import load_hparams_from_yaml
 
 
 LOGGING_DIR = "lightning_logs/"
@@ -41,7 +48,7 @@ def main(args):
     ).is_file(), f"{args.trained_model_path} does not point to a file."
 
     # Load the label encoder for the trained model.
-    model_path = Path(args.validate) if args.validate else Path(args.trained_model_path)
+    model_path = Path(args.trained_model_path)
     le_path_1 = model_path.parent.parent / "label_encoding.txt"
     le_path_2 = model_path.parent.parent / "label_encoder.pkl"
     assert le_path_1.is_file() or le_path_2.is_file(), (
@@ -62,6 +69,19 @@ def main(args):
     ds_meta_train_path = cache_dir / "ds_meta_train.pkl"
     ds_meta_val_path = cache_dir / "ds_meta_val.pkl"
 
+    # Copy hyper-parameters. The loaded model has an associated `hparams.yaml` file,
+    # which we copy to the current logging directory so that we can load the model
+    # later using the saved hyper parameters.
+    model_hparams_file = Path(args.trained_model_path).parent.parent / "hparams.yaml"
+    shutil.copy(model_hparams_file, log_dir / "model_hparams.yaml")
+    hparams_file = (
+        str(model_hparams_file.parent / "model_hparams.yaml")
+        if (model_hparams_file.parent / "model_hparams.yaml").is_file()
+        else str(model_hparams_file)
+    )
+    hparams = load_hparams_from_yaml(str(hparams_file))
+    only_lowercase = hparams["only_lowercase"]
+
     # Check for cached dataset. If it does not exist, init a new dataset.
     if ds_meta_train_path.is_file() and ds_meta_train_path.is_file():
         print("Loading cached meta-datasets.")
@@ -76,7 +96,7 @@ def main(args):
             label_enc=label_enc,
             skip_bad_segmentation=True,
             return_writer_id=True,
-            only_lowercase=args.use_lowercase,
+            only_lowercase=only_lowercase,
         )
 
         # Split the dataset into train/val/(test).
@@ -184,37 +204,27 @@ def main(args):
         taskset_val, epoch_length=int(len(ds_val.writer_ids) / args.ways)
     )
 
-    # Copy hyper parameters. The loaded model has an associated `hparams.yaml` file,
-    # which we copy to the current logging directory so that we can load the model
-    # later using the saved hyper parameters.
-    model_hparams_file = Path(args.trained_model_path).parent.parent / "hparams.yaml"
-    shutil.copy(model_hparams_file, log_dir / "model_hparams.yaml")
-
     # Initialize MAML with a trained FPHTR model.
-    hparams_file = (
-        str(model_hparams_file)
-        if model_hparams_file.is_file()
-        else model_hparams_file.parent / "model_hparams.yaml"
-    )
+    load_meta_weights = True if args.validate else False
     learner = MetaHTR.init_with_fphtr_from_checkpoint(
         args.trained_model_path,
         hparams_file,
         ds_train.label_enc,
+        fphtr_params_to_log={"only_lowercase": only_lowercase},
+        load_meta_weights=load_meta_weights,
         taskset_train=taskset_train,
         taskset_val=taskset_val,
         ways=args.ways,
         shots=args.shots,
-        inner_lr=args.inner_lr,
         outer_lr=args.outer_lr,
         num_workers=args.num_workers,
-        params_to_log={
+        prms_to_log={
             "seed": args.seed,
             "splits": ("Aachen" if args.use_aachen_splits else "random"),
             "max_epochs": args.max_epochs,
             "model_path": args.trained_model_path,
             "gradient_clip_val": args.gradient_clip_val,
             "early_stopping_patience": args.early_stopping_patience,
-            "only_lowercase": args.use_lowercase,
         },
     )
     # learner.freeze_all_layers_except_classifier()
@@ -241,7 +251,7 @@ def main(args):
     ]
 
     callbacks = [
-        ModelSummary(max_depth=2),
+        ModelSummary(max_depth=3),
         LitProgressBar(),
         ModelCheckpoint(
             save_top_k=(-1 if args.save_all_checkpoints else 3),
@@ -258,6 +268,7 @@ def main(args):
             enable_grad=True,
             predict_on_train_start=True,
         ),
+        LogLayerWiseLearningRates(),
     ]
     if args.early_stopping_patience != -1:
         callbacks.append(
@@ -298,16 +309,12 @@ if __name__ == "__main__":
                               "starting point for MAML/MetaHTR."))
     parser.add_argument("--data_dir", type=str, required=True)
     parser.add_argument("--cache_dir", type=str, required=True)
-    parser.add_argument("--validate", type=str, default=None,
-                        help="Validate a trained model, specified by its checkpoint "
-                             "path.")
+    parser.add_argument("--validate", action="store_true", default=False)
     parser.add_argument("--early_stopping_patience", type=int, default=10,
                         help="Number of checks with no improvement after which "
                              "training will be stopped. Setting this to -1 will disable "
                              "early stopping.")
     parser.add_argument("--use_aachen_splits", action="store_true", default=False)
-    parser.add_argument("--use_lowercase", action="store_true", default=False,
-                        help="Convert all target label sequences to lowercase.")
     parser.add_argument("--save_all_checkpoints", action="store_true", default=False)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--use_cpu", action="store_true", default=False)

@@ -2,14 +2,49 @@ import xml.etree.ElementTree as ET
 import random
 import pickle
 from pathlib import Path
-from typing import Union, Any, List, Optional, Sequence, Dict, Sequence
+from typing import Union, Any, List, Optional, Dict, Sequence
+
+# from models import FullPageHTREncoderDecoder
 
 import pandas as pd
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import numpy as np
+import learn2learn as l2l
+from torch.utils.data import Dataset
 from pytorch_lightning.callbacks import TQDMProgressBar
+
+
+# def gather_parameters(model: FullPageHTREncoderDecoder):
+#     """Obtains a list of parameters that should be updated during MetaHTR training."""
+#     parameters = []
+#     modules_to_gather = [nn.Conv2d, ...]
+#     modules = list(model.modules())
+#     for m in modules
+#         if any(isinstance(m, mod) for mod in modules_to_gather):
+#             # TODO
+#             ...
+#     return parameters
+#
+
+
+class LayerWiseLRTransform:
+    """
+    A modified version of the l2l.optim.ModuleTransform class, meant to facilitate
+    per-layer learning rates in the MAML framework.
+    """
+
+    def __call__(self, parameter):
+        # in combination with `GBML` class, `l2l.nn.Scale` will scale the gradient for
+        # each layer in a model with an adaptable learning rate.
+        transform = l2l.nn.Scale(shape=1)
+        numel = parameter.numel()
+        flat_shape = (1, numel)
+        return l2l.optim.ReshapedTransform(
+            transform=transform,
+            shape=flat_shape,
+        )
 
 
 def set_norm_layers_to_train(module: nn.Module):
@@ -175,6 +210,19 @@ class LabelEncoder:
     def check_is_fitted(self):
         if self.idx_to_cls is None or self.cls_to_idx is None:
             raise ValueError("Label encoder is not fitted yet.")
+
+
+class PtTaskDataset(Dataset):
+    def __init__(self, taskset: l2l.data.TaskDataset, epoch_length: int):
+        super().__init__()
+        self.taskset = taskset
+        self.epoch_length = epoch_length
+
+    def __getitem__(self, *args, **kwargs):
+        return self.taskset.sample()
+
+    def __len__(self):
+        return self.epoch_length
 
 
 class LitProgressBar(TQDMProgressBar):
