@@ -35,10 +35,13 @@ class LayerWiseLRTransform:
     per-layer learning rates in the MAML framework.
     """
 
+    def __init__(self, initial_lr: float = 0.0001):
+        self.initial_lr = initial_lr
+
     def __call__(self, parameter):
         # in combination with `GBML` class, `l2l.nn.Scale` will scale the gradient for
         # each layer in a model with an adaptable learning rate.
-        transform = l2l.nn.Scale(shape=1)
+        transform = l2l.nn.Scale(shape=1, alpha=self.initial_lr)
         numel = parameter.numel()
         flat_shape = (1, numel)
         return l2l.optim.ReshapedTransform(
