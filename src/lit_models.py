@@ -26,6 +26,7 @@ class MetaHTR(pl.LightningModule):
         ways: int = 8,
         shots: int = 16,
         outer_lr: float = 0.0001,
+        initial_inner_lr: float = 0.001,
         num_inner_steps: int = 1,
         num_workers: int = 0,
         prms_to_log: Optional[Dict[str, Union[str, float, int]]] = None,
@@ -45,7 +46,7 @@ class MetaHTR(pl.LightningModule):
 
         self.model = l2l.algorithms.GBML(
             model,
-            transform=LayerWiseLRTransform(),
+            transform=LayerWiseLRTransform(initial_inner_lr),
             lr=1.0,  # this lr is replaced by a learnable one
             adapt_transform=True,  # updates the inner loop learning rate(s)
             first_order=False,
@@ -56,6 +57,7 @@ class MetaHTR(pl.LightningModule):
             "ways",
             "shots",
             "outer_lr",
+            "initial_inner_lr",
             "num_inner_steps",
         )
         if prms_to_log is not None:
@@ -305,6 +307,7 @@ class MetaHTR(pl.LightningModule):
         parser.add_argument("--shots", type=int, default=16)
         parser.add_argument("--ways", type=int, default=8)
         parser.add_argument("--outer_lr", type=float, default=0.0001)
+        parser.add_argument("--initial_inner_lr", type=float, default=0.001)
         return parent_parser
 
 
