@@ -48,7 +48,7 @@ class MetaHTR(pl.LightningModule):
             model,
             transform=LayerWiseLRTransform(initial_inner_lr),
             lr=1.0,  # this lr is replaced by a learnable one
-            adapt_transform=True,  # updates the inner loop learning rate(s)
+            adapt_transform=False,
             first_order=False,
             allow_nograd=True,
         )
