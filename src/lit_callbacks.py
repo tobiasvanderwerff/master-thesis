@@ -205,3 +205,7 @@ class LogLayerWiseLearningRates(Callback):
         tensorboard = trainer.logger.experiment
         tensorboard.add_figure(f"Inner loop learning rates", fig, trainer.global_step)
         plt.close(fig)
+
+
+class LogInstanceSpecificWeights(Callback):
+    """Logs the average instance specific weights per ASCII character in a bar plot."""

@@ -75,6 +75,52 @@ class MetaHTR(pl.LightningModule):
         if prms_to_log is not None:
             self.save_hyperparameters(prms_to_log)
 
+    def calculate_instance_specific_weights(
+        self, learner: l2l.algorithms.GBML, loss_unreduced: Tensor
+    ) -> Tensor:
+        """
+        Calculates instance-specific weights, based on the per-instance gradient
+        w.r.t to the final classifcation layer.
+
+        Args:
+            learner (l2l.algorithms.GBML): learn2learn GBML learner
+            loss_unreduced (Tensor): tensor of shape (B*T,), where B = batch size and
+                T = maximum sequence length in the batch, containing the per-instance
+                loss, i.e. the loss for each decoding time step.
+
+        Returns:
+            Tensor of shape (B*T,), containing the instance specific weights
+        """
+        grad_inputs = []
+        start_time = time.time()
+
+        mean_loss_grad = grad(
+            torch.mean(loss_unreduced),
+            learner.module.decoder.clf.weight,
+            create_graph=True,
+            retain_graph=True,
+        )[0]
+        # It is not ideal to have to compute gradients like this in a loop - which
+        # loses the benefit of parallelization -, but unfortunately Pytorch does not
+        # provide any native functonality for calculating per-example gradients.
+        for instance_loss in loss_unreduced.view(-1):
+            instance_grad = grad(
+                instance_loss,
+                learner.module.decoder.clf.weight,
+                create_graph=True,
+                retain_graph=True,
+            )[0]
+            grad_inputs.append(
+                torch.cat([instance_grad.flatten(), mean_loss_grad.flatten()])
+            )
+        print(
+            f"Time (s) spent calculating per-example gradients: "
+            f"{time.time() - start_time:.2f}"
+        )
+        grad_inputs = torch.stack(grad_inputs, 0)
+        instance_weights = self.inst_w_mlp(grad_inputs)
+        return instance_weights
+
     def meta_learn(self, batch, mode="train") -> Tensor:
         outer_loss = 0.0
 
@@ -118,43 +164,12 @@ class MetaHTR(pl.LightningModule):
                 _, support_loss_unreduced = learner.module.forward_teacher_forcing(
                     support_imgs, support_tgts
                 )
-                mean_loss = torch.mean(support_loss_unreduced)
-                # TODO: see if gradient computation can be made more efficient by
-                #  re-using calculated gradients in a smart way.
                 # mean_loss.backward(inputs=learner.module.decoder.clf.weight)
                 # autograd_hack.compute_grad1(learner, loss_type="mean")
 
-                mean_loss_grad = grad(
-                    mean_loss,
-                    learner.module.decoder.clf.weight,
-                    create_graph=True,
-                    retain_graph=True,
-                )[0]
-                grad_inputs = []
-                # It is not ideal to have to compute gradients like this in a
-                # loop - which loses the benefit of parallelization -,
-                # but unfortunately Pytorch does not provide any native
-                # functonality for calculating per-example gradients.
-                start_time = time.time()
-                for instance_loss in support_loss_unreduced.view(-1):
-                    instance_grad = grad(
-                        instance_loss,
-                        learner.module.decoder.clf.weight,
-                        create_graph=True,
-                        retain_graph=True,
-                    )[0]
-                    grad_inputs.append(
-                        torch.cat([instance_grad.flatten(), mean_loss_grad.flatten()])
-                        # instance_grad.flatten()
-                    )
-                print(
-                    f"Time (s) spent calculating per-example gradients: "
-                    f"{time.time() - start_time:.2f}"
+                instance_weights = self.calculate_instance_specific_weights(
+                    learner, support_loss_unreduced
                 )
-                assert len(grad_inputs) == support_loss_unreduced.numel()
-                grad_inputs = torch.stack(grad_inputs, 0)
-                instance_weights = self.inst_w_mlp(grad_inputs)
-
                 support_loss = torch.mean(
                     support_loss_unreduced.view(-1) * instance_weights
                 )
@@ -240,17 +255,20 @@ class MetaHTR(pl.LightningModule):
         # set_norm_layers_to_train(learner)
         # learner.train()
 
-        # Adapt the model.
         # For some reason using an autograd context manager like torch.enable_grad()
         # here does not work, perhaps due to some unexpected interaction between
         # Pytorch Lightning and the learn2learn lib. Therefore gradient
         # calculation should be set beforehand, outside of the current function.
-        _, adaptation_loss = learner.module.forward_teacher_forcing(
+        _, adaptation_loss_unreduced = learner.module.forward_teacher_forcing(
             adaptation_imgs, adaptation_targets
         )
-        # TODO: use instance-specific weights here?
-        # Loss is not reduced yet and is now of shape (B, T); take the mean here.
-        adaptation_loss = torch.mean(adaptation_loss)
+        instance_weights = self.calculate_instance_specific_weights(
+            learner, adaptation_loss_unreduced
+        )
+        adaptation_loss = torch.mean(
+            adaptation_loss_unreduced.view(-1) * instance_weights
+        )
+        # Adapt the model.
         learner.adapt(adaptation_loss)
 
         # Run inference on the adapted model.

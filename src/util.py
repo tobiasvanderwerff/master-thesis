@@ -16,19 +16,6 @@ from torch.utils.data import Dataset
 from pytorch_lightning.callbacks import TQDMProgressBar
 
 
-# def gather_parameters(model: FullPageHTREncoderDecoder):
-#     """Obtains a list of parameters that should be updated during MetaHTR training."""
-#     parameters = []
-#     modules_to_gather = [nn.Conv2d, ...]
-#     modules = list(model.modules())
-#     for m in modules
-#         if any(isinstance(m, mod) for mod in modules_to_gather):
-#             # TODO
-#             ...
-#     return parameters
-#
-
-
 class LayerWiseLRTransform:
     """
     A modified version of the l2l.optim.ModuleTransform class, meant to facilitate
