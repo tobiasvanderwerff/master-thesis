@@ -4,7 +4,6 @@ from pathlib import Path
 
 from models import FullPageHTREncoderDecoder
 from util import identity_collate_fn, LabelEncoder, LayerWiseLRTransform
-import autograd_hack
 
 import torch
 import torch.optim as optim
