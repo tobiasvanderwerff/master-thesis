@@ -60,7 +60,9 @@ class MetaHTR(pl.LightningModule):
             nn.Linear(
                 model.decoder.clf.in_features * model.decoder.clf.out_features * 2, 256
             ),
+            nn.ReLU(),
             nn.Linear(256, 256),
+            nn.ReLU(),
             nn.Linear(256, 1),
         )
 
