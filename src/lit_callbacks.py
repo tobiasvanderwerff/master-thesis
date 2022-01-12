@@ -180,6 +180,8 @@ class LogModelPredictionsMAML(Callback):
 
 
 class LogLayerWiseLearningRates(Callback):
+    """Logs the learnable layer wise learning rates in a bar plot."""
+
     def on_train_epoch_end(
         self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
     ):

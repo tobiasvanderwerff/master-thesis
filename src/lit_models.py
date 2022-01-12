@@ -1,21 +1,26 @@
+import time
 from typing import Optional, Dict, Union, Tuple, Any
 from pathlib import Path
 
 from models import FullPageHTREncoderDecoder
 from util import identity_collate_fn, LabelEncoder, LayerWiseLRTransform
+import autograd_hack
 
 import torch
 import torch.optim as optim
+import torch.nn as nn
 import pytorch_lightning as pl
 import numpy as np
+import learn2learn as l2l
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
-
-import learn2learn as l2l
+from torch.autograd import grad
 
 
 class MetaHTR(pl.LightningModule):
     model: l2l.algorithms.GBML
+
+    _meta_weights = ["model.compute_update", "inst_w_mlp"]
 
     def __init__(
         self,
@@ -48,9 +53,16 @@ class MetaHTR(pl.LightningModule):
             model,
             transform=LayerWiseLRTransform(initial_inner_lr),
             lr=1.0,  # this lr is replaced by a learnable one
-            adapt_transform=False,
             first_order=False,
             allow_nograd=True,
+        )
+        self.inst_w_mlp = nn.Sequential(  # instance-specific weight MLP
+            # TODO: how big to make the dense layers?
+            nn.Linear(
+                model.decoder.clf.in_features * model.decoder.clf.out_features * 2, 256
+            ),
+            nn.Linear(256, 256),
+            nn.Linear(256, 1),
         )
 
         self.save_hyperparameters(
@@ -101,17 +113,51 @@ class MetaHTR(pl.LightningModule):
             # learner.train()
 
             # Inner loop.
+            # autograd_hack.add_hooks(learner)
             for _ in range(self.num_inner_steps):
-                _, support_loss = learner.module.forward_teacher_forcing(
+                _, support_loss_unreduced = learner.module.forward_teacher_forcing(
                     support_imgs, support_tgts
                 )
+                mean_loss = torch.mean(support_loss_unreduced)
+                # TODO: see if gradient computation can be made more efficient by
+                #  re-using calculated gradients in a smart way.
+                # mean_loss.backward(inputs=learner.module.decoder.clf.weight)
+                # autograd_hack.compute_grad1(learner, loss_type="mean")
 
-                # buf = dict(learner.module.named_buffers())
-                # running_mean = buf["encoder.encoder.1.running_mean"]
-                # running_var = buf["encoder.encoder.1.running_var"]
-                # print(running_mean.mean().item(), running_var.mean().item(),
-                #       buf["encoder.encoder.1.num_batches_tracked"])
-                # print(f"{mode.capitalize()} - Inner loss: {support_loss}")
+                mean_loss_grad = grad(
+                    mean_loss,
+                    learner.module.decoder.clf.weight,
+                    create_graph=True,
+                    retain_graph=True,
+                )[0]
+                grad_inputs = []
+                # It is not ideal to have to compute gradients like this in a
+                # loop - which loses the benefit of parallelization -,
+                # but unfortunately Pytorch does not provide any native
+                # functonality for calculating per-example gradients.
+                start_time = time.time()
+                for instance_loss in support_loss_unreduced.view(-1):
+                    instance_grad = grad(
+                        instance_loss,
+                        learner.module.decoder.clf.weight,
+                        create_graph=True,
+                        retain_graph=True,
+                    )[0]
+                    grad_inputs.append(
+                        torch.cat([instance_grad.flatten(), mean_loss_grad.flatten()])
+                        # instance_grad.flatten()
+                    )
+                print(
+                    f"Time (s) spent calculating per-example gradients: "
+                    f"{time.time() - start_time:.2f}"
+                )
+                assert len(grad_inputs) == support_loss_unreduced.numel()
+                grad_inputs = torch.stack(grad_inputs, 0)
+                instance_weights = self.inst_w_mlp(grad_inputs)
+
+                support_loss = torch.mean(
+                    support_loss_unreduced.view(-1) * instance_weights
+                )
 
                 # Calculate gradients and take an optimization step.
                 learner.adapt(support_loss)
@@ -134,9 +180,11 @@ class MetaHTR(pl.LightningModule):
                 _, query_loss = learner.module.forward_teacher_forcing(
                     query_imgs, query_tgts
                 )
+                query_loss = torch.mean(query_loss)
             else:  # val/test
                 with torch.inference_mode():
                     _, preds, query_loss = learner(query_imgs, query_tgts)
+                    query_loss = torch.mean(query_loss)
 
                 # Log metrics.
                 metrics = learner.module.calculate_metrics(preds, query_tgts)
@@ -200,6 +248,9 @@ class MetaHTR(pl.LightningModule):
         _, adaptation_loss = learner.module.forward_teacher_forcing(
             adaptation_imgs, adaptation_targets
         )
+        # TODO: use instance-specific weights here?
+        # Loss is not reduced yet and is now of shape (B, T); take the mean here.
+        adaptation_loss = torch.mean(adaptation_loss)
         learner.adapt(adaptation_loss)
 
         # Run inference on the adapted model.
@@ -273,7 +324,7 @@ class MetaHTR(pl.LightningModule):
         load_meta_weights: bool = False,
         fphtr_params_to_log: Optional[Dict[str, Any]] = None,
         *args,
-        **kwargs
+        **kwargs,
     ):
         # Load FPHTR model.
         fphtr = LitFullPageHTREncoderDecoder.load_from_checkpoint(
@@ -285,18 +336,18 @@ class MetaHTR(pl.LightningModule):
             strict=False,
             label_encoder=label_encoder,
             params_to_log=fphtr_params_to_log,
+            loss_reduction="none",  # necessary for instance-specific loss weights
         )
 
         model = MetaHTR(fphtr.model, *args, **kwargs)
 
         if load_meta_weights:
             # Load weights specific to the meta-learning algorithm.
-            _meta_weights = ["model.compute_update"]
             ckpt = torch.load(
                 checkpoint_path, map_location=lambda storage, loc: storage
             )
             for n, p in ckpt["state_dict"].items():
-                if any(n.startswith(wn) for wn in _meta_weights):
+                if any(n.startswith(wn) for wn in MetaHTR._meta_weights):
                     with torch.no_grad():
                         model.state_dict()[n] = p
         return model
@@ -335,6 +386,7 @@ class LitFullPageHTREncoderDecoder(pl.LightningModule):
         drop_enc: int = 0.5,
         drop_dec: int = 0.5,
         activ_dec: str = "gelu",
+        loss_reduction: str = "mean",
         vocab_len: Optional[int] = None,  # if not specified len(label_encoder) is used
         params_to_log: Optional[Dict[str, Union[str, float, int]]] = None,
     ):
@@ -370,6 +422,7 @@ class LitFullPageHTREncoderDecoder(pl.LightningModule):
             drop_dec=drop_dec,
             activ_dec=activ_dec,
             vocab_len=vocab_len,
+            loss_reduction=loss_reduction,
         )
 
         self.all_logits = None
