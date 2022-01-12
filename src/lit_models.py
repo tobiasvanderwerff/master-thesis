@@ -26,6 +26,7 @@ class MetaHTR(pl.LightningModule):
         taskset_train: Union[l2l.data.TaskDataset, Dataset],
         taskset_val: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
         taskset_test: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
+        inst_mlp_hidden_size: int = 8,
         ways: int = 8,
         shots: int = 16,
         outer_lr: float = 0.0001,
@@ -55,15 +56,14 @@ class MetaHTR(pl.LightningModule):
             allow_nograd=True,
         )
         self.inst_w_mlp = nn.Sequential(  # instance-specific weight MLP
-            # TODO: how big to make the dense layers?
             nn.Linear(
                 model.decoder.clf.in_features * model.decoder.clf.out_features * 2,
-                256,
+                inst_mlp_hidden_size,
             ),
             nn.ReLU(),
-            nn.Linear(256, 256),
+            nn.Linear(inst_mlp_hidden_size, inst_mlp_hidden_size),
             nn.ReLU(),
-            nn.Linear(256, 1),
+            nn.Linear(inst_mlp_hidden_size, 1),
         )
 
         self.save_hyperparameters(
