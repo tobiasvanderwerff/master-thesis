@@ -1,4 +1,3 @@
-import time
 from typing import Optional, Dict, Union, Tuple, Any
 from pathlib import Path
 
@@ -58,7 +57,8 @@ class MetaHTR(pl.LightningModule):
         self.inst_w_mlp = nn.Sequential(  # instance-specific weight MLP
             # TODO: how big to make the dense layers?
             nn.Linear(
-                model.decoder.clf.in_features * model.decoder.clf.out_features * 2, 256
+                model.decoder.clf.in_features * model.decoder.clf.out_features * 2,
+                256,
             ),
             nn.ReLU(),
             nn.Linear(256, 256),
@@ -181,7 +181,6 @@ class MetaHTR(pl.LightningModule):
             Tensor of shape (B*T,), containing the instance specific weights
         """
         grad_inputs = []
-        start_time = time.time()
 
         mean_loss_grad = grad(
             torch.mean(loss_unreduced),
@@ -202,10 +201,6 @@ class MetaHTR(pl.LightningModule):
             grad_inputs.append(
                 torch.cat([instance_grad.flatten(), mean_loss_grad.flatten()])
             )
-        print(
-            f"Time (s) spent calculating per-example gradients: "
-            f"{time.time() - start_time:.2f}"
-        )
         grad_inputs = torch.stack(grad_inputs, 0).detach()
         instance_weights = self.inst_w_mlp(grad_inputs)
         return instance_weights
