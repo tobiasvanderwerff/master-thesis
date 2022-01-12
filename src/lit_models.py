@@ -74,52 +74,6 @@ class MetaHTR(pl.LightningModule):
         if prms_to_log is not None:
             self.save_hyperparameters(prms_to_log)
 
-    def calculate_instance_specific_weights(
-        self, learner: l2l.algorithms.GBML, loss_unreduced: Tensor
-    ) -> Tensor:
-        """
-        Calculates instance-specific weights, based on the per-instance gradient
-        w.r.t to the final classifcation layer.
-
-        Args:
-            learner (l2l.algorithms.GBML): learn2learn GBML learner
-            loss_unreduced (Tensor): tensor of shape (B*T,), where B = batch size and
-                T = maximum sequence length in the batch, containing the per-instance
-                loss, i.e. the loss for each decoding time step.
-
-        Returns:
-            Tensor of shape (B*T,), containing the instance specific weights
-        """
-        grad_inputs = []
-        start_time = time.time()
-
-        mean_loss_grad = grad(
-            torch.mean(loss_unreduced),
-            learner.module.decoder.clf.weight,
-            create_graph=True,
-            retain_graph=True,
-        )[0]
-        # It is not ideal to have to compute gradients like this in a loop - which
-        # loses the benefit of parallelization -, but unfortunately Pytorch does not
-        # provide any native functonality for calculating per-example gradients.
-        for instance_loss in loss_unreduced.view(-1):
-            instance_grad = grad(
-                instance_loss,
-                learner.module.decoder.clf.weight,
-                create_graph=True,
-                retain_graph=True,
-            )[0]
-            grad_inputs.append(
-                torch.cat([instance_grad.flatten(), mean_loss_grad.flatten()])
-            )
-        print(
-            f"Time (s) spent calculating per-example gradients: "
-            f"{time.time() - start_time:.2f}"
-        )
-        grad_inputs = torch.stack(grad_inputs, 0)
-        instance_weights = self.inst_w_mlp(grad_inputs)
-        return instance_weights
-
     def meta_learn(self, batch, mode="train") -> Tensor:
         outer_loss = 0.0
 
@@ -207,6 +161,52 @@ class MetaHTR(pl.LightningModule):
             outer_loss += (1 / self.ways) * query_loss
 
         return outer_loss
+
+    def calculate_instance_specific_weights(
+        self, learner: l2l.algorithms.GBML, loss_unreduced: Tensor
+    ) -> Tensor:
+        """
+        Calculates instance-specific weights, based on the per-instance gradient
+        w.r.t to the final classifcation layer.
+
+        Args:
+            learner (l2l.algorithms.GBML): learn2learn GBML learner
+            loss_unreduced (Tensor): tensor of shape (B*T,), where B = batch size and
+                T = maximum sequence length in the batch, containing the per-instance
+                loss, i.e. the loss for each decoding time step.
+
+        Returns:
+            Tensor of shape (B*T,), containing the instance specific weights
+        """
+        grad_inputs = []
+        start_time = time.time()
+
+        mean_loss_grad = grad(
+            torch.mean(loss_unreduced),
+            learner.module.decoder.clf.weight,
+            create_graph=True,
+            retain_graph=True,
+        )[0]
+        # It is not ideal to have to compute gradients like this in a loop - which
+        # loses the benefit of parallelization -, but unfortunately Pytorch does not
+        # provide any native functonality for calculating per-example gradients.
+        for instance_loss in loss_unreduced.view(-1):
+            instance_grad = grad(
+                instance_loss,
+                learner.module.decoder.clf.weight,
+                create_graph=True,
+                retain_graph=True,
+            )[0]
+            grad_inputs.append(
+                torch.cat([instance_grad.flatten(), mean_loss_grad.flatten()])
+            )
+        print(
+            f"Time (s) spent calculating per-example gradients: "
+            f"{time.time() - start_time:.2f}"
+        )
+        grad_inputs = torch.stack(grad_inputs, 0).detach()
+        instance_weights = self.inst_w_mlp(grad_inputs)
+        return instance_weights
 
     @property
     def encoder(self):
