@@ -87,6 +87,14 @@ def main(args):
         print("Loading cached meta-datasets.")
         ds_meta_train = pickle_load(ds_meta_train_path)
         ds_meta_val = pickle_load(ds_meta_val_path)
+        # Set image transforms.
+        if args.use_aachen_splits:
+            ds_meta_train.dataset.set_transforms_for_split("train")
+            ds_meta_val.dataset.set_transforms_for_split("val")
+            # ds_test.set_transforms_for_split("test")
+        else:
+            ds_meta_train.dataset.dataset.set_transforms_for_split("train")
+            ds_meta_val.dataset.dataset.set_transforms_for_split("val")
     else:  # initialize a new dataset
         print("Initializing dataset...")
         ds = IAMDataset(
