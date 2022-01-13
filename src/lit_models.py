@@ -60,9 +60,9 @@ class MetaHTR(pl.LightningModule):
                 model.decoder.clf.in_features * model.decoder.clf.out_features * 2,
                 inst_mlp_hidden_size,
             ),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Linear(inst_mlp_hidden_size, inst_mlp_hidden_size),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Linear(inst_mlp_hidden_size, 1),
         )
 
