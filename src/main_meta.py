@@ -141,13 +141,13 @@ def main(args):
         ds_val.data = filter_df_by_freq(ds_val.data, "writer_id", args.shots * 2)
         # ds_test.data = filter_df_by_freq(ds_test.data, "writer_id", args.shots * 2)
 
-        # Set image transforms.
+        # Set image transforms. NOTE: no image augmentations used during meta-learning.
         if args.use_aachen_splits:
-            ds_train.set_transforms_for_split("train")
+            ds_train.set_transforms_for_split("val")
             ds_val.set_transforms_for_split("val")
             # ds_test.set_transforms_for_split("test")
         else:
-            ds_train.dataset.set_transforms_for_split("train")
+            ds_train.dataset.set_transforms_for_split("val")
             ds_val.dataset.set_transforms_for_split("val")
 
         assert (ds_train.data["writer_id"].value_counts() >= args.shots * 2).all()
