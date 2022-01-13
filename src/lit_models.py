@@ -31,13 +31,28 @@ class MetaHTR(pl.LightningModule):
         shots: int = 16,
         outer_lr: float = 0.0001,
         initial_inner_lr: float = 0.001,
+        use_cosine_lr_scheduler: bool = False,
         num_inner_steps: int = 1,
         num_workers: int = 0,
+        num_epochs: Optional[int] = None,
         prms_to_log: Optional[Dict[str, Union[str, float, int]]] = None,
     ):
+        """Docstring here. TODO.
+
+        Args:
+            ...
+            use_cosine_lr_scheduler (bool): whether to use a cosine annealing
+                scheduler to decay the learning rate from its initial value.
+            num_epochs (Optional[int]): number of epochs the model will be trained.
+                This is only used if `use_cosine_lr_scheduler` is set to True.
+        """
         super().__init__()
 
         assert num_inner_steps >= 1
+        assert not (use_cosine_lr_scheduler and num_epochs is None), (
+            "When using cosine learning rate scheduler, specify `num_epochs` to "
+            "configure the learning rate decay properly."
+        )
 
         self.taskset_train = taskset_train
         self.taskset_val = taskset_val
@@ -45,8 +60,10 @@ class MetaHTR(pl.LightningModule):
         self.ways = ways
         self.shots = shots
         self.outer_lr = outer_lr
+        self.use_cosine_lr_schedule = use_cosine_lr_scheduler
         self.num_inner_steps = num_inner_steps
         self.num_workers = num_workers
+        self.num_epochs = num_epochs
 
         self.model = l2l.algorithms.GBML(
             model,
@@ -313,17 +330,17 @@ class MetaHTR(pl.LightningModule):
             )
 
     def configure_optimizers(self):
-        scheduler_step = 20
-        scheduler_decay = 1.0
-
         optimizer = optim.AdamW(self.parameters(), lr=self.outer_lr)
-        lr_scheduler = optim.lr_scheduler.StepLR(
-            optimizer,
-            step_size=scheduler_step,
-            gamma=scheduler_decay,
-        )
-        return [optimizer], [lr_scheduler]
-        # return optimizer
+        if self.use_cosine_lr_schedule:
+            num_epochs = self.num_epochs or 20
+            lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=len(self.train_dataloader()) * num_epochs,
+                eta_min=1e-05,  # final learning rate
+                verbose=True,
+            )
+            return [optimizer], [lr_scheduler]
+        return optimizer
 
     def freeze_all_layers_except_classifier(self):
         for n, p in self.named_parameters():
@@ -373,6 +390,12 @@ class MetaHTR(pl.LightningModule):
         parser.add_argument("--ways", type=int, default=8)
         parser.add_argument("--outer_lr", type=float, default=0.0001)
         parser.add_argument("--initial_inner_lr", type=float, default=0.001)
+        parser.add_argument(
+            "--use_cosine_lr_scheduler",
+            action="store_true",
+            default=False,
+            help="Use a cosine annealing scheduler to " "decay the learning rate.",
+        )
         return parent_parser
 
 

@@ -226,6 +226,8 @@ def main(args):
         shots=args.shots,
         outer_lr=args.outer_lr,
         num_workers=args.num_workers,
+        use_cosine_lr_scheduler=args.use_cosine_lr_scheduler,
+        num_epochs=args.max_epochs,  # note this can be wrong when using early stopping
         prms_to_log={
             "seed": args.seed,
             "splits": ("Aachen" if args.use_aachen_splits else "random"),
