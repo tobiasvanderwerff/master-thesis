@@ -235,6 +235,7 @@ def main(args):
             "model_path": args.trained_model_path,
             "gradient_clip_val": args.gradient_clip_val,
             "early_stopping_patience": args.early_stopping_patience,
+            "use_cosine_lr_scheduler": args.use_cosine_lr_scheduler,
         },
     )
     # learner.freeze_all_layers_except_classifier()
