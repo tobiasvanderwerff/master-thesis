@@ -81,6 +81,7 @@ def main(args):
     )
     hparams = load_hparams_from_yaml(str(hparams_file))
     only_lowercase = hparams["only_lowercase"]
+    augmentations = "train" if args.use_image_augmentations else "val"
 
     # Check for cached dataset. If it does not exist, init a new dataset.
     if ds_meta_train_path.is_file() and ds_meta_train_path.is_file():
@@ -89,11 +90,11 @@ def main(args):
         ds_meta_val = pickle_load(ds_meta_val_path)
         # Set image transforms.
         if args.use_aachen_splits:
-            ds_meta_train.dataset.set_transforms_for_split("train")
+            ds_meta_train.dataset.set_transforms_for_split(augmentations)
             ds_meta_val.dataset.set_transforms_for_split("val")
             # ds_test.set_transforms_for_split("test")
         else:
-            ds_meta_train.dataset.dataset.set_transforms_for_split("train")
+            ds_meta_train.dataset.dataset.set_transforms_for_split(augmentations)
             ds_meta_val.dataset.dataset.set_transforms_for_split("val")
     else:  # initialize a new dataset
         print("Initializing dataset...")
@@ -236,6 +237,7 @@ def main(args):
             "gradient_clip_val": args.gradient_clip_val,
             "early_stopping_patience": args.early_stopping_patience,
             "use_cosine_lr_scheduler": args.use_cosine_lr_scheduler,
+            "use_image_augmentations": args.use_image_augmentations,
         },
     )
     # learner.freeze_all_layers_except_classifier()
@@ -326,6 +328,9 @@ if __name__ == "__main__":
                              "training will be stopped. Setting this to -1 will disable "
                              "early stopping.")
     parser.add_argument("--use_aachen_splits", action="store_true", default=False)
+    parser.add_argument("--use_image_augmentations", action="store_true", default=False,
+                        help="Whether to use image augmentations during training. For "
+                             "MAML this does not seem to be too beneficial so far.")
     parser.add_argument("--save_all_checkpoints", action="store_true", default=False)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--use_cpu", action="store_true", default=False)
