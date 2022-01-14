@@ -95,6 +95,7 @@ class MetaHTR(pl.LightningModule):
 
     def meta_learn(self, batch, mode="train") -> Tensor:
         outer_loss = 0.0
+        inner_losses = []
 
         imgs, target, writer_ids = batch
         writer_ids_uniq = writer_ids.unique().tolist()
@@ -149,6 +150,8 @@ class MetaHTR(pl.LightningModule):
                 # Calculate gradients and take an optimization step.
                 learner.adapt(support_loss)
 
+                inner_losses.append(support_loss.item())
+
             # Outer loop.
             # To me it is not fully clear whether to set the model to eval() for
             # the outer loop. The primary change is in the deactivation of dropout
@@ -178,6 +181,8 @@ class MetaHTR(pl.LightningModule):
                 for metric, val in metrics.items():
                     self.log(metric, val, prog_bar=True)
             outer_loss += (1 / self.ways) * query_loss
+        inner_loss_avg = np.mean(inner_losses)
+        self.log(f"{mode}_loss_inner", inner_loss_avg, sync_dist=True, prog_bar=False)
 
         return outer_loss
 
@@ -232,7 +237,7 @@ class MetaHTR(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss = self.meta_learn(batch, mode="train")
-        self.log("train_loss", loss, sync_dist=True, prog_bar=False)
+        self.log("train_loss_outer", loss, sync_dist=True, prog_bar=False)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -241,7 +246,7 @@ class MetaHTR(pl.LightningModule):
         torch.set_grad_enabled(True)
         loss = self.meta_learn(batch, mode="val")
         torch.set_grad_enabled(False)
-        self.log("val_loss", loss, sync_dist=True, prog_bar=True)
+        self.log("val_loss_outer", loss, sync_dist=True, prog_bar=True)
         return loss
 
     def forward(
