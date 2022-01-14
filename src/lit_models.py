@@ -81,6 +81,7 @@ class MetaHTR(pl.LightningModule):
             nn.Linear(inst_mlp_hidden_size, inst_mlp_hidden_size),
             nn.ReLU(inplace=True),
             nn.Linear(inst_mlp_hidden_size, 1),
+            nn.Sigmoid(),
         )
 
         self.save_hyperparameters(
