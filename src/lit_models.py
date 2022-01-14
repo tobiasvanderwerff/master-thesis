@@ -144,7 +144,7 @@ class MetaHTR(pl.LightningModule):
                 instance_weights = self.calculate_instance_specific_weights(
                     learner, support_loss_unreduced
                 )
-                support_loss = torch.mean(
+                support_loss = torch.sum(
                     support_loss_unreduced.view(-1) * instance_weights
                 )
 
