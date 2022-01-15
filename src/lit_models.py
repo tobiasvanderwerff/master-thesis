@@ -342,7 +342,7 @@ class MetaHTR(pl.LightningModule):
             lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
                 T_max=len(self.train_dataloader()) * num_epochs,
-                eta_min=1e-05,  # final learning rate
+                eta_min=1e-06,  # final learning rate
                 verbose=True,
             )
             return [optimizer], [lr_scheduler]
