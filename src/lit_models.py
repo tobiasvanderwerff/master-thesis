@@ -1,5 +1,6 @@
 from typing import Optional, Dict, Union, Tuple, Any
 from pathlib import Path
+from collections import defaultdict
 
 from models import FullPageHTREncoderDecoder
 from util import identity_collate_fn, LabelEncoder, LayerWiseLRTransform
@@ -64,6 +65,7 @@ class MetaHTR(pl.LightningModule):
         self.num_inner_steps = num_inner_steps
         self.num_workers = num_workers
         self.num_epochs = num_epochs
+        self.char_to_avg_inst_weight = None
 
         self.model = l2l.algorithms.GBML(
             model,
@@ -94,9 +96,11 @@ class MetaHTR(pl.LightningModule):
         if prms_to_log is not None:
             self.save_hyperparameters(prms_to_log)
 
-    def meta_learn(self, batch, mode="train") -> Tensor:
+    def meta_learn(self, batch, mode="train") -> Tuple[Tensor, Dict[int, float]]:
         outer_loss = 0.0
+        tgt_cnt = 0
         inner_losses = []
+        char_to_inst_weights = defaultdict(list)
 
         imgs, target, writer_ids = batch
         writer_ids_uniq = writer_ids.unique().tolist()
@@ -152,13 +156,17 @@ class MetaHTR(pl.LightningModule):
                 learner.adapt(support_loss)
 
                 inner_losses.append(support_loss.item())
+                pad_tkn_idx = self.decoder.pad_tkn_idx
+                # Store the instance-specific weights for logging.
+                writer_targets = support_tgts[task]
+                for i, tgt in enumerate(writer_targets):
+                    tgt = tgt.item()
+                    if tgt != pad_tkn_idx:
+                        w = instance_weights[tgt_cnt].item()  # TODO check if it matches
+                        char_to_inst_weights[tgt].append(w)
+                        tgt_cnt += 1
 
             # Outer loop.
-            # To me it is not fully clear whether to set the model to eval() for
-            # the outer loop. The primary change is in the deactivation of dropout
-            # layers and the usage of running activation statistics for
-            # normalization instead of per-batch statistics.
-            #
             # It seems logical that the outer loop activations are not recorded as
             # part of the running statistics for norm layers (since the adapted
             # parameters are not the same parameters obtained after doing a
@@ -185,7 +193,7 @@ class MetaHTR(pl.LightningModule):
         inner_loss_avg = np.mean(inner_losses)
         self.log(f"{mode}_loss_inner", inner_loss_avg, sync_dist=True, prog_bar=False)
 
-        return outer_loss
+        return outer_loss, char_to_inst_weights
 
     def calculate_instance_specific_weights(
         self, learner: l2l.algorithms.GBML, loss_unreduced: Tensor
@@ -237,15 +245,26 @@ class MetaHTR(pl.LightningModule):
         return self.model.module.decoder
 
     def training_step(self, batch, batch_idx):
-        loss = self.meta_learn(batch, mode="train")
+        loss, inst_ws = self.meta_learn(batch, mode="train")
         self.log("train_loss_outer", loss, sync_dist=True, prog_bar=False)
-        return loss
+        return {"loss": loss, "instance_weights": inst_ws}
+
+    def training_epoch_end(self, training_epoch_outputs):
+        # TODO: also do this for val?
+        char_to_weights, char_to_avg_weight = defaultdict(list), defaultdict(float)
+        for dct in training_epoch_outputs:
+            char_to_ws = dct["instance_weights"]
+            for c_idx, ws in char_to_ws.items():
+                char_to_weights[c_idx].extend(ws)
+        for c_idx, ws in char_to_weights.items():
+            char_to_avg_weight[c_idx] = np.mean(ws)
+        self.char_to_avg_inst_weight = char_to_avg_weight
 
     def validation_step(self, batch, batch_idx):
         # Validation requires finetuning a model in the inner loop, hence we need to
         # enable gradients.
         torch.set_grad_enabled(True)
-        loss = self.meta_learn(batch, mode="val")
+        loss, _ = self.meta_learn(batch, mode="val")
         torch.set_grad_enabled(False)
         self.log("val_loss_outer", loss, sync_dist=True, prog_bar=True)
         return loss

@@ -209,3 +209,28 @@ class LogLayerWiseLearningRates(Callback):
 
 class LogInstanceSpecificWeights(Callback):
     """Logs the average instance specific weights per ASCII character in a bar plot."""
+
+    def __init__(self, label_encoder: LabelEncoder):
+        self.label_encoder = label_encoder
+
+    def on_train_epoch_end(
+        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
+    ):
+        char_to_avg_weight = pl_module.char_to_avg_inst_weight
+        assert char_to_avg_weight is not None
+        chars, ws = zip(*char_to_avg_weight.items())
+        chars = self.label_encoder.inverse_transform(chars)
+
+        # Plot the average instance-specific weight per character.
+        fig = plt.figure()
+        plt.bar(chars, ws, align="edge", alpha=0.5)
+        plt.grid(True)
+        plt.xlabel("char")
+        plt.ylabel("instance weight")
+
+        # Log to Tensorboard.
+        tensorboard = trainer.logger.experiment
+        tensorboard.add_figure(
+            f"Average instance-specific weights", fig, trainer.global_step
+        )
+        plt.close(fig)

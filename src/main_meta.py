@@ -8,7 +8,11 @@ from models import *
 from lit_models import MetaHTR
 from data import IAMDataset
 from lit_util import MAMLCheckpointIO, LitProgressBar
-from lit_callbacks import LogModelPredictionsMAML, LogLayerWiseLearningRates
+from lit_callbacks import (
+    LogModelPredictionsMAML,
+    LogLayerWiseLearningRates,
+    LogInstanceSpecificWeights,
+)
 from util import (
     filter_df_by_freq,
     pickle_load,
@@ -282,6 +286,7 @@ def main(args):
             predict_on_train_start=True,
         ),
         LogLayerWiseLearningRates(),
+        LogInstanceSpecificWeights(ds_train.label_enc),
     ]
     if args.early_stopping_patience != -1:
         callbacks.append(
