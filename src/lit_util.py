@@ -1,5 +1,7 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from collections import OrderedDict
+
+from lit_models import MetaHTR
 
 from pytorch_lightning.callbacks import TQDMProgressBar
 from pytorch_lightning.plugins import TorchCheckpointIO
@@ -14,7 +16,7 @@ class LitProgressBar(TQDMProgressBar):
         return items
 
 
-class MAMLCheckpointIO(TorchCheckpointIO):
+class MetaHTRCheckpointIO(TorchCheckpointIO):
     def save_checkpoint(
         self,
         checkpoint: Dict[str, Any],
@@ -37,7 +39,8 @@ class MAMLCheckpointIO(TorchCheckpointIO):
             k, p = state_dict.popitem()
             cmps = k.split(".")
             if k.startswith("model.module."):
-                k = "model." + ".".join(cmps[2:])
+                if not any(k.startswith(n) for n in MetaHTR.meta_weights):
+                    k = "model." + ".".join(cmps[2:])
             new_dict[k] = p
         assert len(new_dict) != 0, "State dict saved for checkpoint is empty."
         checkpoint["state_dict"] = new_dict

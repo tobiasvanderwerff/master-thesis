@@ -1,6 +1,6 @@
 import math
 import re
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict
 
 from util import matplotlib_imshow, LabelEncoder
 
@@ -203,7 +203,7 @@ class LogLayerWiseLearningRates(Callback):
 
         # Log to Tensorboard.
         tensorboard = trainer.logger.experiment
-        tensorboard.add_figure(f"Inner loop learning rates", fig, trainer.global_step)
+        tensorboard.add_figure(f"inner loop learning rates", fig, trainer.global_step)
         plt.close(fig)
 
 
@@ -213,11 +213,29 @@ class LogInstanceSpecificWeights(Callback):
     def __init__(self, label_encoder: LabelEncoder):
         self.label_encoder = label_encoder
 
-    def on_train_epoch_end(
-        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
-    ):
+    def on_train_epoch_start(self, trainer, pl_module):
+        pl_module.char_to_avg_inst_weight = None
+
+    def on_validation_epoch_start(self, trainer, pl_module):
+        pl_module.char_to_avg_inst_weight = None
+
+    def on_train_epoch_end(self, trainer, pl_module):
         char_to_avg_weight = pl_module.char_to_avg_inst_weight
         assert char_to_avg_weight is not None
+        self.log_instance_weights(trainer, char_to_avg_weight, "train")
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        char_to_avg_weight = pl_module.char_to_avg_inst_weight
+        assert char_to_avg_weight is not None
+        self.log_instance_weights(trainer, char_to_avg_weight, "val")
+
+    def log_instance_weights(
+        self,
+        trainer: "pl.Trainer",
+        char_to_avg_weight: Dict[int, float],
+        mode: str = "train",
+    ):
+        # Decode the characters.
         chars, ws = zip(*char_to_avg_weight.items())
         chars = self.label_encoder.inverse_transform(chars)
 
@@ -231,6 +249,6 @@ class LogInstanceSpecificWeights(Callback):
         # Log to Tensorboard.
         tensorboard = trainer.logger.experiment
         tensorboard.add_figure(
-            f"Average instance-specific weights", fig, trainer.global_step
+            f"{mode}: average instance-specific weights", fig, trainer.global_step
         )
         plt.close(fig)

@@ -7,7 +7,7 @@ from functools import partial
 from models import *
 from lit_models import MetaHTR
 from data import IAMDataset
-from lit_util import MAMLCheckpointIO, LitProgressBar
+from lit_util import MetaHTRCheckpointIO, LitProgressBar
 from lit_callbacks import (
     LogModelPredictionsMAML,
     LogLayerWiseLearningRates,
@@ -250,7 +250,7 @@ def main(args):
     # the proper way. The weights should be stored in the same format as they would
     # be saved without using MAML, to make it straightforward to load the model
     # weights later on.
-    checkpoint_io = MAMLCheckpointIO()
+    checkpoint_io = MetaHTRCheckpointIO()
 
     # Prepare fixed batches used for monitoring model predictions during training.
     im, t, _ = next(iter(learner.val_dataloader()))

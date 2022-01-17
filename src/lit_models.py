@@ -19,7 +19,7 @@ from torch.autograd import grad
 class MetaHTR(pl.LightningModule):
     model: l2l.algorithms.GBML
 
-    _meta_weights = ["model.compute_update", "inst_w_mlp"]
+    meta_weights = ["model.compute_update", "model.module.inst_w_mlp"]
 
     def __init__(
         self,
@@ -65,26 +65,32 @@ class MetaHTR(pl.LightningModule):
         self.num_inner_steps = num_inner_steps
         self.num_workers = num_workers
         self.num_epochs = num_epochs
-        self.char_to_avg_inst_weight = None
 
+        model.add_module(
+            "inst_w_mlp",
+            nn.Sequential(  # instance-specific weight MLP
+                nn.Linear(
+                    model.decoder.clf.in_features * model.decoder.clf.out_features * 2,
+                    inst_mlp_hidden_size,
+                ),
+                nn.ReLU(inplace=True),
+                nn.Linear(inst_mlp_hidden_size, inst_mlp_hidden_size),
+                nn.ReLU(inplace=True),
+                nn.Linear(inst_mlp_hidden_size, 1),
+                nn.Sigmoid(),
+            ),
+        )
         self.model = l2l.algorithms.GBML(
             model,
             transform=LayerWiseLRTransform(initial_inner_lr),
             lr=1.0,  # this lr is replaced by a learnable one
             first_order=False,
             allow_nograd=True,
+            allow_unused=True,
         )
-        self.inst_w_mlp = nn.Sequential(  # instance-specific weight MLP
-            nn.Linear(
-                model.decoder.clf.in_features * model.decoder.clf.out_features * 2,
-                inst_mlp_hidden_size,
-            ),
-            nn.ReLU(inplace=True),
-            nn.Linear(inst_mlp_hidden_size, inst_mlp_hidden_size),
-            nn.ReLU(inplace=True),
-            nn.Linear(inst_mlp_hidden_size, 1),
-            nn.Sigmoid(),
-        )
+
+        self.char_to_avg_inst_weight = None
+        self.ignore_index = self.decoder.pad_tkn_idx
 
         self.save_hyperparameters(
             "ways",
@@ -145,26 +151,24 @@ class MetaHTR(pl.LightningModule):
                 # mean_loss.backward(inputs=learner.module.decoder.clf.weight)
                 # autograd_hack.compute_grad1(learner, loss_type="mean")
 
+                ignore_mask = support_tgts == self.ignore_index
                 instance_weights = self.calculate_instance_specific_weights(
-                    learner, support_loss_unreduced
+                    learner, support_loss_unreduced, ignore_mask
                 )
-                support_loss = torch.mean(
-                    support_loss_unreduced.view(-1) * instance_weights
+                support_loss = torch.sum(
+                    support_loss_unreduced[~ignore_mask] * instance_weights
                 )
 
                 # Calculate gradients and take an optimization step.
                 learner.adapt(support_loss)
 
-                inner_losses.append(support_loss.item())
-                pad_tkn_idx = self.decoder.pad_tkn_idx
                 # Store the instance-specific weights for logging.
-                writer_targets = support_tgts[task]
-                for i, tgt in enumerate(writer_targets):
-                    tgt = tgt.item()
-                    if tgt != pad_tkn_idx:
-                        w = instance_weights[tgt_cnt].item()  # TODO check if it matches
-                        char_to_inst_weights[tgt].append(w)
-                        tgt_cnt += 1
+                assert (
+                    support_tgts[~ignore_mask].numel() == instance_weights.numel()
+                )  # TODO remove
+                for tgt, w in zip(support_tgts[~ignore_mask], instance_weights):
+                    char_to_inst_weights[tgt.item()].append(w.item())
+                inner_losses.append(support_loss.item())
 
             # Outer loop.
             # It seems logical that the outer loop activations are not recorded as
@@ -196,7 +200,10 @@ class MetaHTR(pl.LightningModule):
         return outer_loss, char_to_inst_weights
 
     def calculate_instance_specific_weights(
-        self, learner: l2l.algorithms.GBML, loss_unreduced: Tensor
+        self,
+        learner: l2l.algorithms.GBML,
+        loss_unreduced: Tensor,
+        ignore_mask: Optional[Tensor] = None,
     ) -> Tensor:
         """
         Calculates instance-specific weights, based on the per-instance gradient
@@ -207,14 +214,25 @@ class MetaHTR(pl.LightningModule):
             loss_unreduced (Tensor): tensor of shape (B*T,), where B = batch size and
                 T = maximum sequence length in the batch, containing the per-instance
                 loss, i.e. the loss for each decoding time step.
+            ignore_mask (Optional[Tensor]): mask of the same shape as
+                `loss_unreduced`, specifying what values to ignore for the loss
 
         Returns:
             Tensor of shape (B*T,), containing the instance specific weights
         """
         grad_inputs = []
 
+        if ignore_mask is not None:
+            assert (
+                ignore_mask.shape == loss_unreduced.shape
+            ), "Mask should have the same shape as the loss tensor."
+        else:
+            ignore_mask = torch.zeros_like(loss_unreduced)
+        ignore_mask = ignore_mask.bool()
+        mean_loss = loss_unreduced[~ignore_mask].mean()
+
         mean_loss_grad = grad(
-            torch.mean(loss_unreduced),
+            mean_loss,
             learner.module.decoder.clf.weight,
             create_graph=True,
             retain_graph=True,
@@ -222,7 +240,7 @@ class MetaHTR(pl.LightningModule):
         # It is not ideal to have to compute gradients like this in a loop - which
         # loses the benefit of parallelization -, but unfortunately Pytorch does not
         # provide any native functonality for calculating per-example gradients.
-        for instance_loss in loss_unreduced.view(-1):
+        for instance_loss in loss_unreduced[~ignore_mask]:
             instance_grad = grad(
                 instance_loss,
                 learner.module.decoder.clf.weight,
@@ -234,6 +252,8 @@ class MetaHTR(pl.LightningModule):
             )
         grad_inputs = torch.stack(grad_inputs, 0).detach()
         instance_weights = self.inst_w_mlp(grad_inputs)
+        assert instance_weights.numel() == torch.sum(~ignore_mask)
+
         return instance_weights
 
     @property
@@ -244,30 +264,41 @@ class MetaHTR(pl.LightningModule):
     def decoder(self):
         return self.model.module.decoder
 
+    @property
+    def inst_w_mlp(self):
+        return self.model.module.inst_w_mlp
+
     def training_step(self, batch, batch_idx):
         loss, inst_ws = self.meta_learn(batch, mode="train")
         self.log("train_loss_outer", loss, sync_dist=True, prog_bar=False)
-        return {"loss": loss, "instance_weights": inst_ws}
-
-    def training_epoch_end(self, training_epoch_outputs):
-        # TODO: also do this for val?
-        char_to_weights, char_to_avg_weight = defaultdict(list), defaultdict(float)
-        for dct in training_epoch_outputs:
-            char_to_ws = dct["instance_weights"]
-            for c_idx, ws in char_to_ws.items():
-                char_to_weights[c_idx].extend(ws)
-        for c_idx, ws in char_to_weights.items():
-            char_to_avg_weight[c_idx] = np.mean(ws)
-        self.char_to_avg_inst_weight = char_to_avg_weight
+        return {"loss": loss, "char_to_inst_weights": inst_ws}
 
     def validation_step(self, batch, batch_idx):
         # Validation requires finetuning a model in the inner loop, hence we need to
         # enable gradients.
         torch.set_grad_enabled(True)
-        loss, _ = self.meta_learn(batch, mode="val")
+        loss, inst_ws = self.meta_learn(batch, mode="val")
         torch.set_grad_enabled(False)
         self.log("val_loss_outer", loss, sync_dist=True, prog_bar=True)
-        return loss
+        return {"loss": loss, "char_to_inst_weights": inst_ws}
+
+    def training_epoch_end(self, training_epoch_outputs):
+        self.aggregate_epoch_instance_weights(training_epoch_outputs)
+
+    def validation_epoch_end(self, training_epoch_outputs):
+        self.aggregate_epoch_instance_weights(training_epoch_outputs)
+
+    def aggregate_epoch_instance_weights(self, training_epoch_outputs):
+        char_to_weights, char_to_avg_weight = defaultdict(list), defaultdict(float)
+        # Aggregate all instance-specific weights.
+        for dct in training_epoch_outputs:
+            char_to_ws = dct["char_to_inst_weights"]
+            for c_idx, ws in char_to_ws.items():
+                char_to_weights[c_idx].extend(ws)
+        # Calculate average instance weight per class for logging purposes.
+        for c_idx, ws in char_to_weights.items():
+            char_to_avg_weight[c_idx] = np.mean(ws)
+        self.char_to_avg_inst_weight = char_to_avg_weight
 
     def forward(
         self,
@@ -297,14 +328,15 @@ class MetaHTR(pl.LightningModule):
         # here does not work, perhaps due to some unexpected interaction between
         # Pytorch Lightning and the learn2learn lib. Therefore gradient
         # calculation should be set beforehand, outside of the current function.
+        ignore_mask = adaptation_targets == self.ignore_index
         _, adaptation_loss_unreduced = learner.module.forward_teacher_forcing(
             adaptation_imgs, adaptation_targets
         )
         instance_weights = self.calculate_instance_specific_weights(
-            learner, adaptation_loss_unreduced
+            learner, adaptation_loss_unreduced, ignore_mask
         )
-        adaptation_loss = torch.mean(
-            adaptation_loss_unreduced.view(-1) * instance_weights
+        adaptation_loss = torch.sum(
+            adaptation_loss_unreduced[~ignore_mask] * instance_weights
         )
         # Adapt the model.
         learner.adapt(adaptation_loss)
@@ -403,7 +435,7 @@ class MetaHTR(pl.LightningModule):
                 checkpoint_path, map_location=lambda storage, loc: storage
             )
             for n, p in ckpt["state_dict"].items():
-                if any(n.startswith(wn) for wn in MetaHTR._meta_weights):
+                if any(n.startswith(wn) for wn in MetaHTR.meta_weights):
                     with torch.no_grad():
                         model.state_dict()[n] = p
         return model
