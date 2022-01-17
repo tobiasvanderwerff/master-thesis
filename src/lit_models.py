@@ -85,12 +85,15 @@ class MetaHTR(pl.LightningModule):
             transform=LayerWiseLRTransform(initial_inner_lr),
             lr=1.0,  # this lr is replaced by a learnable one
             first_order=False,
-            allow_nograd=True,
             allow_unused=True,
         )
 
         self.char_to_avg_inst_weight = None
         self.ignore_index = self.decoder.pad_tkn_idx
+
+        # ++++++++++++++++++++++++++++++++++++++++++++
+        # self.automatic_optimization = False
+        # ++++++++++++++++++++++++++++++++++++++++++++
 
         self.save_hyperparameters(
             "ways",
@@ -104,9 +107,9 @@ class MetaHTR(pl.LightningModule):
 
     def meta_learn(self, batch, mode="train") -> Tuple[Tensor, Dict[int, float]]:
         outer_loss = 0.0
-        tgt_cnt = 0
         inner_losses = []
         char_to_inst_weights = defaultdict(list)
+        is_train = mode == "train"
 
         imgs, target, writer_ids = batch
         writer_ids_uniq = writer_ids.unique().tolist()
@@ -144,6 +147,7 @@ class MetaHTR(pl.LightningModule):
 
             # Inner loop.
             # autograd_hack.add_hooks(learner)
+            assert torch.is_grad_enabled()
             for _ in range(self.num_inner_steps):
                 _, support_loss_unreduced = learner.module.forward_teacher_forcing(
                     support_imgs, support_tgts
@@ -163,9 +167,7 @@ class MetaHTR(pl.LightningModule):
                 learner.adapt(support_loss)
 
                 # Store the instance-specific weights for logging.
-                assert (
-                    support_tgts[~ignore_mask].numel() == instance_weights.numel()
-                )  # TODO remove
+                assert support_tgts[~ignore_mask].numel() == instance_weights.numel()
                 for tgt, w in zip(support_tgts[~ignore_mask], instance_weights):
                     char_to_inst_weights[tgt.item()].append(w.item())
                 inner_losses.append(support_loss.item())
@@ -179,7 +181,7 @@ class MetaHTR(pl.LightningModule):
             # from the inner loop. Therefore I choose to use model.eval() in the
             # outer loop.
             # learner.eval()
-            if mode == "train":
+            if is_train:
                 _, query_loss = learner.module.forward_teacher_forcing(
                     query_imgs, query_tgts
                 )
@@ -251,7 +253,7 @@ class MetaHTR(pl.LightningModule):
                 torch.cat([instance_grad.flatten(), mean_loss_grad.flatten()])
             )
         grad_inputs = torch.stack(grad_inputs, 0).detach()
-        instance_weights = self.inst_w_mlp(grad_inputs)
+        instance_weights = learner.module.inst_w_mlp(grad_inputs)
         assert instance_weights.numel() == torch.sum(~ignore_mask)
 
         return instance_weights
@@ -269,7 +271,16 @@ class MetaHTR(pl.LightningModule):
         return self.model.module.inst_w_mlp
 
     def training_step(self, batch, batch_idx):
+        torch.set_grad_enabled(True)
         loss, inst_ws = self.meta_learn(batch, mode="train")
+        # ++++++++++++++++++++++++++++++++++++++++++++++++++++
+        # opt = self.optimizers()
+        # opt.zero_grad()
+        # # automatically applies scaling, etc...
+        # self.manual_backward(loss)
+        # opt.step()
+        # # TODO: scheduler?
+        # ++++++++++++++++++++++++++++++++++++++++++++++++++++
         self.log("train_loss_outer", loss, sync_dist=True, prog_bar=False)
         return {"loss": loss, "char_to_inst_weights": inst_ws}
 
