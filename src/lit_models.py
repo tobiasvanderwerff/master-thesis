@@ -168,7 +168,7 @@ class MetaHTR(pl.LightningModule):
             else:  # val/test
                 with torch.inference_mode():
                     _, preds, query_loss = learner(query_imgs, query_tgts)
-                    query_loss = torch.mean(query_loss[~ignore_mask])
+                    query_loss = torch.mean(query_loss)  # TODO: ignore pad values
 
                 # Log metrics.
                 metrics = learner.module.calculate_metrics(preds, query_tgts)
