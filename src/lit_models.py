@@ -158,15 +158,17 @@ class MetaHTR(pl.LightningModule):
 
             # Outer loop.
             # learner.eval()
+            ignore_mask = query_tgts == self.ignore_index
             if is_train:
+                _, preds, query_loss = learner(query_imgs, query_tgts)
                 _, query_loss = learner.module.forward_teacher_forcing(
                     query_imgs, query_tgts
                 )
-                query_loss = torch.mean(query_loss)
+                query_loss = torch.mean(query_loss[~ignore_mask])
             else:  # val/test
                 with torch.inference_mode():
                     _, preds, query_loss = learner(query_imgs, query_tgts)
-                    query_loss = torch.mean(query_loss)
+                    query_loss = torch.mean(query_loss[~ignore_mask])
 
                 # Log metrics.
                 metrics = learner.module.calculate_metrics(preds, query_tgts)
