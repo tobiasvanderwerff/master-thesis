@@ -141,45 +141,22 @@ class MetaHTR(pl.LightningModule):
             # original parameters.
             learner = self.model.clone()
 
-            learner.eval()
-            # set_norm_layers_to_train(learner)
-            # learner.train()
-
             # Inner loop.
-            # autograd_hack.add_hooks(learner)
             assert torch.is_grad_enabled()
             for _ in range(self.num_inner_steps):
-                _, support_loss_unreduced = learner.module.forward_teacher_forcing(
-                    support_imgs, support_tgts
+                # Adapt the model to the support data.
+                learner, support_loss, instance_weights = self.fast_adaptation(
+                    learner, support_imgs, support_tgts
                 )
-                # mean_loss.backward(inputs=learner.module.decoder.clf.weight)
-                # autograd_hack.compute_grad1(learner, loss_type="mean")
-
-                ignore_mask = support_tgts == self.ignore_index
-                instance_weights = self.calculate_instance_specific_weights(
-                    learner, support_loss_unreduced, ignore_mask
-                )
-                support_loss = torch.sum(
-                    support_loss_unreduced[~ignore_mask] * instance_weights
-                )
-
-                # Calculate gradients and take an optimization step.
-                learner.adapt(support_loss)
 
                 # Store the instance-specific weights for logging.
+                ignore_mask = support_tgts == self.ignore_index
                 assert support_tgts[~ignore_mask].numel() == instance_weights.numel()
                 for tgt, w in zip(support_tgts[~ignore_mask], instance_weights):
                     char_to_inst_weights[tgt.item()].append(w.item())
                 inner_losses.append(support_loss.item())
 
             # Outer loop.
-            # It seems logical that the outer loop activations are not recorded as
-            # part of the running statistics for norm layers (since the adapted
-            # parameters are not the same parameters obtained after doing a
-            # gradient step). Deactivating dropout also seems reasonable since the
-            # outer loop can be seen as a kind of evaluation of the updated model
-            # from the inner loop. Therefore I choose to use model.eval() in the
-            # outer loop.
             # learner.eval()
             if is_train:
                 _, query_loss = learner.module.forward_teacher_forcing(
@@ -200,6 +177,34 @@ class MetaHTR(pl.LightningModule):
         self.log(f"{mode}_loss_inner", inner_loss_avg, sync_dist=True, prog_bar=False)
 
         return outer_loss, char_to_inst_weights
+
+    def fast_adaptation(
+        self,
+        learner: l2l.algorithms.GBML,
+        adaptation_imgs: Tensor,
+        adaptation_targets: Tensor,
+    ):
+        """
+        Take a single gradient step on a batch of data, which is equivalent to a
+        single inner loop step.
+        """
+        learner.eval()
+        # set_norm_layers_to_train(learner)
+        # learner.train()
+
+        _, support_loss_unreduced = learner.module.forward_teacher_forcing(
+            adaptation_imgs, adaptation_targets
+        )
+        ignore_mask = adaptation_targets == self.ignore_index
+        instance_weights = self.calculate_instance_specific_weights(
+            learner, support_loss_unreduced, ignore_mask
+        )
+        support_loss = torch.sum(
+            support_loss_unreduced[~ignore_mask] * instance_weights
+        )
+        # Calculate gradients and take an optimization step.
+        learner.adapt(support_loss)
+        return learner, support_loss, instance_weights
 
     def calculate_instance_specific_weights(
         self,
@@ -252,7 +257,7 @@ class MetaHTR(pl.LightningModule):
             grad_inputs.append(
                 torch.cat([instance_grad.flatten(), mean_loss_grad.flatten()])
             )
-        grad_inputs = torch.stack(grad_inputs, 0).detach()
+        grad_inputs = torch.stack(grad_inputs, 0)
         instance_weights = learner.module.inst_w_mlp(grad_inputs)
         assert instance_weights.numel() == torch.sum(~ignore_mask)
 
@@ -279,7 +284,7 @@ class MetaHTR(pl.LightningModule):
         # # automatically applies scaling, etc...
         # self.manual_backward(loss)
         # opt.step()
-        # # TODO: scheduler?
+        # TODO: scheduler?
         # ++++++++++++++++++++++++++++++++++++++++++++++++++++
         self.log("train_loss_outer", loss, sync_dist=True, prog_bar=False)
         return {"loss": loss, "char_to_inst_weights": inst_ws}
@@ -331,29 +336,17 @@ class MetaHTR(pl.LightningModule):
                       greedy decoding (argmax on logits) at each time step
         """
         learner = self.model.clone()
-        learner.eval()
-        # set_norm_layers_to_train(learner)
-        # learner.train()
 
         # For some reason using an autograd context manager like torch.enable_grad()
         # here does not work, perhaps due to some unexpected interaction between
         # Pytorch Lightning and the learn2learn lib. Therefore gradient
         # calculation should be set beforehand, outside of the current function.
-        ignore_mask = adaptation_targets == self.ignore_index
-        _, adaptation_loss_unreduced = learner.module.forward_teacher_forcing(
-            adaptation_imgs, adaptation_targets
-        )
-        instance_weights = self.calculate_instance_specific_weights(
-            learner, adaptation_loss_unreduced, ignore_mask
-        )
-        adaptation_loss = torch.sum(
-            adaptation_loss_unreduced[~ignore_mask] * instance_weights
-        )
         # Adapt the model.
-        learner.adapt(adaptation_loss)
+        learner, support_loss, instance_weights = self.fast_adaptation(
+            learner, adaptation_imgs, adaptation_targets
+        )
 
         # Run inference on the adapted model.
-        # learner.eval()
         with torch.inference_mode():
             logits, sampled_ids, _ = learner(inference_imgs)
 
