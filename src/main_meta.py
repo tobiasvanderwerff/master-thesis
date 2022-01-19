@@ -218,13 +218,12 @@ def main(args):
     )
 
     # Initialize MAML with a trained FPHTR model.
-    load_meta_weights = True if args.validate else False
     learner = MetaHTR.init_with_fphtr_from_checkpoint(
         args.trained_model_path,
         hparams_file,
         ds_train.label_enc,
         fphtr_params_to_log={"only_lowercase": only_lowercase},
-        load_meta_weights=load_meta_weights,
+        load_meta_weights=True,
         taskset_train=taskset_train,
         taskset_val=taskset_val,
         ways=args.ways,
