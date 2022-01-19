@@ -388,7 +388,7 @@ class MetaHTR(pl.LightningModule):
             )
 
     def configure_optimizers(self):
-        optimizer = optim.AdamW(self.parameters(), lr=self.outer_lr)
+        optimizer = optim.Adam(self.parameters(), lr=self.outer_lr)
         if self.use_cosine_lr_schedule:
             num_epochs = self.num_epochs or 20
             lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(
