@@ -19,7 +19,7 @@ from torch.autograd import grad
 class MetaHTR(pl.LightningModule):
     model: l2l.algorithms.GBML
 
-    meta_weights = ["model.compute_update", "model.module.inst_w_mlp"]
+    meta_weights = ["model.compute_update", "inst_w_mlp"]
 
     def __init__(
         self,
@@ -66,26 +66,23 @@ class MetaHTR(pl.LightningModule):
         self.num_workers = num_workers
         self.num_epochs = num_epochs
 
-        model.add_module(
-            "inst_w_mlp",
-            nn.Sequential(  # instance-specific weight MLP
-                nn.Linear(
-                    model.decoder.clf.in_features * model.decoder.clf.out_features * 2,
-                    inst_mlp_hidden_size,
-                ),
-                nn.ReLU(inplace=True),
-                nn.Linear(inst_mlp_hidden_size, inst_mlp_hidden_size),
-                nn.ReLU(inplace=True),
-                nn.Linear(inst_mlp_hidden_size, 1),
-                nn.Sigmoid(),
-            ),
-        )
         self.model = l2l.algorithms.GBML(
             model,
             transform=LayerWiseLRTransform(initial_inner_lr),
             lr=1.0,  # this lr is replaced by a learnable one
             first_order=False,
             allow_unused=True,
+        )
+        self.inst_w_mlp = nn.Sequential(  # instance-specific weight MLP
+            nn.Linear(
+                model.decoder.clf.in_features * model.decoder.clf.out_features * 2,
+                inst_mlp_hidden_size,
+            ),
+            nn.ReLU(inplace=True),
+            nn.Linear(inst_mlp_hidden_size, inst_mlp_hidden_size),
+            nn.ReLU(inplace=True),
+            nn.Linear(inst_mlp_hidden_size, 1),
+            nn.Sigmoid(),
         )
 
         self.char_to_avg_inst_weight = None
@@ -262,7 +259,7 @@ class MetaHTR(pl.LightningModule):
                 torch.cat([instance_grad.flatten(), mean_loss_grad.flatten()])
             )
         grad_inputs = torch.stack(grad_inputs, 0)
-        instance_weights = learner.module.inst_w_mlp(grad_inputs)
+        instance_weights = self.inst_w_mlp(grad_inputs)
         assert instance_weights.numel() == torch.sum(~ignore_mask)
 
         return instance_weights
@@ -274,10 +271,6 @@ class MetaHTR(pl.LightningModule):
     @property
     def decoder(self):
         return self.model.module.decoder
-
-    @property
-    def inst_w_mlp(self):
-        return self.model.module.inst_w_mlp
 
     def training_step(self, batch, batch_idx):
         torch.set_grad_enabled(True)
