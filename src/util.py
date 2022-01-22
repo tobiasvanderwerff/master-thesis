@@ -2,7 +2,7 @@ import xml.etree.ElementTree as ET
 import random
 import pickle
 from pathlib import Path
-from typing import Union, Any, List, Optional, Dict, Sequence
+from typing import Union, Any, List, Optional, Sequence, Dict, Tuple
 
 # from models import FullPageHTREncoderDecoder
 
@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import learn2learn as l2l
 from torch.utils.data import Dataset
+from torch import Tensor
 from pytorch_lightning.callbacks import TQDMProgressBar
 
 
@@ -110,11 +111,13 @@ def find_child_by_tag(
     return None
 
 
-def matplotlib_imshow(img: torch.Tensor, one_channel=True):
+def matplotlib_imshow(
+    img: torch.Tensor, mean: float = 0.5, std: float = 0.5, one_channel=True
+):
     assert img.device.type == "cpu"
     if one_channel and img.ndim == 3:
         img = img.mean(dim=0)
-    img = img / 2 + 0.5  # unnormalize
+    img = img * std + mean  # unnormalize
     npimg = img.numpy()
     if one_channel:
         plt.imshow(npimg, cmap="Greys")
@@ -224,3 +227,11 @@ class LitProgressBar(TQDMProgressBar):
                 items.pop(k, None)
         items.pop("v_num", None)
         return items
+
+
+def decode_prediction(
+    pred: Tensor, label_encoder: LabelEncoder, eos_tkn_idx: int
+) -> str:
+    eos_idx = (pred == eos_tkn_idx).float().argmax().item()
+    res = pred[:eos_idx] if eos_idx != 0 else pred
+    return "".join(label_encoder.inverse_transform(res.tolist()))

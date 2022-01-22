@@ -280,7 +280,6 @@ def main(args):
             label_encoder=ds_train.label_enc,
             val_batch=val_batch,
             train_batch=train_batch,
-            use_gpu=(False if args.use_cpu else True),
             enable_grad=True,
             predict_on_train_start=True,
         ),

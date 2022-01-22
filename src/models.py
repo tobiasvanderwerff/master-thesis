@@ -306,6 +306,7 @@ class FullPageHTREncoderDecoder(nn.Module):
     cer_metric: CharacterErrorRate
     wer_metric: WordErrorRate
     loss_fn: Callable
+    label_encoder: LabelEncoder
 
     def __init__(
         self,
@@ -347,7 +348,7 @@ class FullPageHTREncoderDecoder(nn.Module):
         super().__init__()
 
         # Obtain special token indices.
-        eos_tkn_idx, sos_tkn_idx, pad_tkn_idx = label_encoder.transform(
+        self.eos_tkn_idx, self.sos_tkn_idx, self.pad_tkn_idx = label_encoder.transform(
             ["<EOS>", "<SOS>", "<PAD>"]
         )
 
@@ -358,9 +359,9 @@ class FullPageHTREncoderDecoder(nn.Module):
         self.decoder = FullPageHTRDecoder(
             vocab_len=(vocab_len or label_encoder.n_classes),
             max_seq_len=max_seq_len,
-            eos_tkn_idx=eos_tkn_idx,
-            sos_tkn_idx=sos_tkn_idx,
-            pad_tkn_idx=pad_tkn_idx,
+            eos_tkn_idx=self.eos_tkn_idx,
+            sos_tkn_idx=self.sos_tkn_idx,
+            pad_tkn_idx=self.pad_tkn_idx,
             d_model=d_model,
             num_layers=num_layers,
             nhead=nhead,
@@ -368,12 +369,13 @@ class FullPageHTREncoderDecoder(nn.Module):
             dropout=drop_dec,
             activation=activ_dec,
         )
+        self.label_encoder = label_encoder
 
         # Initialize metrics and loss function.
         self.cer_metric = CharacterErrorRate(label_encoder)
         self.wer_metric = WordErrorRate(label_encoder)
         self.loss_fn = nn.CrossEntropyLoss(
-            ignore_index=pad_tkn_idx, reduction=loss_reduction
+            ignore_index=self.pad_tkn_idx, reduction=loss_reduction
         )
 
     def forward(
@@ -417,6 +419,8 @@ class FullPageHTREncoderDecoder(nn.Module):
         return logits, loss
 
     def calculate_metrics(self, preds: Tensor, targets: Tensor) -> Dict[str, float]:
+        self.cer_metric.reset()
+        self.wer_metric.reset()
         cer = self.cer_metric(preds, targets)
         wer = self.wer_metric(preds, targets)
         return {"char_error_rate": cer, "word_error_rate": wer}

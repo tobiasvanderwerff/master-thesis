@@ -2,30 +2,114 @@ import math
 import re
 from typing import Tuple, Optional, Dict
 
-from util import matplotlib_imshow, LabelEncoder
+from lit_models import LitFullPageHTREncoderDecoder
+from util import matplotlib_imshow, LabelEncoder, decode_prediction
+from data import IAMDataset
 
 import torch
 import pytorch_lightning as pl
 import matplotlib.pyplot as plt
 from torch import Tensor
-from pytorch_lightning.callbacks import Callback
+from torch.utils.data import DataLoader
+from pytorch_lightning.callbacks import Callback, ModelCheckpoint
+
+
+PREDICTIONS_TO_LOG = {
+    "word": 10,
+    "line": 6,
+    "form": 1,
+}
 
 
 class LogWorstPredictions(Callback):
     """
-    At the end of every epoch, log the predictions with the highest loss values,
-    i.e. the worst predictions of the model.
+    At the end of training, log the worst image prediction, meaning the predictions
+    with the highest character error rates.
     """
 
-    def __init__(self):
-        pass
+    def __init__(
+        self,
+        val_dataloader: DataLoader,
+        val_only: bool = False,
+        data_format: str = "word",
+    ):
+        self.val_dataloader = val_dataloader
+        self.val_only = val_only
+        self.data_format = data_format
 
-    def on_validation_epoch_end(
+    def on_validation_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"):
+        if self.val_only:
+            # This is to make sure the callback is called when model training
+            # is skipped.
+            self.log_worst_predictions(trainer, pl_module)
+
+    def on_fit_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"):
+        self.log_worst_predictions(trainer, pl_module)
+
+    def log_worst_predictions(
         self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
     ):
-        if pl_module.all_logits is None or pl_module.all_targets is None:
-            ...
-        # TODO
+        img_cers = []
+        device = "cuda:0" if pl_module.on_gpu else "cpu"
+        if not self.val_only:
+            self._load_best_model(trainer, pl_module)
+            pl_module = trainer.model
+
+        print("Running validation inference on best model...")
+
+        # Run inference on the validation set.
+        pl_module.eval()
+        for img, target in self.val_dataloader:
+            assert target.ndim == 2, target.ndim
+            cer_metric = pl_module.model.cer_metric
+            with torch.inference_mode():
+                logits, preds, _ = pl_module(img.to(device), target.to(device))
+                for prd, tgt, im in zip(preds, target, img):
+                    cer_metric.reset()
+                    cer = cer_metric(prd.unsqueeze(0), tgt.unsqueeze(0)).item()
+                    img_cers.append((im, cer, prd, tgt))
+
+        # Log the worst k predictions.
+        to_log = PREDICTIONS_TO_LOG[self.data_format] * 2
+        img_cers.sort(key=lambda x: x[1], reverse=True)  # sort by CER
+        img_cers = img_cers[:to_log]
+        fig = plt.figure(figsize=(24, 16))
+        for i, (im, cer, prd, tgt) in enumerate(img_cers):
+            pred_str, target_str = decode_prediction_and_target(
+                prd, tgt, pl_module.model.label_encoder, pl_module.decoder.eos_tkn_idx
+            )
+
+            # Create plot.
+            ncols = 4 if self.data_format == "word" else 2
+            nrows = math.ceil(to_log / ncols)
+            ax = fig.add_subplot(nrows, ncols, i + 1, xticks=[], yticks=[])
+            matplotlib_imshow(im, IAMDataset.MEAN, IAMDataset.STD)
+            ax.set_title(f"Pred: {pred_str} (CER: {cer:.2f})\nTarget: {target_str}")
+
+        # Log the results to Tensorboard.
+        tensorboard = trainer.logger.experiment
+        tensorboard.add_figure(f"val: worst predictions", fig, trainer.global_step)
+        plt.close(fig)
+
+        print("Done.")
+
+    @staticmethod
+    def _load_best_model(trainer: "pl.Trainer", pl_module: "pl.LightningModule"):
+        ckpt_callback = None
+        for cb in trainer.callbacks:
+            if isinstance(cb, ModelCheckpoint):
+                ckpt_callback = cb
+                break
+        assert ckpt_callback is not None, "ModelCheckpoint not found in callbacks."
+        best_model_path = ckpt_callback.best_model_path
+
+        print(f"Loading best model at {best_model_path}")
+        label_encoder = pl_module.model.label_encoder
+        model = LitFullPageHTREncoderDecoder.load_from_checkpoint(
+            best_model_path,
+            label_encoder=label_encoder,
+        )
+        trainer.model = model
 
 
 class LogModelPredictionsMAML(Callback):
@@ -41,7 +125,6 @@ class LogModelPredictionsMAML(Callback):
         label_encoder: LabelEncoder,
         val_batch: Tuple[Tensor, Tensor, Tensor, Tensor],
         train_batch: Optional[Tuple[Tensor, Tensor, Tensor, Tensor]] = None,
-        use_gpu: bool = True,
         data_format: str = "word",
         enable_grad: bool = False,
         predict_on_train_start: bool = False,
@@ -49,7 +132,6 @@ class LogModelPredictionsMAML(Callback):
         self.label_encoder = label_encoder
         self.val_batch = val_batch
         self.train_batch = train_batch
-        self.use_gpu = use_gpu
         self.data_format = data_format
         self.enable_grad = enable_grad
         self.predict_on_train_start = predict_on_train_start
@@ -92,6 +174,7 @@ class LogModelPredictionsMAML(Callback):
     ):
         """Make predictions on a fixed batch of data; log the results to Tensorboard."""
 
+        device = "cuda:0" if pl_module.on_gpu else "cpu"
         if split == "train":
             batch = self.train_batch
         else:  # split == "val"
@@ -102,10 +185,7 @@ class LogModelPredictionsMAML(Callback):
         pl_module.eval()
         torch.set_grad_enabled(self.enable_grad)
         _, preds, *_ = pl_module(
-            *[
-                t.cuda() if self.use_gpu else t
-                for t in [support_imgs, support_tgts, query_imgs]
-            ]
+            *[t.to(device) for t in [support_imgs, support_tgts, query_imgs]]
         )
         torch.set_grad_enabled(False)
 
@@ -140,34 +220,23 @@ class LogModelPredictionsMAML(Callback):
 
         # Generate plot.
         fig = plt.figure(figsize=(12, 16))
-        for i, (tgt, im) in enumerate(zip(targets.tolist(), imgs)):
+        for i, (tgt, im) in enumerate(zip(targets, imgs)):
             # Decode predictions and targets.
-            p = None
-            if preds is not None:
-                p = preds.tolist()[i]
-            max_target_idx = eos_idxs_tgt[i]
             pred_str = None
-            if eos_idxs_pred:
-                max_pred_idx = eos_idxs_pred[i]
-                p = p[1:]  # skip the initial <SOS> token, which is added by default
-                if max_pred_idx != 0:
-                    pred_str = "".join(
-                        self.label_encoder.inverse_transform(p)[:max_pred_idx]
-                    )
-                else:
-                    pred_str = "".join(self.label_encoder.inverse_transform(p))
-            if max_target_idx != 0:
-                target_str = "".join(
-                    self.label_encoder.inverse_transform(tgt)[:max_target_idx]
+            if preds is not None:
+                p = preds[i][1:]  # skip the initial <SOS> token
+                pred_str = decode_prediction(
+                    p, self.label_encoder, pl_module.decoder.eos_tkn_idx
                 )
-            else:
-                target_str = "".join(self.label_encoder.inverse_transform(tgt))
+            target_str = decode_prediction(
+                tgt, self.label_encoder, pl_module.decoder.eos_tkn_idx
+            )
 
             # Create plot.
             ncols = 2 if self.data_format == "word" else 1
             nrows = math.ceil(targets.size(0) / ncols)
             ax = fig.add_subplot(nrows, ncols, i + 1, xticks=[], yticks=[])
-            matplotlib_imshow(im)
+            matplotlib_imshow(im, IAMDataset.MEAN, IAMDataset.STD)
             ttl = f"Target: {target_str}"
             if pred_str is not None:
                 ttl = f"Pred: {pred_str}\n" + ttl
