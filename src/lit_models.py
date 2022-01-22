@@ -138,7 +138,7 @@ class MetaHTR(pl.LightningModule):
             # original parameters.
             learner = self.model.clone()
 
-            print(f"clf norm: {torch.norm(learner.module.decoder.clf.weight).item()}")
+            # print(f"clf norm: {torch.norm(learner.module.decoder.clf.weight).item()}")
 
             # Inner loop.
             assert torch.is_grad_enabled()
@@ -147,7 +147,7 @@ class MetaHTR(pl.LightningModule):
                 learner, support_loss, instance_weights = self.fast_adaptation(
                     learner, support_imgs, support_tgts
                 )
-                print(f"Average instance weight: {torch.mean(instance_weights).item()}")
+                # print(f"Average instance weight: {torch.mean(instance_weights).item()}")
 
                 # Store the instance-specific weights for logging.
                 ignore_mask = support_tgts == self.ignore_index
