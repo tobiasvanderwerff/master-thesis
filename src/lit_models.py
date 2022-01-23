@@ -66,6 +66,22 @@ class MetaHTR(pl.LightningModule):
         self.num_workers = num_workers
         self.num_epochs = num_epochs
 
+        new_clf = nn.Sequential(
+            nn.Linear(model.decoder.d_model, 128),
+            nn.ReLU(inplace=True),
+            nn.Linear(128, 64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, 64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, model.decoder.vocab_len),
+            # TODO: use the weights from the original clf layer to initialize the
+            #  final linear layer? Only problem is that the input of this layer
+            #  then has to be of size d_model.
+            # TODO: add a skip connection between the decoder output and the final
+            #  layer? Could help to learn the identity function and not potentially
+            #  mess up all the model parameters when gradient stepping.
+        )
+        model.decoder.clf = new_clf
         self.model = l2l.algorithms.GBML(
             model,
             transform=LayerWiseLRTransform(initial_inner_lr),
@@ -73,17 +89,17 @@ class MetaHTR(pl.LightningModule):
             first_order=False,
             allow_unused=True,
         )
-        self.inst_w_mlp = nn.Sequential(  # instance-specific weight MLP
-            nn.Linear(
-                model.decoder.clf.in_features * model.decoder.clf.out_features * 2,
-                inst_mlp_hidden_size,
-            ),
-            nn.ReLU(inplace=True),
-            nn.Linear(inst_mlp_hidden_size, inst_mlp_hidden_size),
-            nn.ReLU(inplace=True),
-            nn.Linear(inst_mlp_hidden_size, 1),
-            nn.Sigmoid(),
-        )
+        # self.inst_w_mlp = nn.Sequential(  # instance-specific weight MLP
+        #     nn.Linear(
+        #         model.decoder.clf.in_features * model.decoder.clf.out_features * 2,
+        #         inst_mlp_hidden_size,
+        #     ),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(inst_mlp_hidden_size, inst_mlp_hidden_size),
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(inst_mlp_hidden_size, 1),
+        #     nn.Sigmoid(),
+        # )
 
         self.char_to_avg_inst_weight = None
         self.ignore_index = self.decoder.pad_tkn_idx
@@ -138,8 +154,6 @@ class MetaHTR(pl.LightningModule):
             # original parameters.
             learner = self.model.clone()
 
-            # print(f"clf norm: {torch.norm(learner.module.decoder.clf.weight).item()}")
-
             # Inner loop.
             assert torch.is_grad_enabled()
             for _ in range(self.num_inner_steps):
@@ -147,8 +161,6 @@ class MetaHTR(pl.LightningModule):
                 learner, support_loss, instance_weights = self.fast_adaptation(
                     learner, support_imgs, support_tgts
                 )
-                # print(f"Average instance weight: {torch.mean(instance_weights).item()}")
-
                 # Store the instance-specific weights for logging.
                 ignore_mask = support_tgts == self.ignore_index
                 assert support_tgts[~ignore_mask].numel() == instance_weights.numel()
@@ -197,9 +209,9 @@ class MetaHTR(pl.LightningModule):
             adaptation_imgs, adaptation_targets
         )
         ignore_mask = adaptation_targets == self.ignore_index
-        instance_weights = self.calculate_instance_specific_weights(
-            learner, support_loss_unreduced, ignore_mask
-        )
+        instance_weights = torch.ones((~ignore_mask).sum()).to(
+            self.device
+        )  # placeholder
         support_loss = torch.mean(
             support_loss_unreduced[~ignore_mask] * instance_weights
         )

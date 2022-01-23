@@ -1,3 +1,12 @@
+# LinNet branch
+The idea is to add newly initialized linear layers at the end of the network, with the
+intention to improve meta-learning performance. The additional linear layers have
+to serv as a kind of external meta-optimizer, controlling the gradients of the lower
+layers. The idea is from a 2021 paper called "When MAML Can Adapt Fast and How to Assist
+When It Cannot".
+
+Instance-specific weights (MetaHTR) are disabled.
+
 # Full Page Handwriting Recognition
 Implementation of the paper "Full Page Handwriting Recognition via Image to Sequence
 Extraction" by Singh et al. (2021) ([Arxiv link](https://arxiv.org/abs/2103.06450)).

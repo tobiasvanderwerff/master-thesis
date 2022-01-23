@@ -284,7 +284,6 @@ def main(args):
             predict_on_train_start=True,
         ),
         LogLayerWiseLearningRates(),
-        LogInstanceSpecificWeights(ds_train.label_enc),
     ]
     if args.early_stopping_patience != -1:
         callbacks.append(
