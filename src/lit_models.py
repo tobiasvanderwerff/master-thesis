@@ -200,9 +200,9 @@ class MetaHTR(pl.LightningModule):
         instance_weights = self.calculate_instance_specific_weights(
             learner, support_loss_unreduced, ignore_mask
         )
-        support_loss = torch.mean(
+        support_loss = torch.sum(
             support_loss_unreduced[~ignore_mask] * instance_weights
-        )
+        ) / adaptation_imgs.size(0)
         # Calculate gradients and take an optimization step.
         learner.adapt(support_loss)
         return learner, support_loss, instance_weights
