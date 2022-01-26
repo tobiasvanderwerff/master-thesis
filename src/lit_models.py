@@ -134,8 +134,6 @@ class MetaHTR(pl.LightningModule):
             # original parameters.
             learner = self.model.clone()
 
-            # print(f"clf norm: {torch.norm(learner.module.decoder.clf.weight).item()}")
-
             # Inner loop.
             assert torch.is_grad_enabled()
             for _ in range(self.num_inner_steps):
@@ -143,7 +141,6 @@ class MetaHTR(pl.LightningModule):
                 learner, support_loss, instance_weights = self.fast_adaptation(
                     learner, support_imgs, support_tgts
                 )
-                # print(f"Average instance weight: {torch.mean(instance_weights).item()}")
 
                 # Store the instance-specific weights for logging.
                 ignore_mask = support_tgts == self.ignore_index
@@ -276,19 +273,28 @@ class MetaHTR(pl.LightningModule):
         return {"loss": loss, "char_to_inst_weights": inst_ws}
 
     def validation_step(self, batch, batch_idx):
-        # Validation requires finetuning a model in the inner loop, hence we need to
+        return self.val_or_test_step(batch, mode="val")
+
+    def test_step(self, batch, batch_idx):
+        return self.val_or_test_step(batch, mode="test")
+
+    def val_or_test_step(self, batch, mode="val"):
+        # val/test requires finetuning a model in the inner loop, hence we need to
         # enable gradients.
         torch.set_grad_enabled(True)
-        loss, inst_ws = self.meta_learn(batch, mode="val")
+        loss, inst_ws = self.meta_learn(batch, mode=mode)
         torch.set_grad_enabled(False)
-        self.log("val_loss_outer", loss, sync_dist=True, prog_bar=True)
+        self.log(f"{mode}_loss_outer", loss, sync_dist=True, prog_bar=True)
         return {"loss": loss, "char_to_inst_weights": inst_ws}
 
-    def training_epoch_end(self, training_epoch_outputs):
-        self.aggregate_epoch_instance_weights(training_epoch_outputs)
+    def training_epoch_end(self, epoch_outputs):
+        self.aggregate_epoch_instance_weights(epoch_outputs)
 
-    def validation_epoch_end(self, training_epoch_outputs):
-        self.aggregate_epoch_instance_weights(training_epoch_outputs)
+    def validation_epoch_end(self, epoch_outputs):
+        self.aggregate_epoch_instance_weights(epoch_outputs)
+
+    def test_epoch_end(self, epoch_outputs):
+        self.aggregate_epoch_instance_weights(epoch_outputs)
 
     def aggregate_epoch_instance_weights(self, training_epoch_outputs):
         char_to_weights, char_to_avg_weight = defaultdict(list), defaultdict(float)
