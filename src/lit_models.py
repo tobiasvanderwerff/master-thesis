@@ -344,6 +344,12 @@ class MetaHTR(pl.LightningModule):
 
         return logits, sampled_ids
 
+    def norm_layer_stats_train(self, training: bool = True):
+        norm_layers_ = (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)
+        for m in self.modules():
+            if isinstance(m, norm_layers_):
+                m.training = training
+
     def train_dataloader(self):
         # Since we are using a l2l TaskDataset which already batches the data,
         # using a PyTorch DataLoader is redundant. However, Pytorch Lightning
