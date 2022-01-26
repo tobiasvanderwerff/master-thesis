@@ -1,5 +1,6 @@
 import math
 import re
+from collections import defaultdict
 from typing import Tuple, Optional, Dict
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from data import IAMDataset
 import torch
 import pytorch_lightning as pl
 import matplotlib.pyplot as plt
+import numpy as np
 from torch import Tensor
 from torch.utils.data import DataLoader
 from pytorch_lightning.callbacks import Callback, ModelCheckpoint
@@ -20,6 +22,34 @@ PREDICTIONS_TO_LOG = {
     "line": 6,
     "form": 1,
 }
+
+
+class LogAttenuationWeights(Callback):
+    """Logs the L2F attenuation weights in a bar plot."""
+
+    def on_train_epoch_end(
+        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
+    ):
+        # Collect all weights.
+        mean_weights = {}
+        for layer, ws in pl_module.layer_to_attenuation_weights.items():
+            mean_weights[layer] = np.mean(ws)
+
+        # Plot the learning rates.
+        xs, ys = zip(*mean_weights.items())
+        fig = plt.figure()
+        plt.bar(xs, ys, align="edge", alpha=0.5)
+        plt.grid(True)
+        plt.xlabel("layer index")
+        plt.ylabel("attenuation weight")
+
+        # Log to Tensorboard.
+        tensorboard = trainer.logger.experiment
+        tensorboard.add_figure(f"attenuation weights", fig, trainer.global_step)
+        plt.close(fig)
+
+        # Reset the stored weights.
+        pl_module.layer_to_attenuation_weights = defaultdict(list)
 
 
 class LogWorstPredictionsMetaHTR(Callback):

@@ -19,7 +19,7 @@ from torch.autograd import grad
 class MetaHTR(pl.LightningModule):
     model: l2l.algorithms.GBML
 
-    meta_weights = ["model.compute_update", "inst_w_mlp"]
+    meta_weights = ["model.compute_update", "l2f_mlp"]
 
     def __init__(
         self,
@@ -27,7 +27,6 @@ class MetaHTR(pl.LightningModule):
         taskset_train: Union[l2l.data.TaskDataset, Dataset],
         taskset_val: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
         taskset_test: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
-        inst_mlp_hidden_size: int = 8,
         ways: int = 8,
         shots: int = 16,
         outer_lr: float = 0.0001,
@@ -69,6 +68,13 @@ class MetaHTR(pl.LightningModule):
         self.num_workers = num_workers
         self.num_epochs = num_epochs
 
+        self.params_to_attenuate = [
+            pn
+            for pn, p in model.named_parameters()
+            if p.requires_grad
+            # TODO: this might go wrong if freezing batchnorm gamma after this
+        ]
+
         self.model = l2l.algorithms.GBML(
             model,
             transform=LayerWiseLRTransform(initial_inner_lr),
@@ -77,19 +83,15 @@ class MetaHTR(pl.LightningModule):
             allow_unused=True,
             allow_nograd=allow_nograd,
         )
-        self.inst_w_mlp = nn.Sequential(  # instance-specific weight MLP
-            nn.Linear(
-                model.decoder.clf.in_features * model.decoder.clf.out_features * 2,
-                inst_mlp_hidden_size,
-            ),
+        n_layers = len(self.params_to_attenuate)
+        self.l2f_mlp = nn.Sequential(
+            nn.Linear(n_layers, n_layers),
             nn.ReLU(inplace=True),
-            nn.Linear(inst_mlp_hidden_size, inst_mlp_hidden_size),
-            nn.ReLU(inplace=True),
-            nn.Linear(inst_mlp_hidden_size, 1),
+            nn.Linear(n_layers, n_layers),
             nn.Sigmoid(),
         )
 
-        self.char_to_avg_inst_weight = None
+        self.layer_to_attenuation_weights = defaultdict(list)
         self.ignore_index = self.decoder.pad_tkn_idx
 
         self.save_hyperparameters(
@@ -142,15 +144,13 @@ class MetaHTR(pl.LightningModule):
             assert torch.is_grad_enabled()
             for _ in range(self.num_inner_steps):
                 # Adapt the model to the support data.
-                learner, support_loss, instance_weights = self.fast_adaptation(
+                learner, support_loss, attenuation_weights = self.fast_adaptation(
                     learner, support_imgs, support_tgts
                 )
 
-                # Store the instance-specific weights for logging.
-                ignore_mask = support_tgts == self.ignore_index
-                assert support_tgts[~ignore_mask].numel() == instance_weights.numel()
-                for tgt, w in zip(support_tgts[~ignore_mask], instance_weights):
-                    char_to_inst_weights[tgt.item()].append(w.item())
+                # Store the attenuation weights for logging.
+                for i, w in enumerate(attenuation_weights):
+                    self.layer_to_attenuation_weights[i].append(w.item())
                 inner_losses.append(support_loss.item())
 
             # Outer loop.
@@ -191,78 +191,48 @@ class MetaHTR(pl.LightningModule):
         self.set_norm_layers_train(self.use_batch_stats_for_normalization)
         # learner.train()
 
-        _, support_loss_unreduced = learner.module.forward_teacher_forcing(
+        _, support_loss = learner.module.forward_teacher_forcing(
             adaptation_imgs, adaptation_targets
         )
         ignore_mask = adaptation_targets == self.ignore_index
-        instance_weights = self.calculate_instance_specific_weights(
-            learner, support_loss_unreduced, ignore_mask
+
+        # Attenuate the parameters before updating them.
+        learner, attenuation_weights = self.attentuate_weights_l2f(
+            learner, support_loss
         )
-        support_loss = torch.sum(
-            support_loss_unreduced[~ignore_mask] * instance_weights
-        ) / adaptation_imgs.size(0)
+        # Apply fast adaptation to the attenuated parameters.
+        _, support_loss = learner.module.forward_teacher_forcing(
+            adaptation_imgs, adaptation_targets
+        )
 
         # Calculate gradients and take an optimization step.
         learner.adapt(support_loss)
 
-        return learner, support_loss, instance_weights
+        return learner, support_loss, attenuation_weights
 
-    def calculate_instance_specific_weights(
+    def attentuate_weights_l2f(
         self,
         learner: l2l.algorithms.GBML,
-        loss_unreduced: Tensor,
-        ignore_mask: Optional[Tensor] = None,
-    ) -> Tensor:
+        loss: Tensor,
+    ) -> Tuple[l2l.algorithms.GBML, Tensor]:
         """
-        Calculates instance-specific weights, based on the per-instance gradient
-        w.r.t to the final classifcation layer.
-
-        Args:
-            learner (l2l.algorithms.GBML): learn2learn GBML learner
-            loss_unreduced (Tensor): tensor of shape (B*T,), where B = batch size and
-                T = maximum sequence length in the batch, containing the per-instance
-                loss, i.e. the loss for each decoding time step.
-            ignore_mask (Optional[Tensor]): mask of the same shape as
-                `loss_unreduced`, specifying what values to ignore for the loss
-
-        Returns:
-            Tensor of shape (B*T,), containing the instance specific weights
+        Attenuates weights as proposed in the "Learn-to-forget" paper.
         """
-        grad_inputs = []
+        # Calculate gradients.
+        # TODO: should the learnable learning rates be included here for attenuation?
+        grad_params = [
+            dict(learner.module.named_parameters())[pn]
+            for pn in self.params_to_attenuate
+        ]
+        grads = grad(loss, grad_params, create_graph=False)
+        mean_grads = torch.stack([g.mean() for g in grads])
+        attenuation_weights = self.l2f_mlp(mean_grads)
 
-        if ignore_mask is not None:
-            assert (
-                ignore_mask.shape == loss_unreduced.shape
-            ), "Mask should have the same shape as the loss tensor."
-        else:
-            ignore_mask = torch.zeros_like(loss_unreduced)
-        ignore_mask = ignore_mask.bool()
-        mean_loss = loss_unreduced[~ignore_mask].mean()
+        # Attenuate.
+        for w, p in zip(attenuation_weights, grad_params):
+            p.mul_(w)
 
-        mean_loss_grad = grad(
-            mean_loss,
-            learner.module.decoder.clf.weight,
-            create_graph=True,
-            retain_graph=True,
-        )[0]
-        # It is not ideal to have to compute gradients like this in a loop - which
-        # loses the benefit of parallelization -, but unfortunately Pytorch does not
-        # provide any native functonality for calculating per-example gradients.
-        for instance_loss in loss_unreduced[~ignore_mask]:
-            instance_grad = grad(
-                instance_loss,
-                learner.module.decoder.clf.weight,
-                create_graph=True,
-                retain_graph=True,
-            )[0]
-            grad_inputs.append(
-                torch.cat([instance_grad.flatten(), mean_loss_grad.flatten()])
-            )
-        grad_inputs = torch.stack(grad_inputs, 0)
-        instance_weights = self.inst_w_mlp(grad_inputs)
-        assert instance_weights.numel() == torch.sum(~ignore_mask)
-
-        return instance_weights
+        return learner, attenuation_weights
 
     @property
     def encoder(self):
@@ -340,7 +310,7 @@ class MetaHTR(pl.LightningModule):
         # Pytorch Lightning and the learn2learn lib. Therefore gradient
         # calculation should be set beforehand, outside of the current function.
         # Adapt the model.
-        learner, support_loss, instance_weights = self.fast_adaptation(
+        learner, support_loss, attenuation_weights = self.fast_adaptation(
             learner, adaptation_imgs, adaptation_targets
         )
 
@@ -444,7 +414,6 @@ class MetaHTR(pl.LightningModule):
             strict=False,
             label_encoder=label_encoder,
             params_to_log=fphtr_params_to_log,
-            loss_reduction="none",  # necessary for instance-specific loss weights
         )
 
         model = MetaHTR(fphtr.model, *args, **kwargs)

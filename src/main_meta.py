@@ -13,6 +13,7 @@ from lit_callbacks import (
     LogLayerWiseLearningRates,
     LogInstanceSpecificWeights,
     LogWorstPredictionsMetaHTR,
+    LogAttenuationWeights,
 )
 from util import (
     filter_df_by_freq,
@@ -323,7 +324,7 @@ def main(args):
             predict_on_train_start=True,
         ),
         LogLayerWiseLearningRates(),
-        LogInstanceSpecificWeights(ds_train.label_enc),
+        LogAttenuationWeights(),
         LogWorstPredictionsMetaHTR(
             train_dataloader=learner.train_dataloader(),
             val_dataloader=learner.val_dataloader(),
