@@ -288,6 +288,9 @@ class LogInstanceSpecificWeights(Callback):
     def on_validation_epoch_start(self, trainer, pl_module):
         pl_module.char_to_avg_inst_weight = None
 
+    def on_test_epoch_start(self, trainer, pl_module):
+        pl_module.char_to_avg_inst_weight = None
+
     def on_train_epoch_end(self, trainer, pl_module):
         char_to_avg_weight = pl_module.char_to_avg_inst_weight
         assert char_to_avg_weight is not None
@@ -298,6 +301,11 @@ class LogInstanceSpecificWeights(Callback):
         assert char_to_avg_weight is not None
         self.log_instance_weights(trainer, char_to_avg_weight, "val")
 
+    def on_test_epoch_end(self, trainer, pl_module):
+        char_to_avg_weight = pl_module.char_to_avg_inst_weight
+        assert char_to_avg_weight is not None
+        self.log_instance_weights(trainer, char_to_avg_weight, "test")
+
     def log_instance_weights(
         self,
         trainer: "pl.Trainer",
@@ -305,15 +313,31 @@ class LogInstanceSpecificWeights(Callback):
         mode: str = "train",
     ):
         # Decode the characters.
-        chars, ws = zip(*char_to_avg_weight.items())
+        chars, ws = zip(*sorted(char_to_avg_weight.items(), key=lambda kv: kv[1]))
         chars = self.label_encoder.inverse_transform(chars)
 
+        # Replace special tokens with shorter names to make the plot more readable.
+        _chars = []
+        _tkn_abbrevs = {"<EOS>": "eos", "<PAD>": "pad", "<SOS>": "sos"}
+        for i, c in enumerate(chars):
+            if c in _tkn_abbrevs.keys():
+                _chars.append(_tkn_abbrevs[c])
+            else:
+                _chars.append(c)
+        chars = _chars
+
         # Plot the average instance-specific weight per character.
+        to_plot = 10
         fig = plt.figure()
-        plt.bar(chars, ws, align="edge", alpha=0.5)
+        plt.subplot(1, 2, 1)
+        plt.bar(chars[-to_plot:], ws[-to_plot:], align="edge", alpha=0.5)
         plt.grid(True)
-        plt.xlabel("char")
-        plt.ylabel("instance weight")
+        plt.title("Highest")
+
+        plt.subplot(1, 2, 2)
+        plt.bar(chars[:to_plot], ws[:to_plot], align="edge", alpha=0.5)
+        plt.grid(True)
+        plt.title("Lowest")
 
         # Log to Tensorboard.
         tensorboard = trainer.logger.experiment
