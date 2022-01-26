@@ -9,9 +9,10 @@ from lit_models import MetaHTR
 from data import IAMDataset
 from lit_util import MetaHTRCheckpointIO, LitProgressBar
 from lit_callbacks import (
-    LogModelPredictionsMAML,
+    LogModelPredictionsMetaHTR,
     LogLayerWiseLearningRates,
     LogInstanceSpecificWeights,
+    LogWorstPredictionsMetaHTR,
 )
 from util import (
     filter_df_by_freq,
@@ -308,7 +309,7 @@ def main(args):
             filename="MAML-{epoch}-{char_error_rate:.4f}-{word_error_rate:.4f}",
             save_weights_only=True,
         ),
-        LogModelPredictionsMAML(
+        LogModelPredictionsMetaHTR(
             label_encoder=ds_train.label_enc,
             val_batch=val_batch,
             train_batch=train_batch,
@@ -317,6 +318,12 @@ def main(args):
         ),
         LogLayerWiseLearningRates(),
         LogInstanceSpecificWeights(ds_train.label_enc),
+        LogWorstPredictionsMetaHTR(
+            train_dataloader=learner.train_dataloader(),
+            val_dataloader=learner.val_dataloader(),
+            test_dataloader=learner.test_dataloader(),
+            training_skipped=(args.validate or args.test),
+        ),
     ]
     if args.early_stopping_patience != -1:
         callbacks.append(

@@ -419,7 +419,7 @@ class MetaHTR(pl.LightningModule):
         # Load FPHTR model.
         fphtr = LitFullPageHTREncoderDecoder.load_from_checkpoint(
             checkpoint_path,
-            hparams_file=fphtr_hparams_file,
+            hparams_file=str(fphtr_hparams_file),
             # `strict=False` because MAML checkpoints contain additional parameters
             # in the state_dict (namely the learnable inner loop learning rates), which
             # should be ignored when loading FPHTR.

@@ -1,8 +1,9 @@
 import math
 import re
 from typing import Tuple, Optional, Dict
+from pathlib import Path
 
-from lit_models import LitFullPageHTREncoderDecoder
+from lit_models import LitFullPageHTREncoderDecoder, MetaHTR
 from util import matplotlib_imshow, LabelEncoder, decode_prediction
 from data import IAMDataset
 
@@ -21,7 +22,7 @@ PREDICTIONS_TO_LOG = {
 }
 
 
-class LogWorstPredictions(Callback):
+class LogWorstPredictionsMetaHTR(Callback):
     """
     At the end of training, log the worst image prediction, meaning the predictions
     with the highest character error rates.
@@ -33,13 +34,11 @@ class LogWorstPredictions(Callback):
         val_dataloader: Optional[DataLoader] = None,
         test_dataloader: Optional[DataLoader] = None,
         training_skipped: bool = False,
-        data_format: str = "word",
     ):
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
         self.test_dataloader = test_dataloader
         self.training_skipped = training_skipped
-        self.data_format = data_format
 
     def on_validation_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"):
         if self.training_skipped and self.val_dataloader is not None:
@@ -80,28 +79,49 @@ class LogWorstPredictions(Callback):
 
         # Run inference on the validation set.
         pl_module.eval()
-        for img, target in dataloader:
-            assert target.ndim == 2, target.ndim
-            cer_metric = pl_module.model.cer_metric
-            with torch.inference_mode():
-                logits, preds, _ = pl_module(img.to(device), target.to(device))
-                for prd, tgt, im in zip(preds, target, img):
-                    cer_metric.reset()
-                    cer = cer_metric(prd.unsqueeze(0), tgt.unsqueeze(0)).item()
-                    img_cers.append((im, cer, prd, tgt))
+        torch.set_grad_enabled(True)
+        shots, ways = pl_module.shots, pl_module.ways
+        for imgs, targets, writer_ids in dataloader:
+            for task in range(ways):
+                writer_ids_uniq = writer_ids.unique().tolist()
+                task_slice = writer_ids == writer_ids_uniq[task]
+                tsk_imgs, tsk_tgts = imgs[task_slice], targets[task_slice]
+                support_imgs, support_tgts, query_imgs, query_tgts = (
+                    tsk_imgs[:shots],
+                    tsk_tgts[:shots],
+                    tsk_imgs[shots:],
+                    tsk_tgts[shots:],
+                )
+
+                _, preds, *_ = pl_module(
+                    *[t.to(device) for t in [support_imgs, support_tgts, query_imgs]]
+                )
+
+                cer_metric = pl_module.model.module.cer_metric
+                for prd, tgt, im in zip(preds, query_tgts, query_imgs):
+                    with torch.inference_mode():
+                        cer_metric.reset()
+                        cer = cer_metric(prd.unsqueeze(0), tgt.unsqueeze(0)).item()
+                        img_cers.append((im, cer, prd, tgt))
+        torch.set_grad_enabled(False)
 
         # Log the worst k predictions.
-        to_log = PREDICTIONS_TO_LOG[self.data_format] * 2
+        to_log = PREDICTIONS_TO_LOG["word"] * 2
         img_cers.sort(key=lambda x: x[1], reverse=True)  # sort by CER
         img_cers = img_cers[:to_log]
         fig = plt.figure(figsize=(24, 16))
         for i, (im, cer, prd, tgt) in enumerate(img_cers):
-            pred_str, target_str = decode_prediction_and_target(
-                prd, tgt, pl_module.model.label_encoder, pl_module.decoder.eos_tkn_idx
+            pred_str = decode_prediction(
+                prd[1:],
+                pl_module.model.module.label_encoder,
+                pl_module.decoder.eos_tkn_idx,
+            )
+            target_str = decode_prediction(
+                tgt, pl_module.model.module.label_encoder, pl_module.decoder.eos_tkn_idx
             )
 
             # Create plot.
-            ncols = 4 if self.data_format == "word" else 2
+            ncols = 4
             nrows = math.ceil(to_log / ncols)
             ax = fig.add_subplot(nrows, ncols, i + 1, xticks=[], yticks=[])
             matplotlib_imshow(im, IAMDataset.MEAN, IAMDataset.STD)
@@ -125,15 +145,24 @@ class LogWorstPredictions(Callback):
         best_model_path = ckpt_callback.best_model_path
 
         print(f"Loading best model at {best_model_path}")
-        label_encoder = pl_module.model.label_encoder
-        model = LitFullPageHTREncoderDecoder.load_from_checkpoint(
+
+        fphtr_hparams_file = Path(best_model_path).parent.parent / "model_hparams.yaml"
+        model = MetaHTR.init_with_fphtr_from_checkpoint(
             best_model_path,
-            label_encoder=label_encoder,
+            fphtr_hparams_file,
+            label_encoder=pl_module.model.module.label_encoder,
+            load_meta_weights=True,
+            taskset_train=pl_module.taskset_train,
+            taskset_val=pl_module.taskset_val,
+            taskset_test=pl_module.taskset_test,
+            ways=pl_module.ways,
+            shots=pl_module.shots,
+            num_workers=pl_module.num_workers,
         )
         trainer.model = model
 
 
-class LogModelPredictionsMAML(Callback):
+class LogModelPredictionsMetaHTR(Callback):
     """
     Use a fixed test batch to monitor model predictions at the end of every epoch.
 
@@ -226,16 +255,6 @@ class LogModelPredictionsMAML(Callback):
         plot_title: str = "query predictions vs targets",
     ):
         """Log a batch of images along with their targets to Tensorboard."""
-
-        # Find padding and <EOS> positions in predictions and targets.
-        eos_idxs_pred = None
-        if preds is not None:
-            eos_idxs_pred = (
-                (preds == pl_module.decoder.eos_tkn_idx).float().argmax(1).tolist()
-            )
-        eos_idxs_tgt = (
-            (targets == pl_module.decoder.eos_tkn_idx).float().argmax(1).tolist()
-        )
 
         assert imgs.shape[0] == targets.shape[0]
 
@@ -334,7 +353,9 @@ class LogInstanceSpecificWeights(Callback):
         mode: str = "train",
     ):
         # Decode the characters.
-        chars, ws = zip(*sorted(char_to_avg_weight.items(), key=lambda kv: kv[1]))
+        chars, ws = zip(
+            *sorted(char_to_avg_weight.items(), key=lambda kv: kv[1], reverse=True)
+        )
         chars = self.label_encoder.inverse_transform(chars)
 
         # Replace special tokens with shorter names to make the plot more readable.
@@ -351,12 +372,12 @@ class LogInstanceSpecificWeights(Callback):
         to_plot = 10
         fig = plt.figure()
         plt.subplot(1, 2, 1)
-        plt.bar(chars[-to_plot:], ws[-to_plot:], align="edge", alpha=0.5)
+        plt.bar(chars[:to_plot], ws[:to_plot], align="edge", alpha=0.5)
         plt.grid(True)
         plt.title("Highest")
 
         plt.subplot(1, 2, 2)
-        plt.bar(chars[:to_plot], ws[:to_plot], align="edge", alpha=0.5)
+        plt.bar(chars[-to_plot:], ws[-to_plot:], align="edge", alpha=0.5)
         plt.grid(True)
         plt.title("Lowest")
 
