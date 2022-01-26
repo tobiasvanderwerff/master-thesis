@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Union, Tuple, Any
+from typing import Optional, Dict, Union, Tuple, Any, List
 from pathlib import Path
 from collections import defaultdict
 
@@ -102,7 +102,7 @@ class MetaHTR(pl.LightningModule):
         if prms_to_log is not None:
             self.save_hyperparameters(prms_to_log)
 
-    def meta_learn(self, batch, mode="train") -> Tuple[Tensor, Dict[int, float]]:
+    def meta_learn(self, batch, mode="train") -> Tuple[Tensor, Dict[int, List]]:
         outer_loss = 0.0
         inner_losses = []
         char_to_inst_weights = defaultdict(list)
@@ -158,22 +158,23 @@ class MetaHTR(pl.LightningModule):
 
             # Outer loop.
             # learner.eval()
-            ignore_mask = query_tgts == self.ignore_index
+            loss_fn = learner.module.loss_fn
+            reduction = loss_fn.reduction
+            loss_fn.reduction = "mean"
             if is_train:
                 _, query_loss = learner.module.forward_teacher_forcing(
                     query_imgs, query_tgts
                 )
-                query_loss = torch.mean(query_loss[~ignore_mask])
             else:  # val/test
                 with torch.inference_mode():
                     _, preds, query_loss = learner(query_imgs, query_tgts)
-                    query_loss = torch.mean(query_loss)  # TODO: ignore pad values
 
                 # Log metrics.
                 metrics = learner.module.calculate_metrics(preds, query_tgts)
                 for metric, val in metrics.items():
                     self.log(metric, val, prog_bar=True)
             outer_loss += (1 / self.ways) * query_loss
+            loss_fn.reduction = reduction
         inner_loss_avg = np.mean(inner_losses)
         self.log(f"{mode}_loss_inner", inner_loss_avg, sync_dist=True, prog_bar=False)
 
