@@ -88,10 +88,6 @@ class MetaHTR(pl.LightningModule):
         self.char_to_avg_inst_weight = None
         self.ignore_index = self.decoder.pad_tkn_idx
 
-        # ++++++++++++++++++++++++++++++++++++++++++++
-        # self.automatic_optimization = False
-        # ++++++++++++++++++++++++++++++++++++++++++++
-
         self.save_hyperparameters(
             "ways",
             "shots",
@@ -276,14 +272,6 @@ class MetaHTR(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         torch.set_grad_enabled(True)
         loss, inst_ws = self.meta_learn(batch, mode="train")
-        # ++++++++++++++++++++++++++++++++++++++++++++++++++++
-        # opt = self.optimizers()
-        # opt.zero_grad()
-        # # automatically applies scaling, etc...
-        # self.manual_backward(loss)
-        # opt.step()
-        # TODO: scheduler?
-        # ++++++++++++++++++++++++++++++++++++++++++++++++++++
         self.log("train_loss_outer", loss, sync_dist=True, prog_bar=False)
         return {"loss": loss, "char_to_inst_weights": inst_ws}
 
