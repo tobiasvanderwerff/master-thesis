@@ -33,8 +33,10 @@ class MetaHTR(pl.LightningModule):
         outer_lr: float = 0.0001,
         initial_inner_lr: float = 0.001,
         use_cosine_lr_scheduler: bool = False,
+        use_batch_stats_for_normalization: bool = False,
         num_inner_steps: int = 1,
         num_workers: int = 0,
+        allow_nograd: bool = False,
         num_epochs: Optional[int] = None,
         prms_to_log: Optional[Dict[str, Union[str, float, int]]] = None,
     ):
@@ -62,6 +64,7 @@ class MetaHTR(pl.LightningModule):
         self.shots = shots
         self.outer_lr = outer_lr
         self.use_cosine_lr_schedule = use_cosine_lr_scheduler
+        self.use_batch_stats_for_normalization = use_batch_stats_for_normalization
         self.num_inner_steps = num_inner_steps
         self.num_workers = num_workers
         self.num_epochs = num_epochs
@@ -72,6 +75,7 @@ class MetaHTR(pl.LightningModule):
             lr=1.0,  # this lr is replaced by a learnable one
             first_order=False,
             allow_unused=True,
+            allow_nograd=allow_nograd,
         )
         self.inst_w_mlp = nn.Sequential(  # instance-specific weight MLP
             nn.Linear(
@@ -184,7 +188,7 @@ class MetaHTR(pl.LightningModule):
         single inner loop step.
         """
         learner.eval()
-        # set_norm_layers_to_train(learner)
+        self.set_norm_layers_train(self.use_batch_stats_for_normalization)
         # learner.train()
 
         _, support_loss_unreduced = learner.module.forward_teacher_forcing(
@@ -197,8 +201,10 @@ class MetaHTR(pl.LightningModule):
         support_loss = torch.sum(
             support_loss_unreduced[~ignore_mask] * instance_weights
         ) / adaptation_imgs.size(0)
+
         # Calculate gradients and take an optimization step.
         learner.adapt(support_loss)
+
         return learner, support_loss, instance_weights
 
     def calculate_instance_specific_weights(
@@ -344,7 +350,7 @@ class MetaHTR(pl.LightningModule):
 
         return logits, sampled_ids
 
-    def norm_layer_stats_train(self, training: bool = True):
+    def set_norm_layers_train(self, training: bool = True):
         norm_layers_ = (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)
         for m in self.modules():
             if isinstance(m, norm_layers_):
@@ -405,6 +411,18 @@ class MetaHTR(pl.LightningModule):
         for n, p in self.named_parameters():
             if not n.split(".")[-2] == "clf":
                 p.requires_grad = False
+
+    def freeze_normalization_layers(self, freeze_bias=False):
+        """
+        For all normalization layers (of the form x * w + b), freeze w,
+        and optionally the bias.
+        """
+        norm_layers_ = (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)
+        for m in self.modules():
+            if isinstance(m, norm_layers_):
+                m.weight.requires_grad = False
+                if freeze_bias:
+                    m.bias.requires_grad = False
 
     @staticmethod
     def init_with_fphtr_from_checkpoint(
