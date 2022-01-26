@@ -72,6 +72,7 @@ def main(args):
     cache_dir.mkdir(exist_ok=True, parents=True)
     ds_meta_train_path = cache_dir / "ds_meta_train.pkl"
     ds_meta_val_path = cache_dir / "ds_meta_val.pkl"
+    ds_meta_test_path = cache_dir / "ds_meta_test.pkl"
 
     # Copy hyper-parameters. The loaded model has an associated `hparams.yaml` file,
     # which we copy to the current logging directory so that we can load the model
@@ -88,18 +89,24 @@ def main(args):
     augmentations = "train" if args.use_image_augmentations else "val"
 
     # Check for cached dataset. If it does not exist, init a new dataset.
-    if ds_meta_train_path.is_file() and ds_meta_train_path.is_file():
+    if (
+        ds_meta_train_path.is_file()
+        and ds_meta_train_path.is_file()
+        and ds_meta_test_path.is_file()
+    ):
         print("Loading cached meta-datasets.")
         ds_meta_train = pickle_load(ds_meta_train_path)
         ds_meta_val = pickle_load(ds_meta_val_path)
+        ds_meta_test = pickle_load(ds_meta_test_path)
         # Set image transforms.
         if args.use_aachen_splits:
             ds_meta_train.dataset.set_transforms_for_split(augmentations)
             ds_meta_val.dataset.set_transforms_for_split("val")
-            # ds_test.set_transforms_for_split("test")
+            ds_meta_test.dataset.set_transforms_for_split("test")
         else:
             ds_meta_train.dataset.dataset.set_transforms_for_split(augmentations)
             ds_meta_val.dataset.dataset.set_transforms_for_split("val")
+            ds_meta_test.dataset.dataset.set_transforms_for_split("test")
     else:  # initialize a new dataset
         print("Initializing dataset...")
         ds = IAMDataset(
@@ -107,7 +114,6 @@ def main(args):
             "word",
             "train",
             label_enc=label_enc,
-            skip_bad_segmentation=True,
             return_writer_id=True,
             only_lowercase=only_lowercase,
         )
@@ -121,11 +127,11 @@ def main(args):
             validation_splits = (
                 (aachen_path / "validation.uttlist").read_text().splitlines()
             )
-            # test_splits = (aachen_path / "test.uttlist").read_text().splitlines()
+            test_splits = (aachen_path / "test.uttlist").read_text().splitlines()
 
             data_train = ds.data[ds.data["img_id"].isin(train_splits)]
             data_val = ds.data[ds.data["img_id"].isin(validation_splits)]
-            # data_test = ds.data[ds.data["img_id"].isin(test_splits)]
+            data_test = ds.data[ds.data["img_id"].isin(test_splits)]
 
             ds_train = copy(ds)
             ds_train.data = data_train
@@ -133,8 +139,8 @@ def main(args):
             ds_val = copy(ds)
             ds_val.data = data_val
 
-            # ds_test = copy(ds)
-            # ds_test.data = data_test
+            ds_test = copy(ds)
+            ds_test.data = data_test
         else:
             ds_train, ds_val = torch.utils.data.random_split(
                 ds, [math.ceil(0.8 * len(ds)), math.floor(0.2 * len(ds))]
@@ -144,31 +150,43 @@ def main(args):
         # Exclude writers from the dataset that do not have sufficiently many samples.
         ds_train.data = filter_df_by_freq(ds_train.data, "writer_id", args.shots * 2)
         ds_val.data = filter_df_by_freq(ds_val.data, "writer_id", args.shots * 2)
-        # ds_test.data = filter_df_by_freq(ds_test.data, "writer_id", args.shots * 2)
+        ds_test.data = filter_df_by_freq(ds_test.data, "writer_id", args.shots * 2)
 
-        # Set image transforms. NOTE: no image augmentations used during meta-learning.
+        # Set image transforms.
         if args.use_aachen_splits:
-            ds_train.set_transforms_for_split("val")
+            ds_train.set_transforms_for_split(augmentations)
             ds_val.set_transforms_for_split("val")
-            # ds_test.set_transforms_for_split("test")
+            ds_test.set_transforms_for_split("test")
         else:
-            ds_train.dataset.set_transforms_for_split("val")
+            ds_train.dataset.set_transforms_for_split(augmentations)
             ds_val.dataset.set_transforms_for_split("val")
+            ds_test.dataset.set_transforms_for_split("test")
 
         assert (ds_train.data["writer_id"].value_counts() >= args.shots * 2).all()
         assert (ds_val.data["writer_id"].value_counts() >= args.shots * 2).all()
+        assert (ds_test.data["writer_id"].value_counts() >= args.shots * 2).all()
         # Intersection of writer sets should be the empty set, thus length 0.
-        assert len(set(ds_train.writer_ids) & set(ds_val.writer_ids)) == 0
+        assert (
+            len(
+                set(ds_train.writer_ids)
+                & set(ds_val.writer_ids)
+                & set(ds_test.writer_ids)
+            )
+            == 0
+        )
 
         ds_meta_train = l2l.data.MetaDataset(ds_train)
         ds_meta_val = l2l.data.MetaDataset(ds_val)
+        ds_meta_test = l2l.data.MetaDataset(ds_test)
 
         # Cache the loaded data.
         pickle_save(ds_meta_train, ds_meta_train_path)
         pickle_save(ds_meta_val, ds_meta_val_path)
+        pickle_save(ds_meta_test, ds_meta_test_path)
 
     ds_train = ds_meta_train.dataset
     ds_val = ds_meta_val.dataset
+    ds_test = ds_meta_test.dataset
 
     eos_tkn_idx, sos_tkn_idx, pad_tkn_idx = ds_train.label_enc.transform(
         [ds_train._eos_token, ds_train._sos_token, ds_train._pad_token]
@@ -193,6 +211,10 @@ def main(args):
         l2l.data.transforms.NWays(ds_meta_val, n=args.ways),
         l2l.data.transforms.LoadData(ds_meta_val),
     ]
+    test_tsk_trnsf = [
+        l2l.data.transforms.NWays(ds_meta_test, n=args.ways),
+        l2l.data.transforms.LoadData(ds_meta_test),
+    ]
     taskset_train = l2l.data.TaskDataset(
         ds_meta_train,
         train_tsk_trnsf,
@@ -202,6 +224,12 @@ def main(args):
     taskset_val = l2l.data.TaskDataset(
         ds_meta_val,
         val_tsk_trnsf,
+        num_tasks=-1,
+        task_collate=collate_fn,
+    )
+    taskset_test = l2l.data.TaskDataset(
+        ds_meta_test,
+        test_tsk_trnsf,
         num_tasks=-1,
         task_collate=collate_fn,
     )
@@ -216,6 +244,9 @@ def main(args):
     taskset_val = PtTaskDataset(
         taskset_val, epoch_length=int(len(ds_val.writer_ids) / args.ways)
     )
+    taskset_test = PtTaskDataset(
+        taskset_test, epoch_length=int(len(ds_test.writer_ids) / args.ways)
+    )
 
     # Initialize MAML with a trained FPHTR model.
     learner = MetaHTR.init_with_fphtr_from_checkpoint(
@@ -226,6 +257,7 @@ def main(args):
         load_meta_weights=True,
         taskset_train=taskset_train,
         taskset_val=taskset_val,
+        taskset_test=taskset_test,
         ways=args.ways,
         shots=args.shots,
         outer_lr=args.outer_lr,
@@ -312,6 +344,8 @@ def main(args):
 
     if args.validate:  # validate a trained model
         trainer.validate(learner)
+    elif args.test:  # test a trained model
+        trainer.test(learner)
     else:  # train a model
         trainer.fit(learner)
 
@@ -326,6 +360,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_dir", type=str, required=True)
     parser.add_argument("--cache_dir", type=str, required=True)
     parser.add_argument("--validate", action="store_true", default=False)
+    parser.add_argument("--test", action="store_true", default=False)
     parser.add_argument("--early_stopping_patience", type=int, default=10,
                         help="Number of checks with no improvement after which "
                              "training will be stopped. Setting this to -1 will disable "
