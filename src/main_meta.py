@@ -77,14 +77,14 @@ def main(args):
     # Copy hyper-parameters. The loaded model has an associated `hparams.yaml` file,
     # which we copy to the current logging directory so that we can load the model
     # later using the saved hyper parameters.
-    model_hparams_file = Path(args.trained_model_path).parent.parent / "hparams.yaml"
-    shutil.copy(model_hparams_file, log_dir / "model_hparams.yaml")
-    hparams_file = (
-        str(model_hparams_file.parent / "model_hparams.yaml")
-        if (model_hparams_file.parent / "model_hparams.yaml").is_file()
-        else str(model_hparams_file)
-    )
-    hparams = load_hparams_from_yaml(str(hparams_file))
+    _model_path = Path(args.trained_model_path)
+    if (_model_path.parent.parent / "model_hparams.yaml").is_file():
+        # MetaHTR checkpoint.
+        fphtr_hparams_file = str(_model_path.parent.parent / "model_hparams.yaml")
+    else:  # FPHTR checkpoint.
+        fphtr_hparams_file = str(_model_path.parent.parent / "hparams.yaml")
+    shutil.copy(fphtr_hparams_file, log_dir / "model_hparams.yaml")
+    hparams = load_hparams_from_yaml(fphtr_hparams_file)
     only_lowercase = hparams["only_lowercase"]
     augmentations = "train" if args.use_image_augmentations else "val"
 
@@ -251,7 +251,7 @@ def main(args):
     # Initialize MAML with a trained FPHTR model.
     learner = MetaHTR.init_with_fphtr_from_checkpoint(
         args.trained_model_path,
-        hparams_file,
+        fphtr_hparams_file,
         ds_train.label_enc,
         fphtr_params_to_log={"only_lowercase": only_lowercase},
         load_meta_weights=True,
