@@ -356,6 +356,23 @@ class MetaHTR(pl.LightningModule):
             if isinstance(m, norm_layers_):
                 m.training = training
 
+    def freeze_all_layers_except_classifier(self):
+        for n, p in self.named_parameters():
+            if not n.split(".")[-2] == "clf":
+                p.requires_grad = False
+
+    def freeze_normalization_layers(self, freeze_bias=False):
+        """
+        For all normalization layers (of the form x * w + b), freeze w,
+        and optionally the bias.
+        """
+        norm_layers_ = (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)
+        for m in self.modules():
+            if isinstance(m, norm_layers_):
+                m.weight.requires_grad = False
+                if freeze_bias:
+                    m.bias.requires_grad = False
+
     def train_dataloader(self):
         # Since we are using a l2l TaskDataset which already batches the data,
         # using a PyTorch DataLoader is redundant. However, Pytorch Lightning
@@ -406,23 +423,6 @@ class MetaHTR(pl.LightningModule):
             )
             return [optimizer], [lr_scheduler]
         return optimizer
-
-    def freeze_all_layers_except_classifier(self):
-        for n, p in self.named_parameters():
-            if not n.split(".")[-2] == "clf":
-                p.requires_grad = False
-
-    def freeze_normalization_layers(self, freeze_bias=False):
-        """
-        For all normalization layers (of the form x * w + b), freeze w,
-        and optionally the bias.
-        """
-        norm_layers_ = (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)
-        for m in self.modules():
-            if isinstance(m, norm_layers_):
-                m.weight.requires_grad = False
-                if freeze_bias:
-                    m.bias.requires_grad = False
 
     @staticmethod
     def init_with_fphtr_from_checkpoint(

@@ -121,6 +121,8 @@ class IAMDataset(Dataset):
         if self.transforms is not None:
             img = self.transforms(image=img)["image"]
         if self._return_writer_id:
+            # The order in which the arguments is returned is important for the l2l
+            # MetaDataset, i.e. second returned value should be writer id.
             return img, data["writer_id"], data["target_enc"]
         return img, data["target_enc"]
 
