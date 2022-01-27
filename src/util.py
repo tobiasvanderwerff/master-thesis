@@ -2,9 +2,7 @@ import xml.etree.ElementTree as ET
 import random
 import pickle
 from pathlib import Path
-from typing import Union, Any, List, Optional, Sequence, Dict, Tuple
-
-# from models import FullPageHTREncoderDecoder
+from typing import Union, Any, List, Optional, Sequence, Dict
 
 import pandas as pd
 import torch
@@ -235,3 +233,37 @@ def decode_prediction(
     eos_idx = (pred == eos_tkn_idx).float().argmax().item()
     res = pred[:eos_idx] if eos_idx != 0 else pred
     return "".join(label_encoder.inverse_transform(res.tolist()))
+
+
+def set_batchnorm_layers_train(model: nn.Module, training: bool = True):
+    _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d)
+    for m in model.modules():
+        if isinstance(m, _batchnorm_layers):
+            m.training = training
+
+
+@torch.no_grad()
+def batchnorm_reset_running_stats(model: nn.Module):
+    _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d)
+    for m in model.modules():
+        if isinstance(m, _batchnorm_layers):
+            m.reset_running_stats()
+
+
+def freeze_all_layers_except_classifier(model: nn.Module):
+    for n, p in model.named_parameters():
+        if not n.split(".")[-2] == "clf":
+            p.requires_grad = False
+
+
+def freeze_batchnorm_weights(model: nn.Module, freeze_bias=False):
+    """
+    For all normalization layers (of the form x * w + b), freeze w,
+    and optionally the bias.
+    """
+    _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)
+    for m in model.modules():
+        if isinstance(m, _batchnorm_layers):
+            m.weight.requires_grad = False
+            if freeze_bias:
+                m.bias.requires_grad = False

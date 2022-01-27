@@ -3,7 +3,13 @@ from pathlib import Path
 from collections import defaultdict
 
 from models import FullPageHTREncoderDecoder
-from util import identity_collate_fn, LabelEncoder, LayerWiseLRTransform
+from util import (
+    identity_collate_fn,
+    LabelEncoder,
+    LayerWiseLRTransform,
+    batchnorm_reset_running_stats,
+    set_batchnorm_layers_train,
+)
 
 import torch
 import torch.optim as optim
@@ -33,7 +39,6 @@ class MetaHTR(pl.LightningModule):
         outer_lr: float = 0.0001,
         initial_inner_lr: float = 0.001,
         use_cosine_lr_scheduler: bool = False,
-        use_batch_stats_for_batchnorm: bool = False,
         use_instance_weights: bool = True,
         num_inner_steps: int = 1,
         num_workers: int = 0,
@@ -67,7 +72,6 @@ class MetaHTR(pl.LightningModule):
         self.shots = shots
         self.outer_lr = outer_lr
         self.use_cosine_lr_schedule = use_cosine_lr_scheduler
-        self.use_batch_stats_for_batchnorm = use_batch_stats_for_batchnorm
         self.use_instance_weights = use_instance_weights
         self.num_inner_steps = num_inner_steps
         self.num_workers = num_workers
@@ -96,6 +100,7 @@ class MetaHTR(pl.LightningModule):
 
         self.char_to_avg_inst_weight = None
         self.ignore_index = self.decoder.pad_tkn_idx
+        self.automatic_optimization = False
 
         self.save_hyperparameters(
             "ways",
@@ -119,6 +124,9 @@ class MetaHTR(pl.LightningModule):
         assert mode in ["train", "val", "test"]
         assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
         assert len(writer_ids_uniq) == self.ways
+
+        opt = self.optimizers()
+        opt.zero_grad()
 
         # Split the batch into N different writers, where N = ways.
         for task in range(self.ways):  # tasks correspond to different writers
@@ -145,6 +153,7 @@ class MetaHTR(pl.LightningModule):
 
             # Inner loop.
             assert torch.is_grad_enabled()
+            batchnorm_reset_running_stats(learner)
             for _ in range(self.num_inner_steps):
                 # Adapt the model to the support data.
                 learner, support_loss, instance_weights = self.fast_adaptation(
@@ -162,10 +171,14 @@ class MetaHTR(pl.LightningModule):
             loss_fn = learner.module.loss_fn
             reduction = loss_fn.reduction
             loss_fn.reduction = "mean"
+            # For the outer loop, use stored statistics for batchnorm obtained from
+            # the fast adaptation step.
+            learner.eval()
             if is_train:
                 _, query_loss = learner.module.forward_teacher_forcing(
                     query_imgs, query_tgts
                 )
+                self.manual_backward(query_loss / self.ways)
             else:  # val/test
                 with torch.inference_mode():
                     _, preds, query_loss = learner(query_imgs, query_tgts)
@@ -176,9 +189,13 @@ class MetaHTR(pl.LightningModule):
                     self.log(metric, val, prog_bar=True)
             outer_loss += query_loss
             loss_fn.reduction = reduction
-        outer_loss /= self.ways
+        # TODO: scheduler?
+        if is_train:
+            opt.step()
+
         inner_loss_avg = np.mean(inner_losses)
         self.log(f"{mode}_loss_inner", inner_loss_avg, sync_dist=True, prog_bar=False)
+        outer_loss /= self.ways
 
         return outer_loss, char_to_inst_weights
 
@@ -192,8 +209,7 @@ class MetaHTR(pl.LightningModule):
         Takes a single gradient step on a batch of data.
         """
         learner.eval()
-        self.set_batchnorm_layers_train(self.use_batch_stats_for_batchnorm)
-        # learner.train()
+        set_batchnorm_layers_train(learner, True)
 
         _, support_loss_unreduced = learner.module.forward_teacher_forcing(
             adaptation_imgs, adaptation_targets
@@ -346,6 +362,7 @@ class MetaHTR(pl.LightningModule):
                       greedy decoding (argmax on logits) at each time step
         """
         learner = self.model.clone()
+        batchnorm_reset_running_stats(learner)
 
         # For some reason using an autograd context manager like torch.enable_grad()
         # here does not work, perhaps due to some unexpected interaction between
@@ -357,39 +374,11 @@ class MetaHTR(pl.LightningModule):
         )
 
         # Run inference on the adapted model.
+        learner.eval()
         with torch.inference_mode():
             logits, sampled_ids, _ = learner(inference_imgs)
 
         return logits, sampled_ids
-
-    def set_batchnorm_layers_train(self, training: bool = True):
-        _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d)
-        for m in self.modules():
-            if isinstance(m, _batchnorm_layers):
-                m.training = training
-
-    def batchnorm_reset_running_stats(self):
-        _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d)
-        for m in self.modules():
-            if isinstance(m, _batchnorm_layers):
-                m.reset_running_stats()
-
-    def freeze_all_layers_except_classifier(self):
-        for n, p in self.named_parameters():
-            if not n.split(".")[-2] == "clf":
-                p.requires_grad = False
-
-    def freeze_batchnorm_weights(self, freeze_bias=False):
-        """
-        For all normalization layers (of the form x * w + b), freeze w,
-        and optionally the bias.
-        """
-        _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)
-        for m in self.modules():
-            if isinstance(m, _batchnorm_layers):
-                m.weight.requires_grad = False
-                if freeze_bias:
-                    m.bias.requires_grad = False
 
     def train_dataloader(self):
         # Since we are using a l2l TaskDataset which already batches the data,
@@ -493,12 +482,6 @@ class MetaHTR(pl.LightningModule):
             action="store_true",
             default=False,
             help="Use a cosine annealing scheduler to " "decay the learning rate.",
-        )
-        parser.add_argument(
-            "--use_batch_stats_for_batchnorm",
-            action="store_true",
-            default=False,
-            help="Use batch statistics over stored statistics for batchnorm layers.",
         )
         parser.add_argument(
             "--no_instance_weights",
