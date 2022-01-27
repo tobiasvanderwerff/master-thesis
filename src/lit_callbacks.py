@@ -332,19 +332,22 @@ class LogInstanceSpecificWeights(Callback):
         pl_module.char_to_avg_inst_weight = None
 
     def on_train_epoch_end(self, trainer, pl_module):
-        char_to_avg_weight = pl_module.char_to_avg_inst_weight
-        assert char_to_avg_weight is not None
-        self.log_instance_weights(trainer, char_to_avg_weight, "train")
+        if pl_module.use_instance_weights:
+            char_to_avg_weight = pl_module.char_to_avg_inst_weight
+            assert char_to_avg_weight is not None
+            self.log_instance_weights(trainer, char_to_avg_weight, "train")
 
     def on_validation_epoch_end(self, trainer, pl_module):
-        char_to_avg_weight = pl_module.char_to_avg_inst_weight
-        assert char_to_avg_weight is not None
-        self.log_instance_weights(trainer, char_to_avg_weight, "val")
+        if pl_module.use_instance_weights:
+            char_to_avg_weight = pl_module.char_to_avg_inst_weight
+            assert char_to_avg_weight is not None
+            self.log_instance_weights(trainer, char_to_avg_weight, "val")
 
     def on_test_epoch_end(self, trainer, pl_module):
-        char_to_avg_weight = pl_module.char_to_avg_inst_weight
-        assert char_to_avg_weight is not None
-        self.log_instance_weights(trainer, char_to_avg_weight, "test")
+        if pl_module.use_instance_weights:
+            char_to_avg_weight = pl_module.char_to_avg_inst_weight
+            assert char_to_avg_weight is not None
+            self.log_instance_weights(trainer, char_to_avg_weight, "test")
 
     def log_instance_weights(
         self,
