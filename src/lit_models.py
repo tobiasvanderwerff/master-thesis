@@ -44,7 +44,7 @@ class MetaHTR(pl.LightningModule):
         """Docstring here. TODO.
 
         Args:
-            ...
+            ....
             use_cosine_lr_scheduler (bool): whether to use a cosine annealing
                 scheduler to decay the learning rate from its initial value.
             use_instance_weights (bool): whether to use instance-specific weights from

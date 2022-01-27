@@ -261,18 +261,23 @@ def main(args):
     checkpoint_io = MetaHTRCheckpointIO()
 
     # Prepare fixed batches used for monitoring model predictions during training.
-    im, t, _ = next(iter(learner.val_dataloader()))
-    val_batch = (im[: args.shots * 2], t[: args.shots * 2])  # select the first writer
-    im, t, _ = next(iter(learner.train_dataloader()))
-    train_batch = (im[: args.shots * 2], t[: args.shots * 2])  # select the first writer
+    im, t, wrtrs = next(iter(learner.val_dataloader()))
+    # Select the first writer in the batch.
+    val_batch = (im[: args.shots * 2], t[: args.shots * 2], wrtrs[: args.shots * 2])
+    im, t, wrtrs = next(iter(learner.train_dataloader()))
+    train_batch = (im[: args.shots * 2], t[: args.shots * 2], wrtrs[: args.shots * 2])
+    assert (
+        val_batch[-1].unique().numel() == 1 and val_batch[-1].unique().numel() == 1
+    ), "Only one writer should be in the batch for logging."
     val_batch, train_batch = [
         (
             im[: args.shots],
             t[: args.shots],
             im[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
             t[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
+            wrtrs[0],
         )
-        for (im, t) in [val_batch, train_batch]
+        for (im, t, wrtrs) in [val_batch, train_batch]
     ]
 
     callbacks = [

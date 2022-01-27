@@ -173,8 +173,8 @@ class LogModelPredictionsMetaHTR(Callback):
     def __init__(
         self,
         label_encoder: LabelEncoder,
-        val_batch: Tuple[Tensor, Tensor, Tensor, Tensor],
-        train_batch: Optional[Tuple[Tensor, Tensor, Tensor, Tensor]] = None,
+        val_batch: Tuple[Tensor, Tensor, Tensor, Tensor, str],
+        train_batch: Optional[Tuple[Tensor, Tensor, Tensor, Tensor, str]] = None,
         data_format: str = "word",
         enable_grad: bool = False,
         predict_on_train_start: bool = False,
@@ -204,19 +204,26 @@ class LogModelPredictionsMetaHTR(Callback):
                 self._predict_intermediate(trainer, pl_module, split="train")
 
         # Log the support images once at the start of training.
-        imgs, targets, *_ = self.val_batch
+        support_imgs, support_targets, _, _, writer = self.val_batch
         self._log_intermediate(
-            trainer, pl_module, imgs, targets, split="val", plot_title="support batch"
+            trainer,
+            pl_module,
+            support_imgs,
+            support_targets,
+            split="val",
+            plot_title="support batch",
+            plot_suptitle=f"Writer id: {writer}",
         )
         if self.train_batch is not None:
-            imgs, targets, *_ = self.train_batch
+            support_imgs, support_targets, _, _, writer = self.train_batch
             self._log_intermediate(
                 trainer,
                 pl_module,
-                imgs,
-                targets,
+                support_imgs,
+                support_targets,
                 split="train",
                 plot_title="support batch",
+                plot_suptitle=f"Writer id: {writer}",
             )
 
     def _predict_intermediate(
@@ -231,7 +238,7 @@ class LogModelPredictionsMetaHTR(Callback):
             batch = self.val_batch
 
         # Make predictions.
-        support_imgs, support_tgts, query_imgs, query_tgts = batch
+        support_imgs, support_tgts, query_imgs, query_tgts, writer = batch
         pl_module.eval()
         torch.set_grad_enabled(self.enable_grad)
         _, preds, *_ = pl_module(
@@ -241,7 +248,13 @@ class LogModelPredictionsMetaHTR(Callback):
 
         # Log the results.
         self._log_intermediate(
-            trainer, pl_module, query_imgs, query_tgts, preds, split=split
+            trainer,
+            pl_module,
+            query_imgs,
+            query_tgts,
+            preds,
+            split=split,
+            plot_suptitle=f"Writer id: {writer}",
         )
 
     def _log_intermediate(
@@ -252,6 +265,7 @@ class LogModelPredictionsMetaHTR(Callback):
         targets: Tensor,
         preds: Optional[Tensor] = None,
         split: str = "val",
+        plot_suptitle: Optional[str] = None,
         plot_title: str = "query predictions vs targets",
     ):
         """Log a batch of images along with their targets to Tensorboard."""
@@ -281,6 +295,8 @@ class LogModelPredictionsMetaHTR(Callback):
             if pred_str is not None:
                 ttl = f"Pred: {pred_str}\n" + ttl
             ax.set_title(ttl)
+        if plot_suptitle is not None:
+            fig.suptitle(plot_suptitle)
 
         # Log the results to Tensorboard.
         tensorboard = trainer.logger.experiment
