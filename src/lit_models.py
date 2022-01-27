@@ -191,6 +191,8 @@ class MetaHTR(pl.LightningModule):
             loss_fn.reduction = reduction
         # TODO: scheduler?
         if is_train:
+            # TODO: clip value should be an argument
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
             opt.step()
 
         inner_loss_avg = np.mean(inner_losses)
