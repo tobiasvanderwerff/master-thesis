@@ -16,8 +16,6 @@ from lit_callbacks import (
 )
 from util import (
     filter_df_by_freq,
-    pickle_load,
-    pickle_save,
     LabelEncoder,
     PtTaskDataset,
 )
@@ -68,13 +66,6 @@ def main(args):
     log_dir.mkdir(exist_ok=True, parents=True)
     label_enc.dump(log_dir)
 
-    # Initalize meta dataset and cache the result.
-    cache_dir = Path(args.cache_dir) if args.cache_dir else log_dir / "cache"
-    cache_dir.mkdir(exist_ok=True, parents=True)
-    ds_meta_train_path = cache_dir / "ds_meta_train.pkl"
-    ds_meta_val_path = cache_dir / "ds_meta_val.pkl"
-    ds_meta_test_path = cache_dir / "ds_meta_test.pkl"
-
     # Copy hyper-parameters. The loaded model has an associated `hparams.yaml` file,
     # which we copy to the current logging directory so that we can load the model
     # later using the saved hyper parameters.
@@ -89,101 +80,79 @@ def main(args):
     only_lowercase = hparams["only_lowercase"]
     augmentations = "train" if args.use_image_augmentations else "val"
 
-    # Check for cached dataset. If it does not exist, init a new dataset.
-    if (
-        ds_meta_train_path.is_file()
-        and ds_meta_train_path.is_file()
-        and ds_meta_test_path.is_file()
-    ):
-        print("Loading cached meta-datasets.")
-        ds_meta_train = pickle_load(ds_meta_train_path)
-        ds_meta_val = pickle_load(ds_meta_val_path)
-        ds_meta_test = pickle_load(ds_meta_test_path)
-        # Set image transforms.
-        if args.use_aachen_splits:
-            ds_meta_train.dataset.set_transforms_for_split(augmentations)
-            ds_meta_val.dataset.set_transforms_for_split("val")
-            ds_meta_test.dataset.set_transforms_for_split("test")
-        else:
-            ds_meta_train.dataset.dataset.set_transforms_for_split(augmentations)
-            ds_meta_val.dataset.dataset.set_transforms_for_split("val")
-            ds_meta_test.dataset.dataset.set_transforms_for_split("test")
-    else:  # initialize a new dataset
-        print("Initializing dataset...")
-        ds = IAMDataset(
-            args.data_dir,
-            "word",
-            "train",
-            label_enc=label_enc,
-            return_writer_id=True,
-            only_lowercase=only_lowercase,
+    ds = IAMDataset(
+        args.data_dir,
+        "word",
+        "train",
+        label_enc=label_enc,
+        return_writer_id=True,
+        only_lowercase=only_lowercase,
+    )
+
+    # Split the dataset into train/val/(test).
+    if args.use_aachen_splits:
+        # Use the Aachen splits for the IAM dataset. It should be noted that these
+        # splits do not encompass the complete IAM dataset.
+        aachen_path = Path(__file__).parent.parent / "aachen_splits"
+        train_splits = (aachen_path / "train.uttlist").read_text().splitlines()
+        validation_splits = (
+            (aachen_path / "validation.uttlist").read_text().splitlines()
         )
+        test_splits = (aachen_path / "test.uttlist").read_text().splitlines()
 
-        # Split the dataset into train/val/(test).
-        if args.use_aachen_splits:
-            # Use the Aachen splits for the IAM dataset. It should be noted that these
-            # splits do not encompass the complete IAM dataset.
-            aachen_path = Path(__file__).parent.parent / "aachen_splits"
-            train_splits = (aachen_path / "train.uttlist").read_text().splitlines()
-            validation_splits = (
-                (aachen_path / "validation.uttlist").read_text().splitlines()
-            )
-            test_splits = (aachen_path / "test.uttlist").read_text().splitlines()
+        data_train = ds.data[ds.data["img_id"].isin(train_splits)]
+        data_val = ds.data[ds.data["img_id"].isin(validation_splits)]
+        data_test = ds.data[ds.data["img_id"].isin(test_splits)]
 
-            data_train = ds.data[ds.data["img_id"].isin(train_splits)]
-            data_val = ds.data[ds.data["img_id"].isin(validation_splits)]
-            data_test = ds.data[ds.data["img_id"].isin(test_splits)]
+        ds_train = copy(ds)
+        ds_train.data = data_train
 
-            ds_train = copy(ds)
-            ds_train.data = data_train
+        ds_val = copy(ds)
+        ds_val.data = data_val
 
-            ds_val = copy(ds)
-            ds_val.data = data_val
-
-            ds_test = copy(ds)
-            ds_test.data = data_test
-        else:
-            ds_train, ds_val = torch.utils.data.random_split(
-                ds, [math.ceil(0.8 * len(ds)), math.floor(0.2 * len(ds))]
-            )
-            ds_val.dataset = copy(ds)
-
-        # Exclude writers from the dataset that do not have sufficiently many samples.
-        ds_train.data = filter_df_by_freq(ds_train.data, "writer_id", args.shots * 2)
-        ds_val.data = filter_df_by_freq(ds_val.data, "writer_id", args.shots * 2)
-        ds_test.data = filter_df_by_freq(ds_test.data, "writer_id", args.shots * 2)
-
-        # Set image transforms.
-        if args.use_aachen_splits:
-            ds_train.set_transforms_for_split(augmentations)
-            ds_val.set_transforms_for_split("val")
-            ds_test.set_transforms_for_split("test")
-        else:
-            ds_train.dataset.set_transforms_for_split(augmentations)
-            ds_val.dataset.set_transforms_for_split("val")
-            ds_test.dataset.set_transforms_for_split("test")
-
-        assert (ds_train.data["writer_id"].value_counts() >= args.shots * 2).all()
-        assert (ds_val.data["writer_id"].value_counts() >= args.shots * 2).all()
-        assert (ds_test.data["writer_id"].value_counts() >= args.shots * 2).all()
-        # Intersection of writer sets should be the empty set, thus length 0.
-        assert (
-            len(
-                set(ds_train.writer_ids)
-                & set(ds_val.writer_ids)
-                & set(ds_test.writer_ids)
-            )
-            == 0
+        ds_test = copy(ds)
+        ds_test.data = data_test
+    else:
+        ds_train, ds_val = torch.utils.data.random_split(
+            ds, [math.ceil(0.8 * len(ds)), math.floor(0.2 * len(ds))]
         )
+        ds_val.dataset = copy(ds)
 
-        ds_meta_train = l2l.data.MetaDataset(ds_train)
-        ds_meta_val = l2l.data.MetaDataset(ds_val)
-        ds_meta_test = l2l.data.MetaDataset(ds_test)
+    # Exclude writers from the dataset that do not have sufficiently many samples.
+    ds_train.data = filter_df_by_freq(ds_train.data, "writer_id", args.shots * 2)
+    ds_val.data = filter_df_by_freq(ds_val.data, "writer_id", args.shots * 2)
+    ds_test.data = filter_df_by_freq(ds_test.data, "writer_id", args.shots * 2)
 
-        # Cache the loaded data.
-        pickle_save(ds_meta_train, ds_meta_train_path)
-        pickle_save(ds_meta_val, ds_meta_val_path)
-        pickle_save(ds_meta_test, ds_meta_test_path)
+    # Set image transforms.
+    if args.use_aachen_splits:
+        ds_train.set_transforms_for_split(augmentations)
+        ds_val.set_transforms_for_split("val")
+        ds_test.set_transforms_for_split("test")
+    else:
+        ds_train.dataset.set_transforms_for_split(augmentations)
+        ds_val.dataset.set_transforms_for_split("val")
+
+    # Intersection of writer sets should be the empty set, thus length 0.
+    assert (
+        len(set(ds_train.writer_ids) & set(ds_val.writer_ids) & set(ds_test.writer_ids))
+        == 0
+    )
+
+    # Initalize cache directory.
+    cache_dir = Path(args.cache_dir) if args.cache_dir else log_dir / "cache"
+    cache_dir.mkdir(exist_ok=True, parents=True)
+
+    # Setting the _bookkeeping_path attribute will make the MetaDataset instance
+    # load its label-index mapping from a file, rather than creating it (which takes a
+    # long time). If the path does not exists, the bookkeeping will be created and
+    # stored on disk afterwards.
+    ds_train._bookkeeping_path = cache_dir / "train_l2l_bookkeeping.pkl"
+    ds_val._bookkeeping_path = cache_dir / "val_l2l_bookkeeping.pkl"
+    ds_test._bookkeeping_path = cache_dir / "test_l2l_bookkeeping.pkl"
+
+    ds_meta_train = l2l.data.MetaDataset(ds_train)
+    ds_meta_val = l2l.data.MetaDataset(ds_val)
+    ds_meta_test = l2l.data.MetaDataset(ds_test)
 
     ds_train = ds_meta_train.dataset
     ds_val = ds_meta_val.dataset
@@ -235,8 +204,8 @@ def main(args):
         task_collate=collate_fn,
     )
 
-    # Wrap the task datasets into a simple class that sets a length for the dataset (
-    # other than 1, which is the default if setting num_tasks=-1).
+    # Wrap the task datasets into a simple class that sets a length for the dataset
+    # (other than 1, which is the default if setting num_tasks=-1).
     # This is necessary because the dataset length is used by Pytorch dataloaders to
     # determine how many batches are in the dataset per epoch.
     taskset_train = PtTaskDataset(
@@ -282,7 +251,7 @@ def main(args):
     )
     # learner.freeze_all_layers_except_classifier()
     if args.freeze_batchnorm_gamma:
-        learner.freeze_normalization_layers()
+        learner.freeze_normalization_layers(freeze_bias=False)
 
     # This checkpoint plugin is necessary to save the weights obtained using MAML in
     # the proper way. The weights should be stored in the same format as they would
