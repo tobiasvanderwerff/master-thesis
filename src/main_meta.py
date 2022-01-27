@@ -233,7 +233,7 @@ def main(args):
         outer_lr=args.outer_lr,
         num_workers=args.num_workers,
         use_cosine_lr_scheduler=args.use_cosine_lr_scheduler,
-        use_batch_stats_for_normalization=args.use_batch_stats_for_normalization,
+        use_batch_stats_for_batchnorm=args.use_batch_stats_for_batchnorm,
         use_instance_weights=(not args.no_instance_weights),
         allow_nograd=args.freeze_batchnorm_gamma,
         num_epochs=args.max_epochs,  # note this can be wrong when using early stopping
@@ -246,13 +246,13 @@ def main(args):
             "early_stopping_patience": args.early_stopping_patience,
             "use_cosine_lr_scheduler": args.use_cosine_lr_scheduler,
             "use_image_augmentations": args.use_image_augmentations,
-            "use_batch_stats_for_normalization": args.use_batch_stats_for_normalization,
+            "use_batch_stats_for_batchnorm": args.use_batch_stats_for_batchnorm,
             "freeze_batchnorm_gamma": args.freeze_batchnorm_gamma,
         },
     )
     # learner.freeze_all_layers_except_classifier()
     if args.freeze_batchnorm_gamma:
-        learner.freeze_normalization_layers(freeze_bias=False)
+        learner.freeze_batchnorm_weights(freeze_bias=False)
 
     # This checkpoint plugin is necessary to save the weights obtained using MAML in
     # the proper way. The weights should be stored in the same format as they would

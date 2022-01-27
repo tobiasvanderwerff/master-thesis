@@ -33,7 +33,7 @@ class MetaHTR(pl.LightningModule):
         outer_lr: float = 0.0001,
         initial_inner_lr: float = 0.001,
         use_cosine_lr_scheduler: bool = False,
-        use_batch_stats_for_normalization: bool = False,
+        use_batch_stats_for_batchnorm: bool = False,
         use_instance_weights: bool = True,
         num_inner_steps: int = 1,
         num_workers: int = 0,
@@ -67,7 +67,7 @@ class MetaHTR(pl.LightningModule):
         self.shots = shots
         self.outer_lr = outer_lr
         self.use_cosine_lr_schedule = use_cosine_lr_scheduler
-        self.use_batch_stats_for_normalization = use_batch_stats_for_normalization
+        self.use_batch_stats_for_batchnorm = use_batch_stats_for_batchnorm
         self.use_instance_weights = use_instance_weights
         self.num_inner_steps = num_inner_steps
         self.num_workers = num_workers
@@ -192,7 +192,7 @@ class MetaHTR(pl.LightningModule):
         Takes a single gradient step on a batch of data.
         """
         learner.eval()
-        self.set_norm_layers_train(self.use_batch_stats_for_normalization)
+        self.set_batchnorm_layers_train(self.use_batch_stats_for_batchnorm)
         # learner.train()
 
         _, support_loss_unreduced = learner.module.forward_teacher_forcing(
@@ -362,25 +362,31 @@ class MetaHTR(pl.LightningModule):
 
         return logits, sampled_ids
 
-    def set_norm_layers_train(self, training: bool = True):
-        norm_layers_ = (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)
+    def set_batchnorm_layers_train(self, training: bool = True):
+        _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d)
         for m in self.modules():
-            if isinstance(m, norm_layers_):
+            if isinstance(m, _batchnorm_layers):
                 m.training = training
+
+    def batchnorm_reset_running_stats(self):
+        _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d)
+        for m in self.modules():
+            if isinstance(m, _batchnorm_layers):
+                m.reset_running_stats()
 
     def freeze_all_layers_except_classifier(self):
         for n, p in self.named_parameters():
             if not n.split(".")[-2] == "clf":
                 p.requires_grad = False
 
-    def freeze_normalization_layers(self, freeze_bias=False):
+    def freeze_batchnorm_weights(self, freeze_bias=False):
         """
         For all normalization layers (of the form x * w + b), freeze w,
         and optionally the bias.
         """
-        norm_layers_ = (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)
+        _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)
         for m in self.modules():
-            if isinstance(m, norm_layers_):
+            if isinstance(m, _batchnorm_layers):
                 m.weight.requires_grad = False
                 if freeze_bias:
                     m.bias.requires_grad = False
@@ -489,13 +495,10 @@ class MetaHTR(pl.LightningModule):
             help="Use a cosine annealing scheduler to " "decay the learning rate.",
         )
         parser.add_argument(
-            "--use_batch_stats_for_normalization",
+            "--use_batch_stats_for_batchnorm",
             action="store_true",
             default=False,
-            help="Use batch statistics over stored "
-            "statistics for all normalization "
-            "layers in the model (batchnorm + "
-            "layernorm)",
+            help="Use batch statistics over stored statistics for batchnorm layers.",
         )
         parser.add_argument(
             "--no_instance_weights",
@@ -508,8 +511,7 @@ class MetaHTR(pl.LightningModule):
             "--freeze_batchnorm_gamma",
             action="store_true",
             default=False,
-            help="Freeze gamma (scaling factor) for all normalization "
-            "layers in the model (batchnorm + layernorm)",
+            help="Freeze gamma (scaling factor) for all batchnorm layers.",
         )
         return parent_parser
 
