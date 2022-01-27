@@ -34,6 +34,7 @@ class MetaHTR(pl.LightningModule):
         initial_inner_lr: float = 0.001,
         use_cosine_lr_scheduler: bool = False,
         use_batch_stats_for_normalization: bool = False,
+        use_instance_weights: bool = True,
         num_inner_steps: int = 1,
         num_workers: int = 0,
         allow_nograd: bool = False,
@@ -46,6 +47,8 @@ class MetaHTR(pl.LightningModule):
             ...
             use_cosine_lr_scheduler (bool): whether to use a cosine annealing
                 scheduler to decay the learning rate from its initial value.
+            use_instance_weights (bool): whether to use instance-specific weights from
+                the MetaHTR paper
             num_epochs (Optional[int]): number of epochs the model will be trained.
                 This is only used if `use_cosine_lr_scheduler` is set to True.
         """
@@ -65,6 +68,7 @@ class MetaHTR(pl.LightningModule):
         self.outer_lr = outer_lr
         self.use_cosine_lr_schedule = use_cosine_lr_scheduler
         self.use_batch_stats_for_normalization = use_batch_stats_for_normalization
+        self.use_instance_weights = use_instance_weights
         self.num_inner_steps = num_inner_steps
         self.num_workers = num_workers
         self.num_epochs = num_epochs
@@ -77,17 +81,18 @@ class MetaHTR(pl.LightningModule):
             allow_unused=True,
             allow_nograd=allow_nograd,
         )
-        self.inst_w_mlp = nn.Sequential(  # instance-specific weight MLP
-            nn.Linear(
-                model.decoder.clf.in_features * model.decoder.clf.out_features * 2,
-                inst_mlp_hidden_size,
-            ),
-            nn.ReLU(inplace=True),
-            nn.Linear(inst_mlp_hidden_size, inst_mlp_hidden_size),
-            nn.ReLU(inplace=True),
-            nn.Linear(inst_mlp_hidden_size, 1),
-            nn.Sigmoid(),
-        )
+        if use_instance_weights:
+            self.inst_w_mlp = nn.Sequential(  # instance-specific weight MLP
+                nn.Linear(
+                    model.decoder.clf.in_features * model.decoder.clf.out_features * 2,
+                    inst_mlp_hidden_size,
+                ),
+                nn.ReLU(inplace=True),
+                nn.Linear(inst_mlp_hidden_size, inst_mlp_hidden_size),
+                nn.ReLU(inplace=True),
+                nn.Linear(inst_mlp_hidden_size, 1),
+                nn.Sigmoid(),
+            )
 
         self.char_to_avg_inst_weight = None
         self.ignore_index = self.decoder.pad_tkn_idx
@@ -146,15 +151,14 @@ class MetaHTR(pl.LightningModule):
                     learner, support_imgs, support_tgts
                 )
 
-                # Store the instance-specific weights for logging.
-                ignore_mask = support_tgts == self.ignore_index
-                assert support_tgts[~ignore_mask].numel() == instance_weights.numel()
-                for tgt, w in zip(support_tgts[~ignore_mask], instance_weights):
-                    char_to_inst_weights[tgt.item()].append(w.item())
                 inner_losses.append(support_loss.item())
+                if self.use_instance_weights:
+                    # Store the instance-specific weights for logging.
+                    ignore_mask = support_tgts == self.ignore_index
+                    for tgt, w in zip(support_tgts[~ignore_mask], instance_weights):
+                        char_to_inst_weights[tgt.item()].append(w.item())
 
             # Outer loop.
-            # learner.eval()
             loss_fn = learner.module.loss_fn
             reduction = loss_fn.reduction
             loss_fn.reduction = "mean"
@@ -170,8 +174,9 @@ class MetaHTR(pl.LightningModule):
                 metrics = learner.module.calculate_metrics(preds, query_tgts)
                 for metric, val in metrics.items():
                     self.log(metric, val, prog_bar=True)
-            outer_loss += (1 / self.ways) * query_loss
+            outer_loss += query_loss
             loss_fn.reduction = reduction
+        outer_loss /= self.ways
         inner_loss_avg = np.mean(inner_losses)
         self.log(f"{mode}_loss_inner", inner_loss_avg, sync_dist=True, prog_bar=False)
 
@@ -184,8 +189,7 @@ class MetaHTR(pl.LightningModule):
         adaptation_targets: Tensor,
     ):
         """
-        Take a single gradient step on a batch of data, which is equivalent to a
-        single inner loop step.
+        Takes a single gradient step on a batch of data.
         """
         learner.eval()
         self.set_norm_layers_train(self.use_batch_stats_for_normalization)
@@ -194,13 +198,18 @@ class MetaHTR(pl.LightningModule):
         _, support_loss_unreduced = learner.module.forward_teacher_forcing(
             adaptation_imgs, adaptation_targets
         )
+
         ignore_mask = adaptation_targets == self.ignore_index
-        instance_weights = self.calculate_instance_specific_weights(
-            learner, support_loss_unreduced, ignore_mask
-        )
-        support_loss = torch.sum(
-            support_loss_unreduced[~ignore_mask] * instance_weights
-        ) / adaptation_imgs.size(0)
+        instance_weights = None
+        if self.use_instance_weights:
+            instance_weights = self.calculate_instance_specific_weights(
+                learner, support_loss_unreduced, ignore_mask
+            )
+            support_loss = torch.sum(
+                support_loss_unreduced[~ignore_mask] * instance_weights
+            ) / adaptation_imgs.size(0)
+        else:
+            support_loss = torch.mean(support_loss_unreduced[~ignore_mask])
 
         # Calculate gradients and take an optimization step.
         learner.adapt(support_loss)
@@ -294,13 +303,16 @@ class MetaHTR(pl.LightningModule):
         return {"loss": loss, "char_to_inst_weights": inst_ws}
 
     def training_epoch_end(self, epoch_outputs):
-        self.aggregate_epoch_instance_weights(epoch_outputs)
+        if self.use_instance_weights:
+            self.aggregate_epoch_instance_weights(epoch_outputs)
 
     def validation_epoch_end(self, epoch_outputs):
-        self.aggregate_epoch_instance_weights(epoch_outputs)
+        if self.use_instance_weights:
+            self.aggregate_epoch_instance_weights(epoch_outputs)
 
     def test_epoch_end(self, epoch_outputs):
-        self.aggregate_epoch_instance_weights(epoch_outputs)
+        if self.use_instance_weights:
+            self.aggregate_epoch_instance_weights(epoch_outputs)
 
     def aggregate_epoch_instance_weights(self, training_epoch_outputs):
         char_to_weights, char_to_avg_weight = defaultdict(list), defaultdict(float)
@@ -475,6 +487,29 @@ class MetaHTR(pl.LightningModule):
             action="store_true",
             default=False,
             help="Use a cosine annealing scheduler to " "decay the learning rate.",
+        )
+        parser.add_argument(
+            "--use_batch_stats_for_normalization",
+            action="store_true",
+            default=False,
+            help="Use batch statistics over stored "
+            "statistics for all normalization "
+            "layers in the model (batchnorm + "
+            "layernorm)",
+        )
+        parser.add_argument(
+            "--no_instance_weights",
+            action="store_true",
+            default=False,
+            help="Do not use instance-specific weights proposed in the "
+            "MetaHTR paper.",
+        )
+        parser.add_argument(
+            "--freeze_batchnorm_gamma",
+            action="store_true",
+            default=False,
+            help="Freeze gamma (scaling factor) for all normalization "
+            "layers in the model (batchnorm + layernorm)",
         )
         return parent_parser
 

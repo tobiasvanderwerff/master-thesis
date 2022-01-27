@@ -234,6 +234,7 @@ def main(args):
         num_workers=args.num_workers,
         use_cosine_lr_scheduler=args.use_cosine_lr_scheduler,
         use_batch_stats_for_normalization=args.use_batch_stats_for_normalization,
+        use_instance_weights=(not args.no_instance_weights),
         allow_nograd=args.freeze_batchnorm_gamma,
         num_epochs=args.max_epochs,  # note this can be wrong when using early stopping
         prms_to_log={
@@ -351,13 +352,6 @@ if __name__ == "__main__":
     parser.add_argument("--use_image_augmentations", action="store_true", default=False,
                         help="Whether to use image augmentations during training. For "
                              "MAML this does not seem to be too beneficial so far.")
-    parser.add_argument("--use_batch_stats_for_normalization", action="store_true",
-                        default=False, help="Use batch statistics over stored "
-                                            "statistics for all normalization layers "
-                                            "in the model (batchnorm + layernorm)")
-    parser.add_argument("--freeze_batchnorm_gamma", action="store_true", default=False,
-                        help="Freeze gamma (scaling factor) for all normalization "
-                             "layers in the model (batchnorm + layernorm)")
     parser.add_argument("--save_all_checkpoints", action="store_true", default=False)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--use_cpu", action="store_true", default=False)
