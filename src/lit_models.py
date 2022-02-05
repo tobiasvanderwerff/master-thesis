@@ -2,8 +2,11 @@ from typing import Optional, Dict, Union, Tuple, Any, List
 from pathlib import Path
 from collections import defaultdict
 
-from models import FullPageHTREncoderDecoder
-from util import identity_collate_fn, LabelEncoder, LayerWiseLRTransform
+from util import identity_collate_fn, LayerWiseLRTransform
+
+from htr.models.sar.sar import LitShowAttendRead
+from htr.models.fphtr.fphtr import LitFullPageHTREncoderDecoder
+from htr.util import LabelEncoder
 
 import torch
 import torch.optim as optim
@@ -23,7 +26,8 @@ class MetaHTR(pl.LightningModule):
 
     def __init__(
         self,
-        model: FullPageHTREncoderDecoder,
+        model: nn.Module,
+        num_clf_weights: int,
         taskset_train: Union[l2l.data.TaskDataset, Dataset],
         taskset_val: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
         taskset_test: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
@@ -45,6 +49,9 @@ class MetaHTR(pl.LightningModule):
 
         Args:
             ....
+            num_clf_weights (int): number of weights in the final classification layer
+                of the base model. This is necessary for initializing the
+                instance-weight MLP.
             use_cosine_lr_scheduler (bool): whether to use a cosine annealing
                 scheduler to decay the learning rate from its initial value.
             use_instance_weights (bool): whether to use instance-specific weights from
@@ -84,7 +91,7 @@ class MetaHTR(pl.LightningModule):
         if use_instance_weights:
             self.inst_w_mlp = nn.Sequential(  # instance-specific weight MLP
                 nn.Linear(
-                    model.decoder.clf.in_features * model.decoder.clf.out_features * 2,
+                    num_clf_weights * 2,
                     inst_mlp_hidden_size,
                 ),
                 nn.ReLU(inplace=True),
@@ -250,7 +257,7 @@ class MetaHTR(pl.LightningModule):
 
         mean_loss_grad = grad(
             mean_loss,
-            learner.module.decoder.clf.weight,
+            learner.module.clf_layer.weight,
             create_graph=True,
             retain_graph=True,
         )[0]
@@ -260,7 +267,7 @@ class MetaHTR(pl.LightningModule):
         for instance_loss in loss_unreduced[~ignore_mask]:
             instance_grad = grad(
                 instance_loss,
-                learner.module.decoder.clf.weight,
+                learner.module.clf_layer.weight,
                 create_graph=True,
                 retain_graph=True,
             )[0]
@@ -272,14 +279,6 @@ class MetaHTR(pl.LightningModule):
         assert instance_weights.numel() == torch.sum(~ignore_mask)
 
         return instance_weights
-
-    @property
-    def encoder(self):
-        return self.model.module.encoder
-
-    @property
-    def decoder(self):
-        return self.model.module.decoder
 
     def training_step(self, batch, batch_idx):
         torch.set_grad_enabled(True)
@@ -375,6 +374,7 @@ class MetaHTR(pl.LightningModule):
                 m.reset_running_stats()
 
     def freeze_all_layers_except_classifier(self):
+        # NOTE: Currently only works for FPHTR
         for n, p in self.named_parameters():
             if not n.split(".")[-2] == "clf":
                 p.requires_grad = False
@@ -443,29 +443,42 @@ class MetaHTR(pl.LightningModule):
         return optimizer
 
     @staticmethod
-    def init_with_fphtr_from_checkpoint(
+    def init_with_base_model_from_checkpoint(
+        model_arch: str,
         checkpoint_path: Union[str, Path],
-        fphtr_hparams_file: Union[str, Path],
+        model_hparams_file: Union[str, Path],
         label_encoder: LabelEncoder,
         load_meta_weights: bool = False,
-        fphtr_params_to_log: Optional[Dict[str, Any]] = None,
+        model_params_to_log: Optional[Dict[str, Any]] = None,
         *args,
         **kwargs,
     ):
-        # Load FPHTR model.
-        fphtr = LitFullPageHTREncoderDecoder.load_from_checkpoint(
-            checkpoint_path,
-            hparams_file=str(fphtr_hparams_file),
-            # `strict=False` because MAML checkpoints contain additional parameters
-            # in the state_dict (namely the learnable inner loop learning rates), which
-            # should be ignored when loading FPHTR.
-            strict=False,
-            label_encoder=label_encoder,
-            params_to_log=fphtr_params_to_log,
-            loss_reduction="none",  # necessary for instance-specific loss weights
-        )
+        assert model_arch in ["fphtr", "sar"], "Invalid base model architecture."
 
-        model = MetaHTR(fphtr.model, *args, **kwargs)
+        if model_arch == "fphtr":
+            # Load FPHTR model.
+            base_model = LitFullPageHTREncoderDecoder.load_from_checkpoint(
+                checkpoint_path,
+                hparams_file=str(model_hparams_file),
+                strict=False,
+                label_encoder=label_encoder,
+                params_to_log=model_params_to_log,
+                loss_reduction="none",  # necessary for instance-specific loss weights
+            )
+            num_clf_weights = base_model.decoder.clf.in_features * base_model.decoder.clf.out_features
+        else:  # SAR
+            base_model = LitShowAttendRead.load_from_checkpoint(
+                checkpoint_path,
+                hparams_file=str(model_hparams_file),
+                strict=False,
+                label_encoder=label_encoder,
+                params_to_log=model_params_to_log,
+                loss_reduction="none",  # necessary for instance-specific loss weights
+            )
+            num_clf_weights = base_model.lstm_decoder.prediction.in_features * \
+                              base_model.lstm_decoder.prediction.out_features
+
+        model = MetaHTR(base_model.model, num_clf_weights=num_clf_weights, *args, **kwargs)
 
         if load_meta_weights:
             # Load weights specific to the meta-learning algorithm.
@@ -515,124 +528,3 @@ class MetaHTR(pl.LightningModule):
         )
         return parent_parser
 
-
-class LitFullPageHTREncoderDecoder(pl.LightningModule):
-    model: FullPageHTREncoderDecoder
-
-    """
-    Pytorch Lightning module that acting as a wrapper around the
-    FullPageHTREncoderDecoder class.
-
-    Using a PL module allows the model to be used in conjunction with a Pytorch
-    Lightning Trainer, and takes care of logging relevant metrics to Tensorboard.
-    """
-
-    def __init__(
-        self,
-        label_encoder: LabelEncoder,
-        learning_rate: float = 0.0002,
-        max_seq_len: int = 500,
-        d_model: int = 260,
-        num_layers: int = 6,
-        nhead: int = 4,
-        dim_feedforward: int = 1024,
-        encoder_name: str = "resnet18",
-        drop_enc: int = 0.5,
-        drop_dec: int = 0.5,
-        activ_dec: str = "gelu",
-        loss_reduction: str = "mean",
-        vocab_len: Optional[int] = None,  # if not specified len(label_encoder) is used
-        params_to_log: Optional[Dict[str, Union[str, float, int]]] = None,
-    ):
-        super().__init__()
-
-        # Save hyperparameters.
-        self.learning_rate = learning_rate
-        if params_to_log is not None:
-            self.save_hyperparameters(params_to_log)
-        self.save_hyperparameters(
-            "learning_rate",
-            "d_model",
-            "num_layers",
-            "nhead",
-            "dim_feedforward",
-            "max_seq_len",
-            "encoder_name",
-            "drop_enc",
-            "drop_dec",
-            "activ_dec",
-        )
-
-        # Initialize the model.
-        self.model = FullPageHTREncoderDecoder(
-            label_encoder=label_encoder,
-            max_seq_len=max_seq_len,
-            d_model=d_model,
-            num_layers=num_layers,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            encoder_name=encoder_name,
-            drop_enc=drop_enc,
-            drop_dec=drop_dec,
-            activ_dec=activ_dec,
-            vocab_len=vocab_len,
-            loss_reduction=loss_reduction,
-        )
-
-    @property
-    def encoder(self):
-        return self.model.encoder
-
-    @property
-    def decoder(self):
-        return self.model.decoder
-
-    def forward(self, imgs: Tensor, targets: Optional[Tensor] = None):
-        return self.model(imgs, targets)
-
-    def training_step(self, batch, batch_idx, log_results=True):
-        imgs, targets = batch
-        logits, loss = self.model.forward_teacher_forcing(imgs, targets)
-        self.log("train_loss", loss, sync_dist=True, prog_bar=False)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        return self.val_or_test_step(batch)
-
-    def test_step(self, batch, batch_idx):
-        return self.val_or_test_step(batch)
-
-    def val_or_test_step(self, batch) -> Tensor:
-        imgs, targets = batch
-        logits, _, loss = self(imgs, targets)
-        _, preds = logits.max(-1)
-
-        # Update and log metrics.
-        self.model.cer_metric(preds, targets)
-        self.model.wer_metric(preds, targets)
-        self.log("char_error_rate", self.model.cer_metric, prog_bar=True)
-        self.log("word_error_rate", self.model.wer_metric, prog_bar=True)
-        self.log("val_loss", loss, sync_dist=True, prog_bar=True)
-
-        return loss
-
-    def configure_optimizers(self):
-        return optim.Adam(self.parameters(), lr=self.learning_rate)
-
-    @staticmethod
-    def add_model_specific_args(parent_parser):
-        # fmt: off
-        parser = parent_parser.add_argument_group("LitFullPageHTREncoderDecoder")
-        parser.add_argument("--learning_rate", type=float, default=0.0002)
-        parser.add_argument("--encoder", type=str, default="resnet18",
-                            choices=["resnet18", "resnet34", "resnet50"])
-        parser.add_argument("--d_model", type=int, default=260)
-        parser.add_argument("--num_layers", type=int, default=6)
-        parser.add_argument("--nhead", type=int, default=4)
-        parser.add_argument("--dim_feedforward", type=int, default=1024)
-        parser.add_argument("--drop_enc", type=float, default=0.5,
-                            help="Encoder dropout.")
-        parser.add_argument("--drop_dec", type=float, default=0.5,
-                            help="Decoder dropout.")
-        return parent_parser
-        # fmt: on

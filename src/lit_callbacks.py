@@ -3,9 +3,12 @@ import re
 from typing import Tuple, Optional, Dict
 from pathlib import Path
 
-from lit_models import LitFullPageHTREncoderDecoder, MetaHTR
-from util import matplotlib_imshow, LabelEncoder, decode_prediction
-from data import IAMDataset
+from lit_models import MetaHTR
+from util import decode_prediction
+
+from htr.data import IAMDataset
+from htr.util import matplotlib_imshow, LabelEncoder, decode_prediction
+from htr.models.fphtr.fphtr import LitFullPageHTREncoderDecoder, LitShowAttendRead
 
 import torch
 import pytorch_lightning as pl
@@ -146,10 +149,10 @@ class LogWorstPredictionsMetaHTR(Callback):
 
         print(f"Loading best model at {best_model_path}")
 
-        fphtr_hparams_file = Path(best_model_path).parent.parent / "model_hparams.yaml"
-        model = MetaHTR.init_with_fphtr_from_checkpoint(
-            best_model_path,
-            fphtr_hparams_file,
+        model_hparams_file = Path(best_model_path).parent.parent / "model_hparams.yaml"
+        args = dict(
+            checkpoint_path=best_model_path,
+            model_hparams_file=model_hparams_file,
             label_encoder=pl_module.model.module.label_encoder,
             load_meta_weights=True,
             taskset_train=pl_module.taskset_train,
@@ -159,6 +162,20 @@ class LogWorstPredictionsMetaHTR(Callback):
             shots=pl_module.shots,
             num_workers=pl_module.num_workers,
         )
+        import pdb; pdb.set_trace()
+        if isinstance(pl_module.model.module, LitFullPageHTREncoderDecoder):
+            model = MetaHTR.init_with_base_model_from_checkpoint(
+                "fphtr",
+                **args
+            )
+        elif isinstance(pl_module.model.module, LitShowAttendRead):
+            model = MetaHTR.init_with_base_model_from_checkpoint(
+                "sar",
+                **args
+            )
+        else:
+            raise ValueError(f"Unrecognized model class: {pl_module.model.module.__class__}")
+
         trainer.model = model
 
 

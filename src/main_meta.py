@@ -4,10 +4,8 @@ from copy import copy
 from pathlib import Path
 from functools import partial
 
-from models import *
 from lit_models import MetaHTR
-from data import IAMDataset
-from lit_util import MetaHTRCheckpointIO, LitProgressBar
+from lit_util import MetaHTRCheckpointIO
 from lit_callbacks import (
     LogModelPredictionsMetaHTR,
     LogLayerWiseLearningRates,
@@ -16,9 +14,11 @@ from lit_callbacks import (
 )
 from util import (
     filter_df_by_freq,
-    LabelEncoder,
     PtTaskDataset,
 )
+
+from htr.data import IAMDataset
+from htr.util import LitProgressBar, LabelEncoder
 
 import learn2learn as l2l
 from torch.utils.data import DataLoader
@@ -38,6 +38,8 @@ PREDICTIONS_TO_LOG = {
 
 
 def main(args):
+
+    print(f"Base model used: {str(args.base_model).upper()}")
 
     seed_everything(args.seed)
 
@@ -72,11 +74,11 @@ def main(args):
     _model_path = Path(args.trained_model_path)
     if (_model_path.parent.parent / "model_hparams.yaml").is_file():
         # MetaHTR checkpoint.
-        fphtr_hparams_file = str(_model_path.parent.parent / "model_hparams.yaml")
-    else:  # FPHTR checkpoint.
-        fphtr_hparams_file = str(_model_path.parent.parent / "hparams.yaml")
-    shutil.copy(fphtr_hparams_file, log_dir / "model_hparams.yaml")
-    hparams = load_hparams_from_yaml(fphtr_hparams_file)
+        model_hparams_file = str(_model_path.parent.parent / "model_hparams.yaml")
+    else:  # base model checkpoint.
+        model_hparams_file = str(_model_path.parent.parent / "hparams.yaml")
+    shutil.copy(model_hparams_file, log_dir / "model_hparams.yaml")
+    hparams = load_hparams_from_yaml(model_hparams_file)
     only_lowercase = hparams["only_lowercase"]
     augmentations = "train" if args.use_image_augmentations else "val"
 
@@ -218,12 +220,11 @@ def main(args):
         taskset_test, epoch_length=int(len(ds_test.writer_ids) / args.ways)
     )
 
-    # Initialize MAML with a trained FPHTR model.
-    learner = MetaHTR.init_with_fphtr_from_checkpoint(
+    args_ = dict(
         args.trained_model_path,
-        fphtr_hparams_file,
+        model_hparams_file,
         ds_train.label_enc,
-        fphtr_params_to_log={"only_lowercase": only_lowercase},
+        model_params_to_log={"only_lowercase": only_lowercase},
         load_meta_weights=True,
         taskset_train=taskset_train,
         taskset_val=taskset_val,
@@ -250,6 +251,12 @@ def main(args):
             "freeze_batchnorm_gamma": args.freeze_batchnorm_gamma,
         },
     )
+    # Initialize MAML with a trained base model.
+    if args.model == "fphtr":
+        model_args = MetaHTR.init_with_base_model_from_checkpoint("fphtr", **args_)
+    else:  # SAR
+        model = MetaHTR.init_with_base_model_from_checkpoint("sar", **args_)
+
     # learner.freeze_all_layers_except_classifier()
     if args.freeze_batchnorm_gamma:
         learner.freeze_batchnorm_weights(freeze_bias=False)
@@ -342,6 +349,8 @@ if __name__ == "__main__":
     # fmt: off
     parser = argparse.ArgumentParser()
 
+    parser.add_argument("--base_model", type=str, required=True, choices=["fphtr", "sar"],
+                        default="fphtr")
     parser.add_argument("--trained_model_path", type=str, required=True,
                         help=("Path to a model checkpoint, which will be used as a "
                               "starting point for MAML/MetaHTR."))

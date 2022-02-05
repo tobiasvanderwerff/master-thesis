@@ -8,17 +8,6 @@ from pytorch_lightning.plugins import TorchCheckpointIO
 from pytorch_lightning.utilities.types import _PATH
 
 
-class LitProgressBar(TQDMProgressBar):
-    def get_metrics(self, trainer, model):
-        # don't show the version number
-        items = super().get_metrics(trainer, model)
-        for k in list(items.keys()):
-            if k.startswith("grad"):
-                items.pop(k, None)
-        items.pop("v_num", None)
-        return items
-
-
 class MetaHTRCheckpointIO(TorchCheckpointIO):
     def save_checkpoint(
         self,
