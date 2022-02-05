@@ -101,7 +101,7 @@ class MetaHTR(pl.LightningModule):
             )
 
         self.char_to_avg_inst_weight = None
-        self.ignore_index = self.decoder.pad_tkn_idx
+        self.ignore_index = self.model.module.pad_tkn_idx
 
         self.save_hyperparameters(
             "ways",
@@ -124,7 +124,9 @@ class MetaHTR(pl.LightningModule):
 
         assert mode in ["train", "val", "test"]
         assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
-        assert len(writer_ids_uniq) == self.ways
+        assert (
+            len(writer_ids_uniq) == self.ways
+        ), f"{len(writer_ids_uniq)} vs {self.ways}"
 
         # Split the batch into N different writers, where N = ways.
         for task in range(self.ways):  # tasks correspond to different writers
@@ -197,7 +199,8 @@ class MetaHTR(pl.LightningModule):
         """
         Takes a single gradient step on a batch of data.
         """
-        learner.eval()
+        # learner.eval()
+        learner.train()  # TODO: eval not allowed for RNN backprop?
         self.set_batchnorm_layers_train(self.use_batch_stats_for_batchnorm)
         # learner.train()
 
