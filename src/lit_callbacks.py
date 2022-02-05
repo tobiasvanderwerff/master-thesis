@@ -7,8 +7,8 @@ from lit_models import MetaHTR
 from util import decode_prediction
 
 from htr.data import IAMDataset
-from htr.util import matplotlib_imshow, LabelEncoder, decode_prediction
-from htr.models.fphtr.fphtr import LitFullPageHTREncoderDecoder, LitShowAttendRead
+from htr.util import matplotlib_imshow, LabelEncoder
+from htr.models.lit_models import LitFullPageHTREncoderDecoder, LitShowAttendRead
 
 import torch
 import pytorch_lightning as pl
@@ -162,19 +162,17 @@ class LogWorstPredictionsMetaHTR(Callback):
             shots=pl_module.shots,
             num_workers=pl_module.num_workers,
         )
-        import pdb; pdb.set_trace()
+        import pdb
+
+        pdb.set_trace()
         if isinstance(pl_module.model.module, LitFullPageHTREncoderDecoder):
-            model = MetaHTR.init_with_base_model_from_checkpoint(
-                "fphtr",
-                **args
-            )
+            model = MetaHTR.init_with_base_model_from_checkpoint("fphtr", **args)
         elif isinstance(pl_module.model.module, LitShowAttendRead):
-            model = MetaHTR.init_with_base_model_from_checkpoint(
-                "sar",
-                **args
-            )
+            model = MetaHTR.init_with_base_model_from_checkpoint("sar", **args)
         else:
-            raise ValueError(f"Unrecognized model class: {pl_module.model.module.__class__}")
+            raise ValueError(
+                f"Unrecognized model class: {pl_module.model.module.__class__}"
+            )
 
         trainer.model = model
 

@@ -1,17 +1,12 @@
-import xml.etree.ElementTree as ET
-import random
-from pathlib import Path
-from typing import Union, Any, List, Optional, Sequence, Dict, Tuple
+from typing import Any, Sequence
+
+from htr.util import LabelEncoder
 
 import pandas as pd
-import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
-import numpy as np
 import learn2learn as l2l
 from torch.utils.data import Dataset
 from torch import Tensor
-from pytorch_lightning.callbacks import TQDMProgressBar
 
 
 class LayerWiseLRTransform:

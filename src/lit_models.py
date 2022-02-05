@@ -4,8 +4,7 @@ from collections import defaultdict
 
 from util import identity_collate_fn, LayerWiseLRTransform
 
-from htr.models.sar.sar import LitShowAttendRead
-from htr.models.fphtr.fphtr import LitFullPageHTREncoderDecoder
+from htr.models.lit_models import LitShowAttendRead, LitFullPageHTREncoderDecoder
 from htr.util import LabelEncoder
 
 import torch
@@ -465,7 +464,9 @@ class MetaHTR(pl.LightningModule):
                 params_to_log=model_params_to_log,
                 loss_reduction="none",  # necessary for instance-specific loss weights
             )
-            num_clf_weights = base_model.decoder.clf.in_features * base_model.decoder.clf.out_features
+            num_clf_weights = (
+                base_model.decoder.clf.in_features * base_model.decoder.clf.out_features
+            )
         else:  # SAR
             base_model = LitShowAttendRead.load_from_checkpoint(
                 checkpoint_path,
@@ -475,10 +476,14 @@ class MetaHTR(pl.LightningModule):
                 params_to_log=model_params_to_log,
                 loss_reduction="none",  # necessary for instance-specific loss weights
             )
-            num_clf_weights = base_model.lstm_decoder.prediction.in_features * \
-                              base_model.lstm_decoder.prediction.out_features
+            num_clf_weights = (
+                base_model.lstm_decoder.prediction.in_features
+                * base_model.lstm_decoder.prediction.out_features
+            )
 
-        model = MetaHTR(base_model.model, num_clf_weights=num_clf_weights, *args, **kwargs)
+        model = MetaHTR(
+            base_model.model, num_clf_weights=num_clf_weights, *args, **kwargs
+        )
 
         if load_meta_weights:
             # Load weights specific to the meta-learning algorithm.
@@ -527,4 +532,3 @@ class MetaHTR(pl.LightningModule):
             help="Freeze gamma (scaling factor) for all batchnorm layers.",
         )
         return parent_parser
-

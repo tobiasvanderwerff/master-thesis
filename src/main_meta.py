@@ -1,5 +1,6 @@
 import argparse
 import shutil
+import math
 from copy import copy
 from pathlib import Path
 from functools import partial
@@ -20,8 +21,8 @@ from util import (
 from htr.data import IAMDataset
 from htr.util import LitProgressBar, LabelEncoder
 
+import torch
 import learn2learn as l2l
-from torch.utils.data import DataLoader
 from pytorch_lightning import seed_everything, Trainer
 from pytorch_lightning import loggers as pl_loggers
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, ModelSummary
@@ -221,11 +222,11 @@ def main(args):
     )
 
     args_ = dict(
-        args.trained_model_path,
-        model_hparams_file,
-        ds_train.label_enc,
-        model_params_to_log={"only_lowercase": only_lowercase},
+        checkpoint_path=args.trained_model_path,
+        model_hparams_file=model_hparams_file,
+        label_encoder=ds_train.label_enc,
         load_meta_weights=True,
+        model_params_to_log={"only_lowercase": only_lowercase},
         taskset_train=taskset_train,
         taskset_val=taskset_val,
         taskset_test=taskset_test,
@@ -252,10 +253,10 @@ def main(args):
         },
     )
     # Initialize MAML with a trained base model.
-    if args.model == "fphtr":
-        model_args = MetaHTR.init_with_base_model_from_checkpoint("fphtr", **args_)
+    if args.base_model == "fphtr":
+        learner = MetaHTR.init_with_base_model_from_checkpoint("fphtr", **args_)
     else:  # SAR
-        model = MetaHTR.init_with_base_model_from_checkpoint("sar", **args_)
+        learner = MetaHTR.init_with_base_model_from_checkpoint("sar", **args_)
 
     # learner.freeze_all_layers_except_classifier()
     if args.freeze_batchnorm_gamma:
