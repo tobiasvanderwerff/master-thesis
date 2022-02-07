@@ -161,6 +161,11 @@ def main(args):
     ds_val = ds_meta_val.dataset
     ds_test = ds_meta_test.dataset
 
+    print("Dataset sizes:")
+    print(f"train:\t{len(ds_train)}")
+    print(f"val:\t{len(ds_val)}")
+    print(f"test:\t{len(ds_test)}")
+
     eos_tkn_idx, sos_tkn_idx, pad_tkn_idx = ds_train.label_enc.transform(
         [ds_train._eos_token, ds_train._sos_token, ds_train._pad_token]
     )
