@@ -134,8 +134,8 @@ class MetaHTR(pl.LightningModule):
             len(writer_ids_uniq) == self.ways
         ), f"{len(writer_ids_uniq)} vs {self.ways}"
 
-        opt = self.optimizers()
-        opt.zero_grad()
+        optimizer = self.optimizers()
+        optimizer.zero_grad()
 
         # Split the batch into N different writers, where N = ways.
         for task in range(self.ways):  # tasks correspond to different writers
@@ -198,11 +198,10 @@ class MetaHTR(pl.LightningModule):
             outer_loss += query_loss
             loss_fn.reduction = reduction
 
-        # TODO: scheduler?
         if is_train:
             if self.grad_clip is not None:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
-            opt.step()
+                self.clip_gradients(optimizer, self.grad_clip, "norm")
+            optimizer.step()
 
         outer_loss /= self.ways
         inner_loss_avg = np.mean(inner_losses)
@@ -322,6 +321,7 @@ class MetaHTR(pl.LightningModule):
         return {"loss": loss, "char_to_inst_weights": inst_ws}
 
     def training_epoch_end(self, epoch_outputs):
+        self.lr_schedulers().step()
         if self.use_instance_weights:
             self.aggregate_epoch_instance_weights(epoch_outputs)
 
