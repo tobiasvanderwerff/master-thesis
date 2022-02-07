@@ -191,9 +191,10 @@ class MetaHTR(pl.LightningModule):
                     _, preds, query_loss = learner(query_imgs, query_tgts)
 
                 # Log metrics.
-                metrics = learner.module.calculate_metrics(preds, query_tgts)
-                for metric, val in metrics.items():
-                    self.log(metric, val, prog_bar=True)
+                self.model.module.cer_metric(preds, query_tgts)
+                self.model.module.wer_metric(preds, query_tgts)
+                self.log("char_error_rate", self.model.module.cer_metric, prog_bar=True)
+                self.log("word_error_rate", self.model.module.wer_metric, prog_bar=True)
             outer_loss += query_loss
             loss_fn.reduction = reduction
 
