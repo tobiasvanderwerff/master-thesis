@@ -81,8 +81,6 @@ class LogWorstPredictionsMetaHTR(Callback):
         print(f"Running {mode} inference on best model...")
 
         # Run inference on the validation set.
-        is_train = pl_module.training
-        pl_module.eval()
         torch.set_grad_enabled(True)
         shots, ways = pl_module.shots, pl_module.ways
         for imgs, targets, writer_ids in dataloader:
@@ -108,7 +106,6 @@ class LogWorstPredictionsMetaHTR(Callback):
                         cer = cer_metric(prd.unsqueeze(0), tgt.unsqueeze(0)).item()
                         img_cers.append((im, cer, prd, tgt))
         torch.set_grad_enabled(False)
-        pl_module.train(is_train)
 
         # Log the worst k predictions.
         to_log = PREDICTIONS_TO_LOG["word"] * 2
@@ -257,14 +254,11 @@ class LogModelPredictionsMetaHTR(Callback):
 
         # Make predictions.
         support_imgs, support_tgts, query_imgs, query_tgts, writer = batch
-        is_train = pl_module.training
-        pl_module.eval()  # TODO: check if this is right
         torch.set_grad_enabled(self.enable_grad)
         _, preds, *_ = pl_module(
             *[t.to(device) for t in [support_imgs, support_tgts, query_imgs]]
         )
         torch.set_grad_enabled(False)
-        pl_module.train(is_train)
 
         # Log the results.
         self._log_intermediate(

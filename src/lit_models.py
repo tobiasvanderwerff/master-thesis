@@ -37,6 +37,7 @@ class MetaHTR(pl.LightningModule):
         initial_inner_lr: float = 0.001,
         use_cosine_lr_scheduler: bool = False,
         use_batch_stats_for_batchnorm: bool = False,
+        use_dropout: bool = False,
         use_instance_weights: bool = True,
         num_inner_steps: int = 1,
         num_workers: int = 0,
@@ -53,6 +54,7 @@ class MetaHTR(pl.LightningModule):
                 instance-weight MLP.
             use_cosine_lr_scheduler (bool): whether to use a cosine annealing
                 scheduler to decay the learning rate from its initial value.
+            use_dropout (bool): whether to use dropout in the outer loop.
             use_instance_weights (bool): whether to use instance-specific weights from
                 the MetaHTR paper
             num_epochs (Optional[int]): number of epochs the model will be trained.
@@ -74,6 +76,7 @@ class MetaHTR(pl.LightningModule):
         self.outer_lr = outer_lr
         self.use_cosine_lr_schedule = use_cosine_lr_scheduler
         self.use_batch_stats_for_batchnorm = use_batch_stats_for_batchnorm
+        self.use_dropout = use_dropout
         self.use_instance_weights = use_instance_weights
         self.num_inner_steps = num_inner_steps
         self.num_workers = num_workers
@@ -171,10 +174,12 @@ class MetaHTR(pl.LightningModule):
             reduction = loss_fn.reduction
             loss_fn.reduction = "mean"
             if is_train:
+                self.set_dropout_layers_train(self.use_dropout)
                 _, query_loss = learner.module.forward_teacher_forcing(
                     query_imgs, query_tgts
                 )
             else:  # val/test
+                self.set_dropout_layers_train(False)
                 with torch.inference_mode():
                     _, preds, query_loss = learner(query_imgs, query_tgts)
 
@@ -199,10 +204,8 @@ class MetaHTR(pl.LightningModule):
         """
         Takes a single gradient step on a batch of data.
         """
-        # learner.eval()
-        learner.train()  # TODO: eval not allowed for RNN backprop?
+        learner.train()
         self.set_batchnorm_layers_train(self.use_batch_stats_for_batchnorm)
-        # learner.train()
 
         _, support_loss_unreduced = learner.module.forward_teacher_forcing(
             adaptation_imgs, adaptation_targets
@@ -358,6 +361,7 @@ class MetaHTR(pl.LightningModule):
         )
 
         # Run inference on the adapted model.
+        self.set_dropout_layers_train(False)
         with torch.inference_mode():
             logits, sampled_ids, _ = learner(inference_imgs)
 
@@ -367,6 +371,11 @@ class MetaHTR(pl.LightningModule):
         _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d)
         for m in self.modules():
             if isinstance(m, _batchnorm_layers):
+                m.training = training
+
+    def set_dropout_layers_train(self, training: bool = True):
+        for m in self.modules():
+            if isinstance(m, nn.Dropout):
                 m.training = training
 
     def batchnorm_reset_running_stats(self):
@@ -520,6 +529,12 @@ class MetaHTR(pl.LightningModule):
             action="store_true",
             default=False,
             help="Use batch statistics over stored statistics for batchnorm layers.",
+        )
+        parser.add_argument(
+            "--use_dropout",
+            action="store_true",
+            default=False,
+            help="Use dropout in the outer loop",
         )
         parser.add_argument(
             "--no_instance_weights",
