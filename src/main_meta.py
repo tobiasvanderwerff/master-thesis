@@ -259,6 +259,7 @@ def main(args):
             "use_image_augmentations": args.use_image_augmentations,
             "use_batch_stats_for_batchnorm": args.use_batch_stats_for_batchnorm,
             "freeze_batchnorm_gamma": args.freeze_batchnorm_gamma,
+            "precision": args.precision,
         },
     )
     # Initialize MAML with a trained base model.
