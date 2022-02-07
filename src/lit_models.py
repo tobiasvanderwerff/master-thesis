@@ -4,6 +4,7 @@ from collections import defaultdict
 
 from util import identity_collate_fn, LayerWiseLRTransform
 
+from htr.models.sar.sar import ShowAttendRead
 from htr.models.lit_models import LitShowAttendRead, LitFullPageHTREncoderDecoder
 from htr.util import LabelEncoder
 
@@ -108,6 +109,9 @@ class MetaHTR(pl.LightningModule):
         self.automatic_optimization = False
         self.char_to_avg_inst_weight = None
         self.ignore_index = self.model.module.pad_tkn_idx
+        # Disabling CuDNN is necessary for RNNs due to limitations in the CuDNN API
+        # for double backward passes.
+        self.use_cudnn = not isinstance(model, ShowAttendRead)
 
         self.save_hyperparameters(
             "ways",
@@ -181,9 +185,10 @@ class MetaHTR(pl.LightningModule):
             loss_fn.reduction = "mean"
             if is_train:
                 self.set_dropout_layers_train(self.use_dropout)
-                _, query_loss = learner.module.forward_teacher_forcing(
-                    query_imgs, query_tgts
-                )
+                with torch.backends.cudnn.flags(enabled=self.use_cudnn):
+                    _, query_loss = learner.module.forward_teacher_forcing(
+                        query_imgs, query_tgts
+                    )
                 self.manual_backward(query_loss / self.ways)
             else:  # val/test
                 self.set_dropout_layers_train(False)
@@ -221,9 +226,10 @@ class MetaHTR(pl.LightningModule):
         learner.train()
         self.set_batchnorm_layers_train(self.use_batch_stats_for_batchnorm)
 
-        _, support_loss_unreduced = learner.module.forward_teacher_forcing(
-            adaptation_imgs, adaptation_targets
-        )
+        with torch.backends.cudnn.flags(enabled=self.use_cudnn):
+            _, support_loss_unreduced = learner.module.forward_teacher_forcing(
+                adaptation_imgs, adaptation_targets
+            )
 
         ignore_mask = adaptation_targets == self.ignore_index
         instance_weights = None
