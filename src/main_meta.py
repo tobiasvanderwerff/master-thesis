@@ -247,6 +247,7 @@ def main(args):
             "gradient_clip_val": args.gradient_clip_val,
             "early_stopping_patience": args.early_stopping_patience,
             "use_cosine_lr_scheduler": args.use_cosine_lr_scheduler,
+            "use_dropout": args.use_dropout,
             "use_image_augmentations": args.use_image_augmentations,
             "use_batch_stats_for_batchnorm": args.use_batch_stats_for_batchnorm,
             "freeze_batchnorm_gamma": args.freeze_batchnorm_gamma,

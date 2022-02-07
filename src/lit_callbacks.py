@@ -8,7 +8,8 @@ from util import decode_prediction
 
 from htr.data import IAMDataset
 from htr.util import matplotlib_imshow, LabelEncoder
-from htr.models.lit_models import LitFullPageHTREncoderDecoder, LitShowAttendRead
+from htr.models.sar.sar import ShowAttendRead
+from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
 
 import torch
 import pytorch_lightning as pl
@@ -80,6 +81,7 @@ class LogWorstPredictionsMetaHTR(Callback):
 
         print(f"Running {mode} inference on best model...")
 
+        eos_tkn_idx = pl_module.model.module.eos_tkn_idx
         # Run inference on the validation set.
         torch.set_grad_enabled(True)
         shots, ways = pl_module.shots, pl_module.ways
@@ -116,10 +118,10 @@ class LogWorstPredictionsMetaHTR(Callback):
             pred_str = decode_prediction(
                 prd[1:],
                 pl_module.model.module.label_encoder,
-                pl_module.decoder.eos_tkn_idx,
+                eos_tkn_idx,
             )
             target_str = decode_prediction(
-                tgt, pl_module.model.module.label_encoder, pl_module.decoder.eos_tkn_idx
+                tgt, pl_module.model.module.label_encoder, eos_tkn_idx
             )
 
             # Create plot.
@@ -162,12 +164,9 @@ class LogWorstPredictionsMetaHTR(Callback):
             num_workers=pl_module.num_workers,
         )
 
-        import pdb
-
-        pdb.set_trace()
-        if isinstance(pl_module.model.module, LitFullPageHTREncoderDecoder):
+        if isinstance(pl_module.model.module, FullPageHTREncoderDecoder):
             model = MetaHTR.init_with_base_model_from_checkpoint("fphtr", **args)
-        elif isinstance(pl_module.model.module, LitShowAttendRead):
+        elif isinstance(pl_module.model.module, ShowAttendRead):
             model = MetaHTR.init_with_base_model_from_checkpoint("sar", **args)
         else:
             raise ValueError(
@@ -286,6 +285,7 @@ class LogModelPredictionsMetaHTR(Callback):
 
         assert imgs.shape[0] == targets.shape[0]
 
+        eos_tkn_idx = pl_module.model.module.eos_tkn_idx
         # Generate plot.
         fig = plt.figure(figsize=(12, 16))
         for i, (tgt, im) in enumerate(zip(targets, imgs)):
@@ -293,12 +293,8 @@ class LogModelPredictionsMetaHTR(Callback):
             pred_str = None
             if preds is not None:
                 p = preds[i][1:]  # skip the initial <SOS> token
-                pred_str = decode_prediction(
-                    p, self.label_encoder, pl_module.decoder.eos_tkn_idx
-                )
-            target_str = decode_prediction(
-                tgt, self.label_encoder, pl_module.decoder.eos_tkn_idx
-            )
+                pred_str = decode_prediction(p, self.label_encoder, eos_tkn_idx)
+            target_str = decode_prediction(tgt, self.label_encoder, eos_tkn_idx)
 
             # Create plot.
             ncols = 2 if self.data_format == "word" else 1
