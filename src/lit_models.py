@@ -327,7 +327,9 @@ class MetaHTR(pl.LightningModule):
         return {"loss": loss, "char_to_inst_weights": inst_ws}
 
     def training_epoch_end(self, epoch_outputs):
-        self.lr_schedulers().step()
+        sch = self.lr_schedulers()
+        if sch is not None:
+            sch.step()
         if self.use_instance_weights:
             self.aggregate_epoch_instance_weights(epoch_outputs)
 
