@@ -252,7 +252,7 @@ def main(args):
             "splits": ("Aachen" if args.use_aachen_splits else "random"),
             "max_epochs": args.max_epochs,
             "model_path": args.trained_model_path,
-            "gradient_clip_val": args.gradient_clip_val,
+            "gradient_clip_val": args.grad_clip,
             "early_stopping_patience": args.early_stopping_patience,
             "use_cosine_lr_scheduler": args.use_cosine_lr_scheduler,
             "use_dropout": args.use_dropout,

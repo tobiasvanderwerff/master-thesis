@@ -35,6 +35,7 @@ class MetaHTR(pl.LightningModule):
         shots: int = 16,
         outer_lr: float = 0.0001,
         initial_inner_lr: float = 0.001,
+        grad_clip: Optional[float] = None,
         use_cosine_lr_scheduler: bool = False,
         use_batch_stats_for_batchnorm: bool = False,
         use_dropout: bool = False,
@@ -74,6 +75,7 @@ class MetaHTR(pl.LightningModule):
         self.ways = ways
         self.shots = shots
         self.outer_lr = outer_lr
+        self.grad_clip = grad_clip
         self.use_cosine_lr_schedule = use_cosine_lr_scheduler
         self.use_batch_stats_for_batchnorm = use_batch_stats_for_batchnorm
         self.use_dropout = use_dropout
@@ -103,6 +105,7 @@ class MetaHTR(pl.LightningModule):
                 nn.Sigmoid(),
             )
 
+        self.automatic_optimization = False
         self.char_to_avg_inst_weight = None
         self.ignore_index = self.model.module.pad_tkn_idx
 
@@ -130,6 +133,9 @@ class MetaHTR(pl.LightningModule):
         assert (
             len(writer_ids_uniq) == self.ways
         ), f"{len(writer_ids_uniq)} vs {self.ways}"
+
+        opt = self.optimizers()
+        opt.zero_grad()
 
         # Split the batch into N different writers, where N = ways.
         for task in range(self.ways):  # tasks correspond to different writers
@@ -178,6 +184,7 @@ class MetaHTR(pl.LightningModule):
                 _, query_loss = learner.module.forward_teacher_forcing(
                     query_imgs, query_tgts
                 )
+                self.manual_backward(query_loss / self.ways)
             else:  # val/test
                 self.set_dropout_layers_train(False)
                 with torch.inference_mode():
@@ -189,6 +196,13 @@ class MetaHTR(pl.LightningModule):
                     self.log(metric, val, prog_bar=True)
             outer_loss += query_loss
             loss_fn.reduction = reduction
+
+        # TODO: scheduler?
+        if is_train:
+            if self.grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+            opt.step()
+
         outer_loss /= self.ways
         inner_loss_avg = np.mean(inner_losses)
         self.log(f"{mode}_loss_inner", inner_loss_avg, sync_dist=True, prog_bar=False)
@@ -518,6 +532,7 @@ class MetaHTR(pl.LightningModule):
         parser.add_argument("--ways", type=int, default=8)
         parser.add_argument("--outer_lr", type=float, default=0.0001)
         parser.add_argument("--initial_inner_lr", type=float, default=0.001)
+        parser.add_argument("--grad_clip", type=float, help="Max. gradient norm.")
         parser.add_argument(
             "--use_cosine_lr_scheduler",
             action="store_true",
