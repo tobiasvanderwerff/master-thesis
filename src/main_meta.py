@@ -148,10 +148,13 @@ def main(args):
     # Setting the _bookkeeping_path attribute will make the MetaDataset instance
     # load its label-index mapping from a file, rather than creating it (which takes a
     # long time). If the path does not exists, the bookkeeping will be created and
-    # stored on disk afterwards.
-    ds_train._bookkeeping_path = cache_dir / "train_l2l_bookkeeping.pkl"
-    ds_val._bookkeeping_path = cache_dir / "val_l2l_bookkeeping.pkl"
-    ds_test._bookkeeping_path = cache_dir / "test_l2l_bookkeeping.pkl"
+    # stored on disk afterwards. Number of shots is stored along with the mapping,
+    # because due to filtering of writers with less than `shots * 2` examples,
+    # the mapping can change with the number of shots.
+    shots = args.shots
+    ds_train._bookkeeping_path = cache_dir / f"train_l2l_bookkeeping_shots={shots}.pkl"
+    ds_val._bookkeeping_path = cache_dir / f"val_l2l_bookkeeping_shots={shots}.pkl"
+    ds_test._bookkeeping_path = cache_dir / f"test_l2l_bookkeeping_shots={shots}.pkl"
 
     ds_meta_train = l2l.data.MetaDataset(ds_train)
     ds_meta_val = l2l.data.MetaDataset(ds_val)
