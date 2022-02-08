@@ -224,6 +224,7 @@ class MetaHTR(pl.LightningModule):
         Takes a single gradient step on a batch of data.
         """
         learner.train()
+        self.set_dropout_layers_train(False)  # disable dropout
         self.set_batchnorm_layers_train(self.use_batch_stats_for_batchnorm)
 
         with torch.backends.cudnn.flags(enabled=self.use_cudnn):
