@@ -191,7 +191,6 @@ class MetaHTR(pl.LightningModule):
                     )
                 self.manual_backward(query_loss / self.ways)
             else:  # val/test
-                self.set_dropout_layers_train(False)
                 with torch.inference_mode():
                     _, preds, query_loss = learner(query_imgs, query_tgts)
 
@@ -385,7 +384,6 @@ class MetaHTR(pl.LightningModule):
         )
 
         # Run inference on the adapted model.
-        self.set_dropout_layers_train(False)
         with torch.inference_mode():
             logits, sampled_ids, _ = learner(inference_imgs)
 
