@@ -190,6 +190,7 @@ def main(args):
     ]
     val_tsk_trnsf = [
         l2l.data.transforms.NWays(ds_meta_val, n=args.ways),
+        l2l.data.transforms.KShots(ds_meta_val, k=args.shots * 2),
         l2l.data.transforms.LoadData(ds_meta_val),
     ]
     test_tsk_trnsf = [
