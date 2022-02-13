@@ -3,8 +3,8 @@ import re
 from typing import Tuple, Optional, Dict
 from pathlib import Path
 
-from lit_models import MetaHTR
-from util import decode_prediction
+from metahtr.lit_models import MetaHTR
+from metahtr.util import decode_prediction
 
 from htr.data import IAMDataset
 from htr.util import matplotlib_imshow, LabelEncoder

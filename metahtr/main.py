@@ -5,15 +5,15 @@ from copy import copy
 from pathlib import Path
 from functools import partial
 
-from lit_models import MetaHTR
-from lit_util import MetaHTRCheckpointIO
-from lit_callbacks import (
+from metahtr.lit_models import MetaHTR
+from metahtr.lit_util import MetaHTRCheckpointIO
+from metahtr.lit_callbacks import (
     LogModelPredictionsMetaHTR,
     LogLayerWiseLearningRates,
     LogInstanceSpecificWeights,
     LogWorstPredictionsMetaHTR,
 )
-from util import (
+from metahtr.util import (
     filter_df_by_freq,
     PtTaskDataset,
 )

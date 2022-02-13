@@ -1,9 +1,8 @@
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from collections import OrderedDict
 
-from lit_models import MetaHTR
+from metahtr.lit_models import MetaHTR
 
-from pytorch_lightning.callbacks import TQDMProgressBar
 from pytorch_lightning.plugins import TorchCheckpointIO
 from pytorch_lightning.utilities.types import _PATH
 
