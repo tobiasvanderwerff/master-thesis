@@ -166,11 +166,12 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         """
         writer_emb = writer_emb.unsqueeze(1)
         writer_emb = writer_emb.expand(features.size(0), features.size(1), -1)
+        res = features
         for layer in self.adaptation_layers:
             if self.writer_emb_method == "concat":
-                features = torch.cat((features, writer_emb), -1)
-            features = layer(features)
-        return features
+                res = torch.cat((res, writer_emb), -1)
+            res = layer(res)
+        return res + features
 
     def training_step(self, batch, batch_idx):
         imgs, target, writer_ids = batch
