@@ -44,7 +44,7 @@ def main(args):
 
     seed_everything(args.seed)
 
-    log_dir_root = Path(__file__).parent.parent.resolve()
+    log_dir_root = Path(__file__).resolve().parent.parent
     tb_logger = pl_loggers.TensorBoardLogger(
         str(log_dir_root / LOGGING_DIR), name="", version=args.experiment_name
     )
@@ -54,7 +54,7 @@ def main(args):
     ).is_file(), f"{args.trained_model_path} does not point to a file."
 
     # Load the label encoder for the trained model.
-    model_path = Path(args.trained_model_path)
+    model_path = Path(args.trained_model_path).resolve()
     le_path_1 = model_path.parent.parent / "label_encoding.txt"
     le_path_2 = model_path.parent.parent / "label_encoder.pkl"
     assert le_path_1.is_file() or le_path_2.is_file(), (
@@ -96,7 +96,7 @@ def main(args):
     if args.use_aachen_splits:
         # Use the Aachen splits for the IAM dataset. It should be noted that these
         # splits do not encompass the complete IAM dataset.
-        aachen_path = Path(__file__).parent.parent / "aachen_splits"
+        aachen_path = Path(__file__).resolve().parent.parent / "aachen_splits"
         train_splits = (aachen_path / "train.uttlist").read_text().splitlines()
         validation_splits = (
             (aachen_path / "validation.uttlist").read_text().splitlines()
