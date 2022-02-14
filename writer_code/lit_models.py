@@ -8,6 +8,8 @@ from htr.models.sar.sar import ShowAttendRead
 from htr.models.lit_models import LitShowAttendRead, LitFullPageHTREncoderDecoder
 from htr.util import LabelEncoder
 
+from util import BatchNorm1dPermute
+
 import torch
 import torch.optim as optim
 import torch.nn as nn
@@ -97,12 +99,12 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
                 nn.Sequential(
                     nn.Linear(in_size, adapt_num_hidden),
                     nn.ReLU(inplace=True),
-                    nn.BatchNorm1d(adapt_num_hidden),
+                    BatchNorm1dPermute(adapt_num_hidden),
                 ),
                 nn.Sequential(
                     nn.Linear(hidden_size, adapt_num_hidden),
                     nn.ReLU(inplace=True),
-                    nn.BatchNorm1d(adapt_num_hidden),
+                    BatchNorm1dPermute(adapt_num_hidden),
                 ),
                 nn.Sequential(nn.Linear(hidden_size, feature_size)),
             ]
@@ -342,6 +344,8 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         # Take a gradient step.
         emb_lr = 0.001  # TODO
         self.manual_backward(loss, inputs=writer_emb)
+        if self.grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(writer_emb, self.grad_clip)
         writer_emb = (writer_emb - emb_lr * writer_emb.grad.data).detach()
 
         assert (writer_emb.data != old_weight).any()
