@@ -151,3 +151,4 @@ lightning_logs
 lightning_logs_lines_forms
 train.sh
 test.sh
+debug.sh
