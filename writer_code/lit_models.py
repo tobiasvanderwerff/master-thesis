@@ -33,6 +33,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         ways: int = 8,
         shots: int = 8,
         learning_rate: float = 0.0001,
+        weight_decay: float = 0.0001,
         grad_clip: Optional[float] = None,
         use_cosine_lr_scheduler: bool = False,
         num_workers: int = 0,
@@ -67,6 +68,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         self.ways = ways
         self.shots = shots
         self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
         self.grad_clip = grad_clip
         self.use_cosine_lr_schedule = use_cosine_lr_scheduler
         self.num_workers = num_workers
@@ -416,7 +418,9 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
             )
 
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=self.learning_rate)
+        optimizer = optim.AdamW(
+            self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
+        )
         if self.use_cosine_lr_schedule:
             num_epochs = self.num_epochs or 20
             lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -482,7 +486,6 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
     @staticmethod
     def add_model_specific_args(parent_parser):
         parser = parent_parser.add_argument_group("WriterCodeAdaptiveModel")
-
         parser.add_argument(
             "--writer_emb_size",
             type=int,
@@ -503,7 +506,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
             help="Number of features for the hidden layers of the " "adaptation MLP",
         )
         parser.add_argument("--learning_rate", type=float, default=0.0001)
-
+        parser.add_argument("--weight_decay", type=float, default=0.0001)
         parser.add_argument("--shots", type=int, default=8)
         parser.add_argument("--ways", type=int, default=8)
         parser.add_argument(
