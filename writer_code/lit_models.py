@@ -95,10 +95,14 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
             [
                 # TODO: add dropout/batchnorm?
                 nn.Sequential(
-                    nn.Linear(in_size, adapt_num_hidden), nn.ReLU(inplace=True)
+                    nn.Linear(in_size, adapt_num_hidden),
+                    nn.ReLU(inplace=True),
+                    nn.BatchNorm1d(adapt_num_hidden),
                 ),
                 nn.Sequential(
-                    nn.Linear(hidden_size, adapt_num_hidden), nn.ReLU(inplace=True)
+                    nn.Linear(hidden_size, adapt_num_hidden),
+                    nn.ReLU(inplace=True),
+                    nn.BatchNorm1d(adapt_num_hidden),
                 ),
                 nn.Sequential(nn.Linear(hidden_size, feature_size)),
             ]
