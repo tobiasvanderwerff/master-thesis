@@ -38,6 +38,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         ways: int = 8,
         shots: int = 8,
         learning_rate: float = 0.0001,
+        learning_rate_emb: float = 0.001,
         weight_decay: float = 0.0001,
         grad_clip: Optional[float] = None,
         use_cosine_lr_scheduler: bool = False,
@@ -73,6 +74,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         self.ways = ways
         self.shots = shots
         self.learning_rate = learning_rate
+        self.learning_rate_emb = learning_rate_emb
         self.weight_decay = weight_decay
         self.grad_clip = grad_clip
         self.use_cosine_lr_schedule = use_cosine_lr_scheduler
@@ -345,11 +347,11 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         old_weight = writer_emb.data
 
         # Take a gradient step.
-        emb_lr = 0.001  # TODO
         self.manual_backward(loss, inputs=writer_emb)
         if self.grad_clip is not None:
             torch.nn.utils.clip_grad_norm_(writer_emb, self.grad_clip)
-        writer_emb = (writer_emb - emb_lr * writer_emb.grad.data).detach()
+        lr = self.learning_rate_emb
+        writer_emb = (writer_emb - lr * writer_emb.grad.data).detach()
 
         assert (writer_emb.data != old_weight).any()
 
@@ -516,6 +518,12 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
             help="Number of features for the hidden layers of the " "adaptation MLP",
         )
         parser.add_argument("--learning_rate", type=float, default=0.0001)
+        parser.add_argument(
+            "--learning_rate_emb",
+            type=float,
+            default=0.001,
+            help="Learning rate used for creating writer embeddings " "during val/test",
+        )
         parser.add_argument("--weight_decay", type=float, default=0.0001)
         parser.add_argument("--shots", type=int, default=8)
         parser.add_argument("--ways", type=int, default=8)

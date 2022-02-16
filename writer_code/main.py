@@ -247,6 +247,7 @@ def main(args):
         ways=args.ways,
         shots=args.shots,
         learning_rate=args.learning_rate,
+        learning_rate_emb=args.learning_rate_emb,
         weight_decay=args.weight_decay,
         grad_clip=args.grad_clip,
         use_cosine_lr_scheduler=args.use_cosine_lr_scheduler,
