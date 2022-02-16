@@ -231,8 +231,9 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         - Teacher forcing is not used.
         """
         loss, n_samples = 0, 0
-        batch = [t[: self.val_batch_size] for t in batch]
-        writer_batches = self.split_batch_for_adaptation(batch)
+        writer_batches = self.split_batch_for_adaptation(
+            batch, limit_num_samples_per_task=self.val_batch_size
+        )
         for adapt_imgs, adapt_tgts, query_imgs, query_tgts in writer_batches:
             # TODO: see if this can be processed in a single batch (multiple writers)
             torch.set_grad_enabled(True)
@@ -252,7 +253,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         return loss
 
     def split_batch_for_adaptation(
-        self, batch
+        self, batch, limit_num_samples_per_task: Optional[int] = None
     ) -> List[Tuple[Tensor, Tensor, Tensor, Tensor]]:
         imgs, target, writer_ids = batch
         writer_ids_uniq = writer_ids.unique().tolist()
@@ -271,6 +272,12 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
                 target[task_slice],
                 writer_ids[task_slice],
             )
+            if limit_num_samples_per_task is not None:
+                imgs_, target_, writer_ids_ = (
+                    imgs[:limit_num_samples_per_task],
+                    target[:limit_num_samples_per_task],
+                    writer_ids[:limit_num_samples_per_task],
+                )
 
             # Separate data into support/query set.
             adaptation_indices = np.zeros(imgs_.size(0), dtype=bool)
