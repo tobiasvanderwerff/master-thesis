@@ -191,7 +191,6 @@ def main(args):
     ]
     val_tsk_trnsf = [
         l2l.data.transforms.NWays(ds_meta_val, n=args.ways),
-        # TODO: perhaps add KShots here in case the val batches are too large for memory
         l2l.data.transforms.LoadData(ds_meta_val),
     ]
     test_tsk_trnsf = [

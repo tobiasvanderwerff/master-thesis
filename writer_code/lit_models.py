@@ -21,6 +21,9 @@ from torch.utils.data import DataLoader, Dataset
 
 
 class WriterCodeAdaptiveModel(pl.LightningModule):
+
+    meta_weights = ["writer_embs", "adaptation_layers"]
+
     def __init__(
         self,
         model: nn.Module,
@@ -477,18 +480,17 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
 
         if load_meta_weights:
             pass
-            # TODO
-            # # Load weights specific to the meta-learning algorithm.
-            # loaded = []
-            # ckpt = torch.load(
-            #     checkpoint_path, map_location=lambda storage, loc: storage
-            # )
-            # for n, p in ckpt["state_dict"].items():
-            #     if any(n.startswith(wn) for wn in MetaHTR.meta_weights):
-            #         with torch.no_grad():
-            #             model.state_dict()[n][:] = p
-            #         loaded.append(n)
-            # print(f"Loaded meta weights: {loaded}")
+            # Load weights specific to the meta-learning algorithm.
+            loaded = []
+            ckpt = torch.load(
+                checkpoint_path, map_location=lambda storage, loc: storage
+            )
+            for n, p in ckpt["state_dict"].items():
+                if any(n.startswith(wn) for wn in WriterCodeAdaptiveModel.meta_weights):
+                    with torch.no_grad():
+                        model.state_dict()[n][:] = p
+                    loaded.append(n)
+            print(f"Loaded meta weights: {loaded}")
         return model
 
     @staticmethod
