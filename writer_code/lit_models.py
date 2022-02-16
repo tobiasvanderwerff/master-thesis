@@ -1,5 +1,6 @@
 from typing import Optional, Dict, Union, Tuple, Any, List
 from pathlib import Path
+from functools import partial
 
 from metahtr.util import identity_collate_fn
 
@@ -86,7 +87,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
 
         self.freeze()  # freeze the original model
 
-        in_size = feature_size
+        in_size = 512  # output size of CNN. TODO: dont hardcode
         hidden_size = adapt_num_hidden
         if writer_emb_method == "sum":
             assert feature_size == writer_emb_size
@@ -104,20 +105,22 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
                 nn.Sequential(
                     nn.Linear(in_size, adapt_num_hidden),
                     nn.ReLU(inplace=True),
-                    BatchNorm1dPermute(adapt_num_hidden),
+                    # BatchNorm1dPermute(adapt_num_hidden),
                 ),
                 nn.Sequential(
                     nn.Linear(hidden_size, adapt_num_hidden),
                     nn.ReLU(inplace=True),
-                    BatchNorm1dPermute(adapt_num_hidden),
+                    # BatchNorm1dPermute(adapt_num_hidden),
                 ),
-                nn.Sequential(nn.Linear(hidden_size, feature_size)),
+                nn.Sequential(nn.Linear(hidden_size, 512)),  # TODO: dont hardcode
             ]
         )
 
         assert all(p.requires_grad for p in self.writer_embs.parameters())
         assert all(p.requires_grad for p in self.adaptation_layers.parameters())
         assert model.loss_fn.reduction == "mean"
+
+        self.model.encoder.linear.requires_grad_(True)  # finetune this layer as well
 
         self.save_hyperparameters(
             "writer_emb_method",
@@ -138,9 +141,11 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         teacher_forcing: bool = True,
     ) -> Tuple[Tensor, Tensor]:
         """Forward pass using writer codes."""
+        intermediate_transform = partial(self.adapt_features, writer_emb=writer_emb)
         if isinstance(self.model, FullPageHTREncoderDecoder):
-            features = self.model.encoder(imgs)
-            features = self.adapt_features(features, writer_emb)
+            features = self.model.encoder(
+                imgs, intermediate_transform=intermediate_transform
+            )
             if teacher_forcing:
                 logits = self.model.decoder.decode_teacher_forcing(features, target)
             else:
@@ -172,20 +177,23 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         additional input for each layer of the adaptation network.
 
         Args:
-             features (Tensor of shape (N, M, d_model)): features to adapt
+             features (Tensor of shape (N, d_model, *)): features to adapt
              writer_emb (Tensor of shape (N, emb_size)): writer embedding for each
                 sample, used for adapting the features
         Returns:
-            Tensor of shape (N, M, d_model), containing transformed features
+            Tensor of shape (N, d_model, *), containing transformed features
         """
-        writer_emb = writer_emb.unsqueeze(1)
-        writer_emb = writer_emb.expand(features.size(0), features.size(1), -1)
+        features = features.movedim(1, -1)  # (N, *, d_model)
+        extra_dims = features.ndim - writer_emb.ndim
+        for _ in range(extra_dims):
+            writer_emb = writer_emb.unsqueeze(1)
+        writer_emb = writer_emb.expand(*features.shape[:-1], -1)
         res = features
         for layer in self.adaptation_layers:
             if self.writer_emb_method == "concat":
                 res = torch.cat((res, writer_emb), -1)
             res = layer(res)
-        return res + features
+        return (res + features).movedim(-1, 1)
 
     def training_step(self, batch, batch_idx):
         imgs, target, writer_ids = batch
