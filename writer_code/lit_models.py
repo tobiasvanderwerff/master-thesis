@@ -33,6 +33,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         taskset_train: Union[l2l.data.TaskDataset, Dataset],
         taskset_val: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
         taskset_test: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
+        val_batch_size: int = 64,
         writer_emb_method: str = "concat",
         writer_emb_size: int = 64,
         adapt_num_hidden: int = 1000,
@@ -69,6 +70,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         self.taskset_train = taskset_train
         self.taskset_val = taskset_val
         self.taskset_test = taskset_test
+        self.val_batch_size = val_batch_size
         self.writer_emb_method = writer_emb_method
         self.writer_emb_size = writer_emb_size
         self.adapt_num_hidden = adapt_num_hidden
@@ -229,6 +231,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         - Teacher forcing is not used.
         """
         loss, n_samples = 0, 0
+        batch = [t[: self.val_batch_size] for t in batch]
         writer_batches = self.split_batch_for_adaptation(batch)
         for adapt_imgs, adapt_tgts, query_imgs, query_tgts in writer_batches:
             # TODO: see if this can be processed in a single batch (multiple writers)
@@ -254,7 +257,6 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         imgs, target, writer_ids = batch
         writer_ids_uniq = writer_ids.unique().tolist()
 
-        assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
         assert (
             len(writer_ids_uniq) == self.ways
         ), f"{len(writer_ids_uniq)} vs {self.ways}"

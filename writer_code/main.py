@@ -185,12 +185,10 @@ def main(args):
     ]
     val_tsk_trnsf = [
         l2l.data.transforms.NWays(ds_meta_val, n=args.ways),
-        l2l.data.transforms.KShots(ds_meta_train, k=args.val_batch_size),
         l2l.data.transforms.LoadData(ds_meta_val),
     ]
     test_tsk_trnsf = [
         l2l.data.transforms.NWays(ds_meta_test, n=args.ways),
-        l2l.data.transforms.KShots(ds_meta_train, k=args.val_batch_size),
         l2l.data.transforms.LoadData(ds_meta_test),
     ]
     taskset_train = l2l.data.TaskDataset(
@@ -237,6 +235,7 @@ def main(args):
         taskset_train=taskset_train,
         taskset_val=taskset_val,
         taskset_test=taskset_test,
+        val_batch_size=args.val_batch_size,
         writer_emb_method=args.writer_emb_method,
         writer_emb_size=args.writer_emb_size,
         adapt_num_hidden=args.adapt_num_hidden,
