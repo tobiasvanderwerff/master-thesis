@@ -20,6 +20,7 @@ from htr.data import IAMDataset
 from htr.util import LitProgressBar, LabelEncoder
 
 from lit_models import WriterCodeAdaptiveModel
+from lit_callbacks import LogModelPredictions
 
 import torch
 import learn2learn as l2l
@@ -274,24 +275,15 @@ def main(args):
         )
 
     # Prepare fixed batches used for monitoring model predictions during training.
-    im, t, wrtrs = next(iter(learner.val_dataloader()))
-    # Select the first writer in the batch.
-    val_batch = (im[: args.shots * 2], t[: args.shots * 2], wrtrs[: args.shots * 2])
     im, t, wrtrs = next(iter(learner.train_dataloader()))
-    train_batch = (im[: args.shots * 2], t[: args.shots * 2], wrtrs[: args.shots * 2])
-    assert (
-        val_batch[-1].unique().numel() == 1 and val_batch[-1].unique().numel() == 1
-    ), "Only one writer should be in the batch for logging."
-    val_batch, train_batch = [
-        (
-            im[: args.shots],
-            t[: args.shots],
-            im[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
-            t[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
-            wrtrs[0],
-        )
-        for (im, t, wrtrs) in [val_batch, train_batch]
-    ]
+    train_batch = (im[: args.shots], t[: args.shots], wrtrs[: args.shots])
+    im, t, wrtrs = next(iter(learner.val_dataloader()))
+    val_batch = (
+        im[: args.shots],
+        t[: args.shots],
+        im[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
+        t[args.shots : args.shots + PREDICTIONS_TO_LOG["word"]],
+    )
 
     callbacks = [
         ModelSummary(max_depth=2),
@@ -303,14 +295,13 @@ def main(args):
             filename="WriterCodeAdaptiveModel-{epoch}-{char_error_rate:.4f}-{word_error_rate:.4f}",
             save_weights_only=True,
         ),
-        # TODO: adapt two callbacks below.
-        # LogModelPredictionsMetaHTR(
-        #     label_encoder=ds_train.label_enc,
-        #     val_batch=val_batch,
-        #     train_batch=train_batch,
-        #     enable_grad=True,
-        #     predict_on_train_start=True,
-        # ),
+        LogModelPredictions(
+            label_encoder=ds_train.label_enc,
+            val_batch=val_batch,
+            train_batch=train_batch,
+            predict_on_train_start=False,
+        ),
+        # TODO: adapt callback below.
         # LogWorstPredictionsMetaHTR(
         #     train_dataloader=learner.train_dataloader(),
         #     val_dataloader=learner.val_dataloader(),
