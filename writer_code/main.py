@@ -5,12 +5,6 @@ from copy import copy
 from pathlib import Path
 from functools import partial
 
-from metahtr.lit_callbacks import (
-    LogModelPredictionsMetaHTR,
-    LogLayerWiseLearningRates,
-    LogInstanceSpecificWeights,
-    LogWorstPredictionsMetaHTR,
-)
 from metahtr.util import (
     filter_df_by_freq,
     PtTaskDataset,

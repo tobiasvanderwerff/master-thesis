@@ -117,6 +117,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
 
         assert all(p.requires_grad for p in self.writer_embs.parameters())
         assert all(p.requires_grad for p in self.adaptation_layers.parameters())
+        assert model.loss_fn.reduction == "mean"
 
         self.save_hyperparameters(
             "writer_emb_method",
