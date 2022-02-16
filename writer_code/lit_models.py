@@ -498,7 +498,6 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         model = WriterCodeAdaptiveModel(base_model.model, feature_size, *args, **kwargs)
 
         if load_meta_weights:
-            pass
             # Load weights specific to the meta-learning algorithm.
             loaded = []
             ckpt = torch.load(
