@@ -185,12 +185,12 @@ def main(args):
     ]
     val_tsk_trnsf = [
         l2l.data.transforms.NWays(ds_meta_val, n=args.ways),
-        l2l.data.transforms.KShots(ds_meta_train, k=2 * args.shots),
+        l2l.data.transforms.KShots(ds_meta_train, k=args.val_batch_size),
         l2l.data.transforms.LoadData(ds_meta_val),
     ]
     test_tsk_trnsf = [
         l2l.data.transforms.NWays(ds_meta_test, n=args.ways),
-        l2l.data.transforms.KShots(ds_meta_train, k=2 * args.shots),
+        l2l.data.transforms.KShots(ds_meta_train, k=args.val_batch_size),
         l2l.data.transforms.LoadData(ds_meta_test),
     ]
     taskset_train = l2l.data.TaskDataset(
@@ -344,6 +344,7 @@ if __name__ == "__main__":
     parser.add_argument("--trained_model_path", type=str, required=True,
                         help=("Path to a model checkpoint, which will be used as a "
                               "starting point for MAML/MetaHTR."))
+    parser.add_argument("--val_batch_size", type=int, default=64)
     parser.add_argument("--data_dir", type=str, required=True)
     parser.add_argument("--cache_dir", type=str, required=True)
     parser.add_argument("--validate", action="store_true", default=False)
