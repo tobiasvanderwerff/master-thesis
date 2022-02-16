@@ -12,7 +12,7 @@ image encoder to a specific writer.
 
 This is roughly the idea (Abdel-Hamid et al., 2013) [1]:
 
-![](/home/tobias/Dropbox/master_AI/thesis/code/writer_code/img/abdel-hamid_2013_adaptation_schematic.png)
+![](img/abdel-hamid_2013_adaptation_schematic.png)
 
 Possible setups:
 - Freeze original model and add adaptation layers with writer codes, as used in "Fast
