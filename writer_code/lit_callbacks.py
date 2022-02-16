@@ -1,6 +1,5 @@
 import math
-import re
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional
 from pathlib import Path
 
 from metahtr.util import decode_prediction
@@ -298,8 +297,7 @@ class LogModelPredictions(Callback):
             # Decode predictions and targets.
             pred_str = None
             if preds is not None:
-                p = preds[i][1:]  # skip the initial <SOS> token
-                pred_str = decode_prediction(p, self.label_encoder, eos_tkn_idx)
+                pred_str = decode_prediction(preds[i], self.label_encoder, eos_tkn_idx)
             target_str = decode_prediction(tgt, self.label_encoder, eos_tkn_idx)
 
             # Create plot.
