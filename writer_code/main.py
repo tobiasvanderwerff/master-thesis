@@ -20,7 +20,7 @@ from htr.data import IAMDataset
 from htr.util import LitProgressBar, LabelEncoder
 
 from lit_models import WriterCodeAdaptiveModel
-from lit_callbacks import LogModelPredictions
+from lit_callbacks import LogModelPredictions, LogWorstPredictions
 
 import torch
 import learn2learn as l2l
@@ -301,13 +301,12 @@ def main(args):
             train_batch=train_batch,
             predict_on_train_start=False,
         ),
-        # TODO: adapt callback below.
-        # LogWorstPredictionsMetaHTR(
-        #     train_dataloader=learner.train_dataloader(),
-        #     val_dataloader=learner.val_dataloader(),
-        #     test_dataloader=learner.test_dataloader(),
-        #     training_skipped=(args.validate or args.test),
-        # ),
+        LogWorstPredictions(
+            train_dataloader=learner.train_dataloader(),
+            val_dataloader=learner.val_dataloader(),
+            test_dataloader=learner.test_dataloader(),
+            training_skipped=(args.validate or args.test),
+        ),
     ]
     if args.early_stopping_patience != -1:
         callbacks.append(

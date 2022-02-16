@@ -265,10 +265,7 @@ class LogModelPredictions(Callback):
             support_imgs, support_tgts, query_imgs, query_tgts = batch
             torch.set_grad_enabled(True)
             _, preds, *_ = pl_module(
-                *[
-                    t.to(device)
-                    for t in [support_imgs, support_tgts, query_imgs, query_tgts]
-                ]
+                *[t.to(device) for t in [support_imgs, support_tgts, query_imgs]]
             )
             torch.set_grad_enabled(False)
 
