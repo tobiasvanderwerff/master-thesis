@@ -87,13 +87,12 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
 
         self.freeze()  # freeze the original model
 
-        in_size = 512  # output size of CNN. TODO: dont hardcode
         hidden_size = adapt_num_hidden
         if writer_emb_method == "sum":
             assert feature_size == writer_emb_size
             raise NotImplementedError("Sum not implemented yet.")
         elif writer_emb_method == "concat":
-            in_size = in_size + writer_emb_size
+            in_size = feature_size + writer_emb_size
             hidden_size = hidden_size + writer_emb_size
         elif writer_emb_method == "transform":
             raise NotImplementedError("Transform not implemented yet.")
@@ -112,7 +111,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
                     nn.ReLU(inplace=True),
                     # BatchNorm1dPermute(adapt_num_hidden),
                 ),
-                nn.Sequential(nn.Linear(hidden_size, 512)),  # TODO: dont hardcode
+                nn.Sequential(nn.Linear(hidden_size, feature_size)),
             ]
         )
 
@@ -475,7 +474,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
                 label_encoder=label_encoder,
                 params_to_log=model_params_to_log,
             )
-            feature_size = base_model.encoder.d_model
+            feature_size = base_model.encoder.resnet_out_features
         else:  # SAR
             base_model = LitShowAttendRead.load_from_checkpoint(
                 checkpoint_path,
