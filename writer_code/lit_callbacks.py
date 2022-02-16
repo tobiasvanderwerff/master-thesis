@@ -256,7 +256,7 @@ class LogModelPredictions(Callback):
         # Make predictions.
         if split == "train":
             query_imgs, query_tgts, writer_ids = batch
-            wrtr_emb = pl_module.writer_embs(writer_ids)  # (N, emb_size)
+            wrtr_emb = pl_module.writer_embs(writer_ids).to(device)  # (N, emb_size)
             logits, loss = pl_module.base_model_forward(
                 query_imgs, wrtr_emb, query_tgts, teacher_forcing=True
             )
