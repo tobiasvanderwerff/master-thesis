@@ -152,3 +152,5 @@ lightning_logs_lines_forms
 train.sh
 test.sh
 debug.sh
+debug_job.sh
+*.out
