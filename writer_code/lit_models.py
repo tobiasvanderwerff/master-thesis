@@ -194,7 +194,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
             imgs, wrtr_emb, target, teacher_forcing=True
         )
         self.opt_step(loss)
-        self.log("train_loss", loss, sync_dist=True, prog_bar=False)
+        self.log("train_loss", loss, sync_dist=True, prog_bar=True)
         return loss
 
     def opt_step(self, loss: Tensor, inputs: Optional[Tensor] = None):
@@ -232,7 +232,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
             # Log metrics.
             self.model.cer_metric(preds, query_tgts)
             self.model.wer_metric(preds, query_tgts)
-            self.log("char_error_rate", self.model.cer_metric, prog_bar=True)
+            self.log("char_error_rate", self.model.cer_metric, prog_bar=False)
             self.log("word_error_rate", self.model.wer_metric, prog_bar=True)
 
             loss += query_loss * query_imgs.size(0)
