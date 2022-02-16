@@ -44,7 +44,7 @@ def main(args):
 
     seed_everything(args.seed)
 
-    log_dir_root = Path(__file__).resolve().parent.parent
+    log_dir_root = Path(__file__).resolve().parent
     tb_logger = pl_loggers.TensorBoardLogger(
         str(log_dir_root / LOGGING_DIR), name="", version=args.experiment_name
     )
