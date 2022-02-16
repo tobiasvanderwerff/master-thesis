@@ -255,18 +255,18 @@ class LogModelPredictions(Callback):
 
         # Make predictions.
         if split == "train":
-            query_imgs, query_tgts, writer_ids = batch
-            wrtr_emb = pl_module.writer_embs(writer_ids.to(device))  # (N, emb_size)
+            query_imgs, query_tgts, writer_ids = [t.to(device) for t in batch]
+            wrtr_emb = pl_module.writer_embs(writer_ids)  # (N, emb_size)
             logits, loss = pl_module.base_model_forward(
                 query_imgs, wrtr_emb, query_tgts, teacher_forcing=True
             )
             preds = logits.argmax(-1)
         else:  # val/test
-            support_imgs, support_tgts, query_imgs, query_tgts = batch
+            support_imgs, support_tgts, query_imgs, query_tgts = [
+                t.to(device) for t in batch
+            ]
             torch.set_grad_enabled(True)
-            _, preds, *_ = pl_module(
-                *[t.to(device) for t in [support_imgs, support_tgts, query_imgs]]
-            )
+            _, preds, *_ = pl_module(support_imgs, support_tgts, query_imgs)
             torch.set_grad_enabled(False)
 
         # Log the results.
