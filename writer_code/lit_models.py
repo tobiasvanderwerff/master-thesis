@@ -376,10 +376,9 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
                 m.reset_running_stats()
 
     def freeze_all_layers_except_classifier(self):
-        # NOTE: Currently only works for FPHTR
         for n, p in self.named_parameters():
-            if not n.split(".")[-2] == "clf":
-                p.requires_grad = False
+            p.requires_grad = False
+        self.model.decoder.clf.requires_grad_(True)
 
     def freeze_batchnorm_weights(self, freeze_bias=False):
         """
