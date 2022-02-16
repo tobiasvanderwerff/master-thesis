@@ -89,6 +89,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
 
         self.freeze()  # freeze the original model
 
+        in_size = feature_size
         hidden_size = adapt_num_hidden
         if writer_emb_method == "sum":
             assert feature_size == writer_emb_size

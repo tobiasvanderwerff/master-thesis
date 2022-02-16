@@ -156,11 +156,18 @@ class LogWorstPredictionsMetaHTR(Callback):
             model_hparams_file=model_hparams_file,
             label_encoder=pl_module.model.module.label_encoder,
             load_meta_weights=True,
+            num_writers=pl_module.num_writers,
             taskset_train=pl_module.taskset_train,
             taskset_val=pl_module.taskset_val,
             taskset_test=pl_module.taskset_test,
+            writer_emb_method=pl_module.writer_emb_method,
+            writer_emb_size=pl_module.writer_emb_size,
+            adapt_num_hidden=pl_module.adapt_num_hidden,
             ways=pl_module.ways,
             shots=pl_module.shots,
+            learning_rate_emb=pl_module.learning_rate_emb,
+            weight_decay=pl_module.weight_decay,
+            grad_clip=pl_module.grad_clip,
             num_workers=pl_module.num_workers,
         )
 
