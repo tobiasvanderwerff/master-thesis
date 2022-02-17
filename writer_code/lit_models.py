@@ -308,7 +308,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         adaptation_imgs: Tensor,
         adaptation_targets: Tensor,
         inference_imgs: Tensor,
-        inference_tgts: Optional[Tensor],
+        inference_tgts: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor, Tensor]:
         """
         Adapt on a set of images for a particular writer and run inference on another set.
