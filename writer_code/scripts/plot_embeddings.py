@@ -7,6 +7,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 
 
 def plot_embs_pca(embs: np.ndarray):
@@ -18,12 +19,20 @@ def plot_embs_pca(embs: np.ndarray):
     plt.scatter(embs_pca[:, 0], embs_pca[:, 1])
     plt.xlabel("x1")
     plt.ylabel("x2")
-    plt.title(f"Writer embeddings (retained variance: {variance_explained:.2f}%)")
+    plt.title(f"PCA writer embeddings (retained variance: {variance_explained:.2f}%)")
     plt.show()
 
 
 def plot_embs_tsne(embs: np.ndarray):
-    pass  # TODO
+    tsne = TSNE(n_components=2, perplexity=10, verbose=1)
+    embs_tsne = tsne.fit_transform(embs)
+
+    plt.figure()
+    plt.scatter(embs_tsne[:, 0], embs_tsne[:, 1])
+    plt.xlabel("x1")
+    plt.ylabel("x2")
+    plt.title(f"t-SNE Writer embeddings")
+    plt.show()
 
 
 if __name__ == "__main__":
@@ -41,4 +50,6 @@ if __name__ == "__main__":
     cpt = torch.load(checkpoint_path, map_location="cpu")
     embeddings = cpt["state_dict"]["writer_embs.weight"].numpy()
     print(f"Plotting {embeddings.shape[0]} embeddings.")
-    plot_embs_pca(embeddings)
+
+    # plot_embs_pca(embeddings)
+    plot_embs_tsne(embeddings)
