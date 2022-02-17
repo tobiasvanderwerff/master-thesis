@@ -340,7 +340,10 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         return logits, sampled_ids, loss
 
     def new_writer_code(
-        self, adaptation_imgs: Tensor, adaptation_targets: Tensor
+        self,
+        adaptation_imgs: Tensor,
+        adaptation_targets: Tensor,
+        max_opt_steps: int = 5,
     ) -> Tensor:
         """
         Create a new writer code (embedding) based on a batch of examples for a writer.
@@ -351,27 +354,30 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         writer_emb = torch.empty(1, self.writer_emb_size).to(adaptation_imgs.device)
         writer_emb.normal_()  # mean 0, std 1
         writer_emb.requires_grad = True
-        # writer_emb = torch.nn.Parameter(writer_emb, requires_grad=True)
 
-        # for p in self.adaptation_layers.parameters():
-        #     p.requires_grad = False
-        # assert sum(int(p.requires_grad) for p in self.parameters()) == 1, \
-        #     "Only the new writer embedding should receive gradients."
+        embs_losses = []
+        optimizer = optim.Adam(iter([writer_emb]), lr=self.learning_rate)
+        for i, opt_step in enumerate(range(max_opt_steps)):
+            _, loss = self.base_model_forward(
+                adaptation_imgs, writer_emb, adaptation_targets
+            )
 
-        # TODO: is only one gradient update enough?
-        _, loss = self.base_model_forward(
-            adaptation_imgs, writer_emb, adaptation_targets
-        )
-        old_weight = writer_emb.data
+            # if i != 0:
+            embs_losses.append((writer_emb.detach(), loss.item()))
 
-        # Take a gradient step.
-        self.manual_backward(loss, inputs=writer_emb)
-        if self.grad_clip is not None:
-            torch.nn.utils.clip_grad_norm_(writer_emb, self.grad_clip)
-        lr = self.learning_rate_emb
-        writer_emb = (writer_emb - lr * writer_emb.grad.data).detach()
+            optimizer.zero_grad()
+            self.manual_backward(loss, inputs=writer_emb)
+            if self.grad_clip is not None:
+                torch.nn.utils.clip_grad_norm_(writer_emb, self.grad_clip)
+            optimizer.step()  # update the embedding
 
-        assert (writer_emb.data != old_weight).any()
+        # Select the best embedding based on adaptation loss.
+        writer_emb = min(embs_losses, key=lambda emb_loss: emb_loss[1])[0]
+        losses = [l for _, l in embs_losses]
+        emb_step = losses.index(min(losses)) + 1
+
+        print(f"Losses: {losses}")
+        print(f"Best embedding from step {emb_step}/{max_opt_steps}")
 
         return writer_emb
 

@@ -290,18 +290,18 @@ def main(args):
             filename="WriterCodeAdaptiveModel-{epoch}-{char_error_rate:.4f}-{word_error_rate:.4f}",
             save_weights_only=True,
         ),
-        LogModelPredictions(
-            label_encoder=ds_train.label_enc,
-            val_batch=val_batch,
-            train_batch=train_batch,
-            predict_on_train_start=False,
-        ),
-        LogWorstPredictions(
-            train_dataloader=learner.train_dataloader(),
-            val_dataloader=learner.val_dataloader(),
-            test_dataloader=learner.test_dataloader(),
-            training_skipped=(args.validate or args.test),
-        ),
+        # LogModelPredictions(
+        #     label_encoder=ds_train.label_enc,
+        #     val_batch=val_batch,
+        #     train_batch=train_batch,
+        #     predict_on_train_start=False,
+        # ),
+        # LogWorstPredictions(
+        #     train_dataloader=learner.train_dataloader(),
+        #     val_dataloader=learner.val_dataloader(),
+        #     test_dataloader=learner.test_dataloader(),
+        #     training_skipped=(args.validate or args.test),
+        # ),
     ]
     if args.early_stopping_patience != -1:
         callbacks.append(
