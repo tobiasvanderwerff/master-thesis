@@ -363,7 +363,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
             )
 
             # if i != 0:
-            embs_losses.append((writer_emb.detach(), loss.item()))
+            embs_losses.append((writer_emb.detach().clone(), loss.item()))
 
             optimizer.zero_grad()
             self.manual_backward(loss, inputs=writer_emb)
