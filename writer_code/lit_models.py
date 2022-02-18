@@ -544,7 +544,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         )
         parser.add_argument(
             "--adaptation_opt_steps",
-            type=float,
+            type=int,
             default=1,
             help="Number of optimization steps to perform for "
             "training a new writer code during val/test.",
