@@ -244,7 +244,9 @@ def main(args):
         learning_rate=args.learning_rate,
         learning_rate_emb=args.learning_rate_emb,
         weight_decay=args.weight_decay,
+        adaptation_opt_steps=args.adaptation_opt_steps,
         grad_clip=args.grad_clip,
+        use_adam_for_adaptation=args.use_adam_for_adaptation,
         use_cosine_lr_scheduler=args.use_cosine_lr_scheduler,
         num_workers=args.num_workers,
         num_epochs=args.max_epochs,  # note this can be wrong when using early stopping

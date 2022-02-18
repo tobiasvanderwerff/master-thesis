@@ -40,9 +40,11 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         ways: int = 8,
         shots: int = 8,
         learning_rate: float = 0.0001,
-        learning_rate_emb: float = 0.001,
+        learning_rate_emb: float = 0.0001,
         weight_decay: float = 0.0001,
+        adaptation_opt_steps: int = 1,
         grad_clip: Optional[float] = None,
+        use_adam_for_adaptation: bool = False,
         use_cosine_lr_scheduler: bool = False,
         num_workers: int = 0,
         num_epochs: Optional[int] = None,
@@ -79,7 +81,9 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         self.learning_rate = learning_rate
         self.learning_rate_emb = learning_rate_emb
         self.weight_decay = weight_decay
+        self.adaptation_opt_steps = adaptation_opt_steps
         self.grad_clip = grad_clip
+        self.use_adam_for_adaptation = use_adam_for_adaptation
         self.use_cosine_lr_schedule = use_cosine_lr_scheduler
         self.num_workers = num_workers
         self.num_epochs = num_epochs
@@ -340,44 +344,36 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         return logits, sampled_ids, loss
 
     def new_writer_code(
-        self,
-        adaptation_imgs: Tensor,
-        adaptation_targets: Tensor,
-        max_opt_steps: int = 5,
+        self, adaptation_imgs: Tensor, adaptation_targets: Tensor
     ) -> Tensor:
         """
         Create a new writer code (embedding) based on a batch of examples for a writer.
 
-        The writer code is created by running a single forward/backward
-        pass on the batch of data in order to initialize a new writer embedding.
+        The writer code is created by running one or multiple forward/backward
+        passes on a batch of adaptation data in order to train a new writer
+        embedding.
         """
         writer_emb = torch.empty(1, self.writer_emb_size).to(adaptation_imgs.device)
         writer_emb.normal_()  # mean 0, std 1
         writer_emb.requires_grad = True
 
-        embs_losses = []
-        optimizer = optim.Adam(iter([writer_emb]), lr=self.learning_rate)
-        for i, opt_step in enumerate(range(max_opt_steps)):
+        if self.use_adam_for_adaptation:
+            optimizer = optim.Adam(iter([writer_emb]), lr=self.learning_rate_emb)
+        else:
+            # Plain SGD, i.e. update rule `g = g - lr * grad(loss)`
+            optimizer = optim.SGD(iter([writer_emb]), lr=self.learning_rate_emb)
+
+        for _ in range(self.adaptation_opt_steps):
             _, loss = self.base_model_forward(
                 adaptation_imgs, writer_emb, adaptation_targets
             )
-
-            # if i != 0:
-            embs_losses.append((writer_emb.detach().clone(), loss.item()))
 
             optimizer.zero_grad()
             self.manual_backward(loss, inputs=writer_emb)
             if self.grad_clip is not None:
                 torch.nn.utils.clip_grad_norm_(writer_emb, self.grad_clip)
             optimizer.step()  # update the embedding
-
-        # Select the best embedding based on adaptation loss.
-        writer_emb = min(embs_losses, key=lambda emb_loss: emb_loss[1])[0]
-        losses = [l for _, l in embs_losses]
-        emb_step = losses.index(min(losses)) + 1
-
-        print(f"Losses: {losses}")
-        print(f"Best embedding from step {emb_step}/{max_opt_steps}")
+        writer_emb.detach_()
 
         return writer_emb
 
@@ -543,8 +539,21 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         parser.add_argument(
             "--learning_rate_emb",
             type=float,
-            default=0.001,
-            help="Learning rate used for creating writer embeddings " "during val/test",
+            default=0.0001,
+            help="Learning rate used for creating writer embeddings during val/test",
+        )
+        parser.add_argument(
+            "--adaptation_opt_steps",
+            type=float,
+            default=1,
+            help="Number of optimization steps to perform for "
+            "training a new writer code during val/test.",
+        )
+        parser.add_argument(
+            "--use_adam_for_adaptation",
+            action="store_true",
+            default=False,
+            help="Use Adam during val/test for training new writer codes.",
         )
         parser.add_argument("--weight_decay", type=float, default=0.0001)
         parser.add_argument("--shots", type=int, default=8)
