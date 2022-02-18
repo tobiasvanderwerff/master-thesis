@@ -1,7 +1,7 @@
 from typing import Optional, Dict, Any
 from collections import OrderedDict
 
-from metahtr.lit_models import MetaHTR
+from thesis.metahtr.lit_models import MetaHTR
 
 from pytorch_lightning.plugins import TorchCheckpointIO
 from pytorch_lightning.utilities.types import _PATH

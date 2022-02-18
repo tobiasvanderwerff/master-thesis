@@ -2,7 +2,8 @@ from typing import Optional, Dict, Union, Tuple, Any, List
 from pathlib import Path
 from collections import defaultdict
 
-from metahtr.util import identity_collate_fn, LayerWiseLRTransform
+from thesis.metahtr.util import LayerWiseLRTransform
+from thesis.util import identity_collate_fn
 
 from htr.models.sar.sar import ShowAttendRead
 from htr.models.lit_models import LitShowAttendRead, LitFullPageHTREncoderDecoder

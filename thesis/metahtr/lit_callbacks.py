@@ -1,15 +1,15 @@
 import math
-from typing import Tuple, Optional
+import re
+from typing import Tuple, Optional, Dict
 from pathlib import Path
 
-from metahtr.util import decode_prediction
+from thesis.metahtr.lit_models import MetaHTR
+from thesis.util import decode_prediction
 
 from htr.data import IAMDataset
 from htr.util import matplotlib_imshow, LabelEncoder
 from htr.models.sar.sar import ShowAttendRead
 from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
-
-from lit_models import WriterCodeAdaptiveModel
 
 import torch
 import pytorch_lightning as pl
@@ -26,7 +26,7 @@ PREDICTIONS_TO_LOG = {
 }
 
 
-class LogWorstPredictions(Callback):
+class LogWorstPredictionsMetaHTR(Callback):
     """
     At the end of training, log the worst image prediction, meaning the predictions
     with the highest character error rates.
@@ -81,7 +81,7 @@ class LogWorstPredictions(Callback):
 
         print(f"Running {mode} inference on best model...")
 
-        eos_tkn_idx = pl_module.model.eos_tkn_idx
+        eos_tkn_idx = pl_module.model.module.eos_tkn_idx
         # Run inference on the validation set.
         torch.set_grad_enabled(True)
         shots, ways = pl_module.shots, pl_module.ways
@@ -101,7 +101,7 @@ class LogWorstPredictions(Callback):
                     *[t.to(device) for t in [support_imgs, support_tgts, query_imgs]]
                 )
 
-                cer_metric = pl_module.model.cer_metric
+                cer_metric = pl_module.model.module.cer_metric
                 for prd, tgt, im in zip(preds, query_tgts, query_imgs):
                     with torch.inference_mode():
                         cer_metric.reset()
@@ -117,11 +117,11 @@ class LogWorstPredictions(Callback):
         for i, (im, cer, prd, tgt) in enumerate(img_cers):
             pred_str = decode_prediction(
                 prd[1:],
-                pl_module.model.label_encoder,
+                pl_module.model.module.label_encoder,
                 eos_tkn_idx,
             )
             target_str = decode_prediction(
-                tgt, pl_module.model.label_encoder, eos_tkn_idx
+                tgt, pl_module.model.module.label_encoder, eos_tkn_idx
             )
 
             # Create plot.
@@ -154,38 +154,29 @@ class LogWorstPredictions(Callback):
         args = dict(
             checkpoint_path=best_model_path,
             model_hparams_file=model_hparams_file,
-            label_encoder=pl_module.model.label_encoder,
+            label_encoder=pl_module.model.module.label_encoder,
             load_meta_weights=True,
-            num_writers=pl_module.num_writers,
             taskset_train=pl_module.taskset_train,
             taskset_val=pl_module.taskset_val,
             taskset_test=pl_module.taskset_test,
-            writer_emb_method=pl_module.writer_emb_method,
-            writer_emb_size=pl_module.writer_emb_size,
-            adapt_num_hidden=pl_module.adapt_num_hidden,
             ways=pl_module.ways,
             shots=pl_module.shots,
-            learning_rate_emb=pl_module.learning_rate_emb,
-            weight_decay=pl_module.weight_decay,
-            grad_clip=pl_module.grad_clip,
             num_workers=pl_module.num_workers,
         )
 
-        if isinstance(pl_module.model, FullPageHTREncoderDecoder):
-            model = WriterCodeAdaptiveModel.init_with_base_model_from_checkpoint(
-                "fphtr", **args
-            )
-        elif isinstance(pl_module.model, ShowAttendRead):
-            model = WriterCodeAdaptiveModel.init_with_base_model_from_checkpoint(
-                "sar", **args
-            )
+        if isinstance(pl_module.model.module, FullPageHTREncoderDecoder):
+            model = MetaHTR.init_with_base_model_from_checkpoint("fphtr", **args)
+        elif isinstance(pl_module.model.module, ShowAttendRead):
+            model = MetaHTR.init_with_base_model_from_checkpoint("sar", **args)
         else:
-            raise ValueError(f"Unrecognized model class: {pl_module.model.__class__}")
+            raise ValueError(
+                f"Unrecognized model class: {pl_module.model.module.__class__}"
+            )
 
         trainer.model = model
 
 
-class LogModelPredictions(Callback):
+class LogModelPredictionsMetaHTR(Callback):
     """
     Use a fixed test batch to monitor model predictions at the end of every epoch.
 
@@ -196,22 +187,23 @@ class LogModelPredictions(Callback):
     def __init__(
         self,
         label_encoder: LabelEncoder,
-        val_batch: Optional[Tuple[Tensor, Tensor, Tensor, Tensor]] = None,
-        train_batch: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
+        val_batch: Tuple[Tensor, Tensor, Tensor, Tensor, str],
+        train_batch: Optional[Tuple[Tensor, Tensor, Tensor, Tensor, str]] = None,
         data_format: str = "word",
+        enable_grad: bool = False,
         predict_on_train_start: bool = False,
     ):
         self.label_encoder = label_encoder
         self.val_batch = val_batch
         self.train_batch = train_batch
         self.data_format = data_format
+        self.enable_grad = enable_grad
         self.predict_on_train_start = predict_on_train_start
 
     def on_validation_epoch_end(
         self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
     ):
-        if self.val_batch is not None:
-            self._predict_intermediate(trainer, pl_module, split="val")
+        self._predict_intermediate(trainer, pl_module, split="val")
 
     def on_train_epoch_end(
         self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
@@ -221,24 +213,23 @@ class LogModelPredictions(Callback):
 
     def on_train_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"):
         if self.predict_on_train_start:
-            if self.val_batch is not None:
-                self._predict_intermediate(trainer, pl_module, split="val")
+            self._predict_intermediate(trainer, pl_module, split="val")
             if self.train_batch is not None:
                 self._predict_intermediate(trainer, pl_module, split="train")
 
         # Log the support images once at the start of training.
-        if self.val_batch is not None:
-            support_imgs, support_targets, _, _ = self.val_batch
-            self._log_intermediate(
-                trainer,
-                pl_module,
-                support_imgs,
-                support_targets,
-                split="val",
-                plot_title="support batch",
-            )
+        support_imgs, support_targets, _, _, writer = self.val_batch
+        self._log_intermediate(
+            trainer,
+            pl_module,
+            support_imgs,
+            support_targets,
+            split="val",
+            plot_title="support batch",
+            plot_suptitle=f"Writer id: {writer}",
+        )
         if self.train_batch is not None:
-            support_imgs, support_targets, _ = self.train_batch
+            support_imgs, support_targets, _, _, writer = self.train_batch
             self._log_intermediate(
                 trainer,
                 pl_module,
@@ -246,6 +237,7 @@ class LogModelPredictions(Callback):
                 support_targets,
                 split="train",
                 plot_title="support batch",
+                plot_suptitle=f"Writer id: {writer}",
             )
 
     def _predict_intermediate(
@@ -260,17 +252,12 @@ class LogModelPredictions(Callback):
             batch = self.val_batch
 
         # Make predictions.
-        if split == "train":
-            query_imgs, query_tgts, writer_ids = batch
-            wrtr_emb = pl_module.writer_embs(writer_ids.to(device))  # (N, emb_size)
-            inp = (query_imgs.to(device), wrtr_emb, query_tgts.to(device))
-            logits, loss = pl_module.base_model_forward(*inp, teacher_forcing=True)
-            preds = logits.argmax(-1)
-        else:  # val/test
-            support_imgs, support_tgts, query_imgs, query_tgts = batch
-            torch.set_grad_enabled(True)
-            _, preds, *_ = pl_module(*[t.to(device) for t in batch])
-            torch.set_grad_enabled(False)
+        support_imgs, support_tgts, query_imgs, query_tgts, writer = batch
+        torch.set_grad_enabled(self.enable_grad)
+        _, preds, *_ = pl_module(
+            *[t.to(device) for t in [support_imgs, support_tgts, query_imgs]]
+        )
+        torch.set_grad_enabled(False)
 
         # Log the results.
         self._log_intermediate(
@@ -280,6 +267,7 @@ class LogModelPredictions(Callback):
             query_tgts,
             preds,
             split=split,
+            plot_suptitle=f"Writer id: {writer}",
         )
 
     def _log_intermediate(
@@ -297,14 +285,15 @@ class LogModelPredictions(Callback):
 
         assert imgs.shape[0] == targets.shape[0]
 
-        eos_tkn_idx = pl_module.model.eos_tkn_idx
+        eos_tkn_idx = pl_module.model.module.eos_tkn_idx
         # Generate plot.
         fig = plt.figure(figsize=(12, 16))
         for i, (tgt, im) in enumerate(zip(targets, imgs)):
             # Decode predictions and targets.
             pred_str = None
             if preds is not None:
-                pred_str = decode_prediction(preds[i], self.label_encoder, eos_tkn_idx)
+                p = preds[i][1:]  # skip the initial <SOS> token
+                pred_str = decode_prediction(p, self.label_encoder, eos_tkn_idx)
             target_str = decode_prediction(tgt, self.label_encoder, eos_tkn_idx)
 
             # Create plot.
@@ -322,4 +311,108 @@ class LogModelPredictions(Callback):
         # Log the results to Tensorboard.
         tensorboard = trainer.logger.experiment
         tensorboard.add_figure(f"{split}: {plot_title}", fig, trainer.global_step)
+        plt.close(fig)
+
+
+class LogLayerWiseLearningRates(Callback):
+    """Logs the learnable layer wise learning rates in a bar plot."""
+
+    def on_train_epoch_end(
+        self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
+    ):
+        # Collect all inner loop learning rates.
+        lrs = []
+        for n, p in pl_module.state_dict().items():
+            if n.startswith("model.compute_update"):
+                ix = int(re.search(r"[0-9]+", n).group(0))
+                lrs.append((ix, p.item()))
+        assert lrs != []
+
+        # Plot the learning rates.
+        xs, ys = zip(*lrs)
+        fig = plt.figure()
+        plt.bar(xs, ys, align="edge", alpha=0.5)
+        plt.grid(True)
+        plt.xlabel("layer index")
+        plt.ylabel("learning rate")
+
+        # Log to Tensorboard.
+        tensorboard = trainer.logger.experiment
+        tensorboard.add_figure(f"inner loop learning rates", fig, trainer.global_step)
+        plt.close(fig)
+
+
+class LogInstanceSpecificWeights(Callback):
+    """Logs the average instance specific weights per ASCII character in a bar plot."""
+
+    def __init__(self, label_encoder: LabelEncoder):
+        self.label_encoder = label_encoder
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        pl_module.char_to_avg_inst_weight = None
+
+    def on_validation_epoch_start(self, trainer, pl_module):
+        pl_module.char_to_avg_inst_weight = None
+
+    def on_test_epoch_start(self, trainer, pl_module):
+        pl_module.char_to_avg_inst_weight = None
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        if pl_module.use_instance_weights:
+            char_to_avg_weight = pl_module.char_to_avg_inst_weight
+            assert char_to_avg_weight is not None
+            self.log_instance_weights(trainer, char_to_avg_weight, "train")
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if pl_module.use_instance_weights:
+            char_to_avg_weight = pl_module.char_to_avg_inst_weight
+            assert char_to_avg_weight is not None
+            self.log_instance_weights(trainer, char_to_avg_weight, "val")
+
+    def on_test_epoch_end(self, trainer, pl_module):
+        if pl_module.use_instance_weights:
+            char_to_avg_weight = pl_module.char_to_avg_inst_weight
+            assert char_to_avg_weight is not None
+            self.log_instance_weights(trainer, char_to_avg_weight, "test")
+
+    def log_instance_weights(
+        self,
+        trainer: "pl.Trainer",
+        char_to_avg_weight: Dict[int, float],
+        mode: str = "train",
+    ):
+        # Decode the characters.
+        chars, ws = zip(
+            *sorted(char_to_avg_weight.items(), key=lambda kv: kv[1], reverse=True)
+        )
+        chars = self.label_encoder.inverse_transform(chars)
+
+        # Replace special tokens with shorter names to make the plot more readable.
+        _chars = []
+        _tkn_abbrevs = {"<EOS>": "eos", "<PAD>": "pad", "<SOS>": "sos"}
+        for i, c in enumerate(chars):
+            if c in _tkn_abbrevs.keys():
+                _chars.append(_tkn_abbrevs[c])
+            else:
+                _chars.append(c)
+        chars = _chars
+
+        # Plot the average instance-specific weight per character.
+        to_plot = 10
+        fig = plt.figure()
+        plt.subplot(1, 2, 1)
+        plt.bar(chars[:to_plot], ws[:to_plot], align="edge", alpha=0.5)
+        plt.grid(True)
+        plt.title("Highest")
+
+        plt.subplot(1, 2, 2)
+        plt.bar(chars[-to_plot:], ws[-to_plot:], align="edge", alpha=0.5)
+        plt.grid(True)
+        plt.title("Lowest")
+
+        # Log to Tensorboard.
+        tensorboard = trainer.logger.experiment
+        tensorboard.add_figure(
+            f"{mode}: average instance-specific weights", fig, trainer.global_step
+        )
         plt.close(fig)

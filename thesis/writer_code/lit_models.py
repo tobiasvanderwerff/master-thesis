@@ -1,29 +1,26 @@
-from typing import Optional, Dict, Union, Tuple, Any, List
+from typing import Optional, Dict, Union, Tuple, Any
 from pathlib import Path
-from functools import partial
 
-from metahtr.util import identity_collate_fn
+from thesis.writer_code.models import WriterCodeAdaptiveModel
+from thesis.util import split_batch_for_adaptation, identity_collate_fn
 
 from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
 from htr.models.sar.sar import ShowAttendRead
 from htr.models.lit_models import LitShowAttendRead, LitFullPageHTREncoderDecoder
 from htr.util import LabelEncoder
 
-from util import BatchNorm1dPermute
-
 import torch
 import torch.optim as optim
 import torch.nn as nn
 import pytorch_lightning as pl
-import numpy as np
 import learn2learn as l2l
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
 
-class WriterCodeAdaptiveModel(pl.LightningModule):
+class LitWriterCodeAdaptiveModel(pl.LightningModule):
 
-    meta_weights = ["writer_embs", "adaptation_layers"]
+    meta_weights = ["writer_embs", "adaptation"]
 
     def __init__(
         self,
@@ -52,6 +49,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
     ):
         """
         Args:
+            TODO
             model (nn.Module): base model
             feature_size (int): size of the feature vectors to adapt, e.g. the output
                 feature vectors of a CNN
@@ -91,42 +89,17 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         self.ignore_index = model.pad_tkn_idx
         self.automatic_optimization = False
 
-        self.freeze()  # freeze the original model
-
-        in_size = feature_size
-        hidden_size = adapt_num_hidden
-        if writer_emb_method == "sum":
-            assert feature_size == writer_emb_size
-            raise NotImplementedError("Sum not implemented yet.")
-        elif writer_emb_method == "concat":
-            in_size = feature_size + writer_emb_size
-            hidden_size = hidden_size + writer_emb_size
-        elif writer_emb_method == "transform":
-            raise NotImplementedError("Transform not implemented yet.")
-
-        self.writer_embs = nn.Embedding(num_writers, writer_emb_size)
-        self.adaptation_layers = nn.ModuleList(
-            [
-                # TODO: add dropout/batchnorm?
-                nn.Sequential(
-                    nn.Linear(in_size, adapt_num_hidden),
-                    nn.ReLU(inplace=True),
-                    # BatchNorm1dPermute(adapt_num_hidden),
-                ),
-                nn.Sequential(
-                    nn.Linear(hidden_size, adapt_num_hidden),
-                    nn.ReLU(inplace=True),
-                    # BatchNorm1dPermute(adapt_num_hidden),
-                ),
-                nn.Sequential(nn.Linear(hidden_size, feature_size)),
-            ]
+        self.adaptive_model = WriterCodeAdaptiveModel(
+            base_model=model,
+            d_model=feature_size,
+            emb_size=writer_emb_size,
+            num_hidden=adapt_num_hidden,
+            num_writers=num_writers,
+            learning_rate_emb=learning_rate_emb,
+            backward_fn=self.manual_backward,
+            adaptation_opt_steps=adaptation_opt_steps,
+            use_adam_for_adaptation=use_adam_for_adaptation,
         )
-
-        assert all(p.requires_grad for p in self.writer_embs.parameters())
-        assert all(p.requires_grad for p in self.adaptation_layers.parameters())
-        assert model.loss_fn.reduction == "mean"
-
-        self.model.encoder.linear.requires_grad_(True)  # finetune this layer as well
 
         self.save_hyperparameters(
             "writer_emb_method",
@@ -139,74 +112,9 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         if prms_to_log is not None:
             self.save_hyperparameters(prms_to_log)
 
-    def base_model_forward(
-        self,
-        imgs: Tensor,
-        writer_emb: Tensor,
-        target: Optional[Tensor] = None,
-        teacher_forcing: bool = True,
-    ) -> Tuple[Tensor, Tensor]:
-        """Forward pass using writer codes."""
-        intermediate_transform = partial(self.adapt_features, writer_emb=writer_emb)
-        if isinstance(self.model, FullPageHTREncoderDecoder):
-            features = self.model.encoder(
-                imgs, intermediate_transform=intermediate_transform
-            )
-            if teacher_forcing:
-                logits = self.model.decoder.decode_teacher_forcing(features, target)
-            else:
-                logits, _ = self.model.decoder(features)
-        else:  # SAR
-            features = self.model.resnet_encoder(imgs)
-            features = self.adapt_features(features, writer_emb)
-            h_holistic = self.model.lstm_encoder(features)
-            if teacher_forcing:
-                logits = self.model.lstm_decoder.forward_teacher_forcing(
-                    features, h_holistic, target
-                )
-            else:
-                logits, _ = self.model.lstm_decoder(features, h_holistic)
-        loss = None
-        if target is not None:
-            loss = self.model.loss_fn(
-                logits[:, : target.size(1), :].transpose(1, 2),
-                target[:, : logits.size(1)],
-            )
-        return logits, loss
-
-    def adapt_features(self, features: Tensor, writer_emb: Tensor) -> Tensor:
-        """
-        Adapt features based on a writer code (embedding).
-
-        Features are adapted by passing them through an adaptation network,
-        along with a writer embedding. The writer embedding is added as
-        additional input for each layer of the adaptation network.
-
-        Args:
-             features (Tensor of shape (N, d_model, *)): features to adapt
-             writer_emb (Tensor of shape (N, emb_size)): writer embedding for each
-                sample, used for adapting the features
-        Returns:
-            Tensor of shape (N, d_model, *), containing transformed features
-        """
-        features = features.movedim(1, -1)  # (N, *, d_model)
-        extra_dims = features.ndim - writer_emb.ndim
-        for _ in range(extra_dims):
-            writer_emb = writer_emb.unsqueeze(1)
-        writer_emb = writer_emb.expand(*features.shape[:-1], -1)
-        res = features
-        for layer in self.adaptation_layers:
-            if self.writer_emb_method == "concat":
-                res = torch.cat((res, writer_emb), -1)
-            res = layer(res)
-        return (res + features).movedim(-1, 1)
-
     def training_step(self, batch, batch_idx):
         imgs, target, writer_ids = batch
-        wrtr_emb = self.writer_embs(writer_ids)  # (N, emb_size)
-        logits, loss = self.base_model_forward(
-            imgs, wrtr_emb, target, teacher_forcing=True
-        )
+        _, _, loss = self.adaptive_model(imgs, target, writer_ids, mode="train")
         self.opt_step(loss)
         self.log("train_loss", loss, sync_dist=True, prog_bar=True)
         return loss
@@ -236,8 +144,8 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         - Teacher forcing is not used.
         """
         loss, n_samples = 0, 0
-        writer_batches = self.split_batch_for_adaptation(
-            batch, limit_num_samples_per_task=self.val_batch_size
+        writer_batches = split_batch_for_adaptation(
+            batch, self.ways, self.shots, limit_num_samples_per_task=self.val_batch_size
         )
         for adapt_imgs, adapt_tgts, query_imgs, query_tgts in writer_batches:
             # TODO: see if this can be processed in a single batch (multiple writers)
@@ -257,56 +165,6 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         self.log(f"{mode}_loss", loss, sync_dist=True, prog_bar=True)
         return loss
 
-    def split_batch_for_adaptation(
-        self, batch, limit_num_samples_per_task: Optional[int] = None
-    ) -> List[Tuple[Tensor, Tensor, Tensor, Tensor]]:
-        imgs, target, writer_ids = batch
-        writer_ids_uniq = writer_ids.unique().tolist()
-
-        assert (
-            len(writer_ids_uniq) == self.ways
-        ), f"{len(writer_ids_uniq)} vs {self.ways}"
-
-        # Split the batch into N different writers, where N = ways.
-        writer_batches = []
-        for task in range(self.ways):  # tasks correspond to different writers
-            wrtr_id = writer_ids_uniq[task]
-            task_slice = writer_ids == wrtr_id
-            imgs_, target_, writer_ids_ = (
-                imgs[task_slice],
-                target[task_slice],
-                writer_ids[task_slice],
-            )
-            if limit_num_samples_per_task is not None:
-                imgs_, target_, writer_ids_ = (
-                    imgs[:limit_num_samples_per_task],
-                    target[:limit_num_samples_per_task],
-                    writer_ids[:limit_num_samples_per_task],
-                )
-
-            # Separate data into support/query set.
-            adaptation_indices = np.zeros(imgs_.size(0), dtype=bool)
-            # Select first k even indices for adaptation set.
-            adaptation_indices[np.arange(self.shots) * 2] = True
-            # Select remaining indices for query set.
-            query_indices = torch.from_numpy(~adaptation_indices)
-            adaptation_indices = torch.from_numpy(adaptation_indices)
-            adaptation_imgs, adaptation_tgts = (
-                imgs_[adaptation_indices],
-                target_[adaptation_indices],
-            )
-            query_imgs, query_tgts = imgs_[query_indices], target_[query_indices]
-            writer_batches.append(
-                (adaptation_imgs, adaptation_tgts, query_imgs, query_tgts)
-            )
-
-        return writer_batches
-
-    def training_epoch_end(self, epoch_outputs):
-        sch = self.lr_schedulers()
-        if sch is not None:
-            sch.step()
-
     def forward(
         self,
         adaptation_imgs: Tensor,
@@ -314,102 +172,19 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         inference_imgs: Tensor,
         inference_tgts: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor, Tensor]:
-        """
-        Adapt on a set of images for a particular writer and run inference on another set.
-
-        Args:
-            adaptation_imgs (Tensor): images to do adaptation on
-            adaptation_targets (Tensor): targets for `adaptation_imgs`
-            inference_imgs (Tensor): images to make predictions on
-            inference_tgts (Optional[Tensor]): targets for `inference_imgs`
-        Returns:
-            predictions on `inference_imgs`, in the form of a 3-tuple:
-                - logits, obtained at each time step during decoding
-                - sampled class indices, i.e. model predictions, obtained by applying
-                      greedy decoding (argmax on logits) at each time step
-                - mean loss
-        """
         self.eval()
+        return self.adaptive_model(
+            adaptation_imgs,
+            adaptation_targets,
+            inference_imgs,
+            inference_tgts,
+            mode="val",
+        )
 
-        # Train a writer-specific code.
-        writer_code = self.new_writer_code(adaptation_imgs, adaptation_targets)
-
-        # Run inference using the writer code.
-        with torch.inference_mode():
-            logits, loss = self.base_model_forward(
-                inference_imgs, writer_code, inference_tgts, teacher_forcing=False
-            )
-        sampled_ids = logits.argmax(-1)
-
-        return logits, sampled_ids, loss
-
-    def new_writer_code(
-        self, adaptation_imgs: Tensor, adaptation_targets: Tensor
-    ) -> Tensor:
-        """
-        Create a new writer code (embedding) based on a batch of examples for a writer.
-
-        The writer code is created by running one or multiple forward/backward
-        passes on a batch of adaptation data in order to train a new writer
-        embedding.
-        """
-        writer_emb = torch.empty(1, self.writer_emb_size).to(adaptation_imgs.device)
-        writer_emb.normal_()  # mean 0, std 1
-        writer_emb.requires_grad = True
-
-        if self.use_adam_for_adaptation:
-            optimizer = optim.Adam(iter([writer_emb]), lr=self.learning_rate_emb)
-        else:
-            # Plain SGD, i.e. update rule `g = g - lr * grad(loss)`
-            optimizer = optim.SGD(iter([writer_emb]), lr=self.learning_rate_emb)
-
-        for _ in range(self.adaptation_opt_steps):
-            _, loss = self.base_model_forward(
-                adaptation_imgs, writer_emb, adaptation_targets
-            )
-
-            optimizer.zero_grad()
-            self.manual_backward(loss, inputs=writer_emb)
-            if self.grad_clip is not None:
-                torch.nn.utils.clip_grad_norm_(writer_emb, self.grad_clip)
-            optimizer.step()  # update the embedding
-        writer_emb.detach_()
-
-        return writer_emb
-
-    def set_batchnorm_layers_train(self, training: bool = True):
-        _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d)
-        for m in self.modules():
-            if isinstance(m, _batchnorm_layers):
-                m.training = training
-
-    def set_dropout_layers_train(self, training: bool = True):
-        for m in self.modules():
-            if isinstance(m, nn.Dropout):
-                m.training = training
-
-    def batchnorm_reset_running_stats(self):
-        _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d)
-        for m in self.modules():
-            if isinstance(m, _batchnorm_layers):
-                m.reset_running_stats()
-
-    def freeze_all_layers_except_classifier(self):
-        for n, p in self.named_parameters():
-            p.requires_grad = False
-        self.model.decoder.clf.requires_grad_(True)
-
-    def freeze_batchnorm_weights(self, freeze_bias=False):
-        """
-        For all normalization layers (of the form x * w + b), freeze w,
-        and optionally the bias.
-        """
-        _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)
-        for m in self.modules():
-            if isinstance(m, _batchnorm_layers):
-                m.weight.requires_grad = False
-                if freeze_bias:
-                    m.bias.requires_grad = False
+    def training_epoch_end(self, epoch_outputs):
+        sch = self.lr_schedulers()
+        if sch is not None:
+            sch.step()
 
     def train_dataloader(self):
         # Since we are using a l2l TaskDataset which already batches the data,
@@ -497,7 +272,9 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
             )
             feature_size = base_model.rnn_encoder.input_size
 
-        model = WriterCodeAdaptiveModel(base_model.model, feature_size, *args, **kwargs)
+        model = LitWriterCodeAdaptiveModel(
+            base_model.model, feature_size, *args, **kwargs
+        )
 
         if load_meta_weights:
             # Load weights specific to the meta-learning algorithm.
@@ -506,7 +283,9 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
                 checkpoint_path, map_location=lambda storage, loc: storage
             )
             for n, p in ckpt["state_dict"].items():
-                if any(n.startswith(wn) for wn in WriterCodeAdaptiveModel.meta_weights):
+                if any(
+                    n.startswith(wn) for wn in LitWriterCodeAdaptiveModel.meta_weights
+                ):
                     with torch.no_grad():
                         model.state_dict()[n][:] = p
                     loaded.append(n)
@@ -515,7 +294,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
 
     @staticmethod
     def add_model_specific_args(parent_parser):
-        parser = parent_parser.add_argument_group("WriterCodeAdaptiveModel")
+        parser = parent_parser.add_argument_group("LitWriterCodeAdaptiveModel")
         parser.add_argument(
             "--writer_emb_size",
             type=int,
@@ -544,7 +323,7 @@ class WriterCodeAdaptiveModel(pl.LightningModule):
         )
         parser.add_argument(
             "--adaptation_opt_steps",
-            type=float,
+            type=int,
             default=1,
             help="Number of optimization steps to perform for "
             "training a new writer code during val/test.",

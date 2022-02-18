@@ -5,18 +5,15 @@ from copy import copy
 from pathlib import Path
 from functools import partial
 
-from metahtr.lit_models import MetaHTR
-from metahtr.lit_util import MetaHTRCheckpointIO
-from metahtr.lit_callbacks import (
+from thesis.metahtr.lit_models import MetaHTR
+from thesis.metahtr.lit_util import MetaHTRCheckpointIO
+from thesis.metahtr.lit_callbacks import (
     LogModelPredictionsMetaHTR,
     LogLayerWiseLearningRates,
     LogInstanceSpecificWeights,
     LogWorstPredictionsMetaHTR,
 )
-from metahtr.util import (
-    filter_df_by_freq,
-    PtTaskDataset,
-)
+from thesis.util import filter_df_by_freq, PtTaskDataset
 
 from htr.data import IAMDataset
 from htr.util import LitProgressBar, LabelEncoder
@@ -96,7 +93,7 @@ def main(args):
     if args.use_aachen_splits:
         # Use the Aachen splits for the IAM dataset. It should be noted that these
         # splits do not encompass the complete IAM dataset.
-        aachen_path = Path(__file__).resolve().parent.parent / "aachen_splits"
+        aachen_path = Path(__file__).resolve().parent.parent.parent / "aachen_splits"
         train_splits = (aachen_path / "train.uttlist").read_text().splitlines()
         validation_splits = (
             (aachen_path / "validation.uttlist").read_text().splitlines()

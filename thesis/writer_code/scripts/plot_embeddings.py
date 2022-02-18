@@ -41,7 +41,7 @@ if __name__ == "__main__":
     #                     help="Path to model checkpoint containing the embeddings")
     # args = parser.parse_args()
 
-    checkpoint_path = "/home/tobias/Dropbox/master_AI/thesis/code/writer_code/lightning_logs/WriterCodeAdaptiveModel-wer=0.1227=5_lr=1e-4_shots=8_seed=3/checkpoints/WriterCodeAdaptiveModel-epoch=57-char_error_rate=0.0640-word_error_rate=0.0913.ckpt"
+    checkpoint_path = "/home/tobias/Dropbox/master_AI/thesis/code/writer_code/lightning_logs/LitWriterCodeAdaptiveModel-wer=0.1227=5_lr=1e-4_shots=8_seed=3/checkpoints/LitWriterCodeAdaptiveModel-epoch=57-char_error_rate=0.0640-word_error_rate=0.0913.ckpt"
 
     assert Path(
         checkpoint_path

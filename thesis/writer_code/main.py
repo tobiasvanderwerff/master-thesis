@@ -5,16 +5,12 @@ from copy import copy
 from pathlib import Path
 from functools import partial
 
-from metahtr.util import (
-    filter_df_by_freq,
-    PtTaskDataset,
-)
+from thesis.writer_code.lit_models import LitWriterCodeAdaptiveModel
+from thesis.writer_code.lit_callbacks import LogModelPredictions, LogWorstPredictions
+from thesis.util import filter_df_by_freq, PtTaskDataset
 
 from htr.data import IAMDataset
 from htr.util import LitProgressBar, LabelEncoder
-
-from lit_models import WriterCodeAdaptiveModel
-from lit_callbacks import LogModelPredictions, LogWorstPredictions
 
 import torch
 import learn2learn as l2l
@@ -91,7 +87,7 @@ def main(args):
     if args.use_aachen_splits:
         # Use the Aachen splits for the IAM dataset. It should be noted that these
         # splits do not encompass the complete IAM dataset.
-        aachen_path = Path(__file__).resolve().parent.parent / "aachen_splits"
+        aachen_path = Path(__file__).resolve().parent.parent.parent / "aachen_splits"
         train_splits = (aachen_path / "train.uttlist").read_text().splitlines()
         validation_splits = (
             (aachen_path / "validation.uttlist").read_text().splitlines()
@@ -263,11 +259,11 @@ def main(args):
         },
     )
     if args.base_model == "fphtr":
-        learner = WriterCodeAdaptiveModel.init_with_base_model_from_checkpoint(
+        learner = LitWriterCodeAdaptiveModel.init_with_base_model_from_checkpoint(
             "fphtr", **args_
         )
     else:  # SAR
-        learner = WriterCodeAdaptiveModel.init_with_base_model_from_checkpoint(
+        learner = LitWriterCodeAdaptiveModel.init_with_base_model_from_checkpoint(
             "sar", **args_
         )
 
@@ -289,7 +285,7 @@ def main(args):
             save_top_k=(-1 if args.save_all_checkpoints else 3),
             mode="min",
             monitor="word_error_rate",
-            filename="WriterCodeAdaptiveModel-{epoch}-{char_error_rate:.4f}-{word_error_rate:.4f}",
+            filename="LitWriterCodeAdaptiveModel-{epoch}-{char_error_rate:.4f}-{word_error_rate:.4f}",
             save_weights_only=True,
         ),
         LogModelPredictions(
@@ -369,7 +365,7 @@ if __name__ == "__main__":
                              "which logs are stored.")
     # fmt: on
 
-    parser = WriterCodeAdaptiveModel.add_model_specific_args(parser)
+    parser = LitWriterCodeAdaptiveModel.add_model_specific_args(parser)
     parser = Trainer.add_argparse_args(parser)  # adds Pytorch Lightning arguments
 
     args = parser.parse_args()
