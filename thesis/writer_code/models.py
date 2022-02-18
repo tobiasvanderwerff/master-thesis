@@ -50,7 +50,6 @@ class WriterCodeAdaptiveModel(nn.Module):
         num_hidden: int,
         num_writers: int,
         learning_rate_emb: float,
-        backward_fn: Callable,
         embedding_type: WriterEmbeddingType = WriterEmbeddingType.LEARNED,
         adaptation_opt_steps: int = 1,
         use_adam_for_adaptation: bool = False,
@@ -65,9 +64,6 @@ class WriterCodeAdaptiveModel(nn.Module):
             num_writers (int): number of writers in the training set
             learning_rate_emb (float): learning rate used for fast adaptation of an
                 initial embedding during val/test
-            backward_fn (Callable): backpropagation function. This can be
-                torch.backward but also the pytorch lightning version,
-                i.e. pl.LightningModule.manual_backward
             embedding_type (WriterEmbeddingType): type of writer embedding used
             adaptation_opt_steps (int): number of optimization steps during adaptation
             use_adam_for_adaptation (bool): whether to use Adam during adaptation
@@ -79,7 +75,6 @@ class WriterCodeAdaptiveModel(nn.Module):
         self.num_hidden = num_hidden
         self.num_writers = num_writers
         self.learning_rate_emb = learning_rate_emb
-        self.backward_fn = backward_fn
         self.embedding_type = embedding_type
         self.adaptation_opt_steps = adaptation_opt_steps
         self.use_adam_for_adaptation = use_adam_for_adaptation
@@ -193,7 +188,7 @@ class WriterCodeAdaptiveModel(nn.Module):
             )
 
             optimizer.zero_grad()
-            self.backward_fn(loss, inputs=writer_emb)
+            loss.backward(inputs=writer_emb)
             optimizer.step()  # update the embedding
         writer_emb.detach_()
 

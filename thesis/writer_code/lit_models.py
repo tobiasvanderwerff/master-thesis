@@ -96,7 +96,6 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
             num_hidden=adapt_num_hidden,
             num_writers=num_writers,
             learning_rate_emb=learning_rate_emb,
-            backward_fn=self.manual_backward,
             adaptation_opt_steps=adaptation_opt_steps,
             use_adam_for_adaptation=use_adam_for_adaptation,
         )
@@ -122,7 +121,7 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
     def opt_step(self, loss: Tensor, inputs: Optional[Tensor] = None):
         optimizer = self.optimizers()
         optimizer.zero_grad()
-        self.manual_backward(loss, inputs=inputs)
+        loss.backward(inputs=inputs)
         if self.grad_clip is not None:
             self.clip_gradients(optimizer, self.grad_clip, "norm")
         optimizer.step()

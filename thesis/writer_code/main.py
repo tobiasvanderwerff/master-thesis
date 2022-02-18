@@ -255,7 +255,6 @@ def main(args):
             "early_stopping_patience": args.early_stopping_patience,
             "use_cosine_lr_scheduler": args.use_cosine_lr_scheduler,
             "use_image_augmentations": args.use_image_augmentations,
-            "precision": args.precision,
         },
     )
     if args.base_model == "fphtr":
