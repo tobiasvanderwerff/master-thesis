@@ -1,3 +1,4 @@
+from enum import Enum
 from functools import partial
 from typing import Optional, Callable, Tuple
 
@@ -12,20 +13,27 @@ from htr.models.sar.sar import ShowAttendRead
 from thesis.util import freeze
 
 
-class BatchNorm1dPermute(nn.Module):
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        self.bn = nn.BatchNorm1d(*args, **kwargs)
+class WriterEmbeddingType(Enum):
+    """
+    Type of writer embedding. Choices:
 
-    def forward(self, x: torch.Tensor):
-        """
-        Args:
-            x (Tensor of shape (N, *, k)
-        """
-        x = x.movedim(-1, 1)  # (N, k, *)
-        x = self.bn(x)
-        x = x.movedim(1, -1)  # (N, *, k)
-        return x
+    learned: an embedding whose weights are learned with backpropagation
+    transformed: an embedding produced by some transform of features, e.g. a feature
+        map passed through a dense layer to produce the embedding.
+    """
+
+    LEARNED = 1
+    TRANSFORMED = 2
+
+    @staticmethod
+    def from_string(s: str):
+        s = s.lower()
+        if s == "learn":
+            return WriterEmbeddingType.LEARNED
+        elif s == "transform":
+            return WriterEmbeddingType.TRANSFORMED
+        else:
+            raise ValueError(f"{s} is not a valid embedding method.")
 
 
 class WriterCodeAdaptiveModel(nn.Module):
@@ -43,6 +51,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         num_writers: int,
         learning_rate_emb: float,
         backward_fn: Callable,
+        embedding_type: WriterEmbeddingType = WriterEmbeddingType.LEARNED,
         adaptation_opt_steps: int = 1,
         use_adam_for_adaptation: bool = False,
     ):
@@ -59,6 +68,7 @@ class WriterCodeAdaptiveModel(nn.Module):
             backward_fn (Callable): backpropagation function. This can be
                 torch.backward but also the pytorch lightning version,
                 i.e. pl.LightningModule.manual_backward
+            embedding_type (WriterEmbeddingType): type of writer embedding used
             adaptation_opt_steps (int): number of optimization steps during adaptation
             use_adam_for_adaptation (bool): whether to use Adam during adaptation
                 (otherwise plain SGD is used)
@@ -70,6 +80,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         self.num_writers = num_writers
         self.learning_rate_emb = learning_rate_emb
         self.backward_fn = backward_fn
+        self.embedding_type = embedding_type
         self.adaptation_opt_steps = adaptation_opt_steps
         self.use_adam_for_adaptation = use_adam_for_adaptation
 
@@ -118,7 +129,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         adapt_imgs: Tensor,
         adapt_tgts: Tensor,
         inference_imgs: Tensor,
-        inference_tgts: Tensor,
+        inference_tgts: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
         """
         Adapt on a set of images for a particular writer and run inference on another set.
@@ -301,3 +312,19 @@ class BaseModelAdaptation(nn.Module):
                 target[:, : logits.size(1)],
             )
         return logits, loss
+
+
+class BatchNorm1dPermute(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.bn = nn.BatchNorm1d(*args, **kwargs)
+
+    def forward(self, x: torch.Tensor):
+        """
+        Args:
+            x (Tensor of shape (N, *, k)
+        """
+        x = x.movedim(-1, 1)  # (N, k, *)
+        x = self.bn(x)
+        x = x.movedim(1, -1)  # (N, *, k)
+        return x

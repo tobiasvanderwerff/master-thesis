@@ -4,7 +4,7 @@ from typing import Tuple, Optional, Dict
 from pathlib import Path
 
 from thesis.metahtr.lit_models import MetaHTR
-from thesis.util import decode_prediction
+from thesis.util import decode_prediction, split_batch_for_adaptation
 
 from htr.data import IAMDataset
 from htr.util import matplotlib_imshow, LabelEncoder
@@ -86,19 +86,15 @@ class LogWorstPredictionsMetaHTR(Callback):
         torch.set_grad_enabled(True)
         shots, ways = pl_module.shots, pl_module.ways
         for imgs, targets, writer_ids in dataloader:
-            for task in range(ways):
-                writer_ids_uniq = writer_ids.unique().tolist()
-                task_slice = writer_ids == writer_ids_uniq[task]
-                tsk_imgs, tsk_tgts = imgs[task_slice], targets[task_slice]
-                support_imgs, support_tgts, query_imgs, query_tgts = (
-                    tsk_imgs[:shots],
-                    tsk_tgts[:shots],
-                    tsk_imgs[shots:],
-                    tsk_tgts[shots:],
-                )
-
+            writer_batches = split_batch_for_adaptation(
+                [imgs, targets, writer_ids],
+                ways,
+                shots,
+                limit_num_samples_per_task=pl_module.val_batch_size,
+            )
+            for adapt_imgs, adapt_tgts, query_imgs, query_tgts in writer_batches:
                 _, preds, *_ = pl_module(
-                    *[t.to(device) for t in [support_imgs, support_tgts, query_imgs]]
+                    *[t.to(device) for t in [adapt_imgs, adapt_tgts, query_imgs]]
                 )
 
                 cer_metric = pl_module.model.module.cer_metric

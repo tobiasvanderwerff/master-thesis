@@ -3,7 +3,7 @@ from typing import Tuple, Optional
 from pathlib import Path
 
 from thesis.writer_code.lit_models import LitWriterCodeAdaptiveModel
-from thesis.util import decode_prediction
+from thesis.util import decode_prediction, split_batch_for_adaptation
 
 from htr.data import IAMDataset
 from htr.util import matplotlib_imshow, LabelEncoder
@@ -85,19 +85,18 @@ class LogWorstPredictions(Callback):
         torch.set_grad_enabled(True)
         shots, ways = pl_module.shots, pl_module.ways
         for imgs, targets, writer_ids in dataloader:
-            for task in range(ways):
-                writer_ids_uniq = writer_ids.unique().tolist()
-                task_slice = writer_ids == writer_ids_uniq[task]
-                tsk_imgs, tsk_tgts = imgs[task_slice], targets[task_slice]
-                support_imgs, support_tgts, query_imgs, query_tgts = (
-                    tsk_imgs[:shots],
-                    tsk_tgts[:shots],
-                    tsk_imgs[shots:],
-                    tsk_tgts[shots:],
-                )
-
+            writer_batches = split_batch_for_adaptation(
+                [imgs, targets, writer_ids],
+                ways,
+                shots,
+                limit_num_samples_per_task=pl_module.val_batch_size,
+            )
+            for adapt_imgs, adapt_tgts, query_imgs, query_tgts in writer_batches:
+                # For worst prediction logging, `mode="val"` is always passed,
+                # which means that new embeddings are used for train/val/test.
                 _, preds, *_ = pl_module(
-                    *[t.to(device) for t in [support_imgs, support_tgts, query_imgs]]
+                    *[t.to(device) for t in [adapt_imgs, adapt_tgts, query_imgs]],
+                    mode="val",
                 )
 
                 cer_metric = pl_module.model.cer_metric
@@ -261,14 +260,14 @@ class LogModelPredictions(Callback):
         # Make predictions.
         if split == "train":
             query_imgs, query_tgts, writer_ids = batch
-            wrtr_emb = pl_module.writer_embs(writer_ids.to(device))  # (N, emb_size)
-            inp = (query_imgs.to(device), wrtr_emb, query_tgts.to(device))
-            logits, loss = pl_module.base_model_forward(*inp, teacher_forcing=True)
-            preds = logits.argmax(-1)
+            _, preds, *_ = pl_module.adaptive_model(
+                *[t.to(device) for t in [query_imgs, query_tgts, writer_ids]],
+                mode="train",
+            )
         else:  # val/test
             support_imgs, support_tgts, query_imgs, query_tgts = batch
             torch.set_grad_enabled(True)
-            _, preds, *_ = pl_module(*[t.to(device) for t in batch])
+            _, preds, *_ = pl_module(*[t.to(device) for t in batch], mode="val")
             torch.set_grad_enabled(False)
 
         # Log the results.

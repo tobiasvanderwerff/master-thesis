@@ -150,7 +150,9 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
         for adapt_imgs, adapt_tgts, query_imgs, query_tgts in writer_batches:
             # TODO: see if this can be processed in a single batch (multiple writers)
             torch.set_grad_enabled(True)
-            _, preds, query_loss = self(adapt_imgs, adapt_tgts, query_imgs, query_tgts)
+            _, preds, query_loss = self(
+                adapt_imgs, adapt_tgts, query_imgs, query_tgts, mode="val"
+            )
             torch.set_grad_enabled(False)
 
             # Log metrics.
@@ -171,6 +173,7 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
         adaptation_targets: Tensor,
         inference_imgs: Tensor,
         inference_tgts: Optional[Tensor] = None,
+        mode: str = "train",
     ) -> Tuple[Tensor, Tensor, Tensor]:
         self.eval()
         return self.adaptive_model(
@@ -178,7 +181,7 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
             adaptation_targets,
             inference_imgs,
             inference_tgts,
-            mode="val",
+            mode=mode,
         )
 
     def training_epoch_end(self, epoch_outputs):
