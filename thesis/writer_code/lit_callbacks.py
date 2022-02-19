@@ -3,6 +3,7 @@ from typing import Tuple, Optional
 from pathlib import Path
 
 from thesis.writer_code.lit_models import LitWriterCodeAdaptiveModel
+from thesis.writer_code.util import WriterEmbeddingType
 from thesis.util import decode_prediction, split_batch_for_adaptation
 
 from htr.data import IAMDataset
@@ -94,6 +95,7 @@ class LogWorstPredictions(Callback):
             for adapt_imgs, adapt_tgts, query_imgs, query_tgts in writer_batches:
                 # For worst prediction logging, `mode="val"` is always passed,
                 # which means that new embeddings are used for train/val/test.
+                # TODO: change to just query images for transform model
                 _, preds, *_ = pl_module(
                     *[t.to(device) for t in [adapt_imgs, adapt_tgts, query_imgs]],
                     mode="val",
@@ -265,6 +267,10 @@ class LogModelPredictions(Callback):
                 mode="train",
             )
         else:  # val/test
+            # TODO: for transform model, i.e. pl_module.writer_emb_type ==
+            #  WriterEmbeddingType.TRANSFORMED, only pass query_imgs, query_tgts and
+            #  writer_ids. It's possible that the val batch needs to be
+            #  designed diferently.
             support_imgs, support_tgts, query_imgs, query_tgts = batch
             torch.set_grad_enabled(True)
             _, preds, *_ = pl_module(*[t.to(device) for t in batch], mode="val")

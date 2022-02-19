@@ -7,6 +7,7 @@ from functools import partial
 
 from thesis.writer_code.lit_models import LitWriterCodeAdaptiveModel
 from thesis.writer_code.lit_callbacks import LogModelPredictions, LogWorstPredictions
+from thesis.writer_code.util import WriterEmbeddingType
 from thesis.util import filter_df_by_freq, PtTaskDataset
 
 from htr.data import IAMDataset
@@ -232,7 +233,7 @@ def main(args):
         taskset_val=taskset_val,
         taskset_test=taskset_test,
         val_batch_size=args.val_batch_size,
-        writer_emb_method=args.writer_emb_method,
+        writer_emb_type=WriterEmbeddingType.from_string(args.writer_emb_type),
         writer_emb_size=args.writer_emb_size,
         adapt_num_hidden=args.adapt_num_hidden,
         ways=args.ways,
@@ -287,19 +288,26 @@ def main(args):
             filename="LitWriterCodeAdaptiveModel-{epoch}-{char_error_rate:.4f}-{word_error_rate:.4f}",
             save_weights_only=True,
         ),
-        LogModelPredictions(
-            label_encoder=ds_train.label_enc,
-            val_batch=val_batch,
-            train_batch=train_batch,
-            predict_on_train_start=False,
-        ),
-        LogWorstPredictions(
-            train_dataloader=learner.train_dataloader(),
-            val_dataloader=learner.val_dataloader(),
-            test_dataloader=learner.test_dataloader(),
-            training_skipped=(args.validate or args.test),
-        ),
     ]
+    if args.writer_emb_type != "transformed":
+        # TODO: this is a temporary fix because the callbacks dont work for this
+        #  embedding type. Fix it and then remove this conditional statement.
+        callbacks.extend(
+            [
+                LogModelPredictions(
+                    label_encoder=ds_train.label_enc,
+                    val_batch=val_batch,
+                    train_batch=train_batch,
+                    predict_on_train_start=False,
+                ),
+                LogWorstPredictions(
+                    train_dataloader=learner.train_dataloader(),
+                    val_dataloader=learner.val_dataloader(),
+                    test_dataloader=learner.test_dataloader(),
+                    training_skipped=(args.validate or args.test),
+                ),
+            ]
+        )
     if args.early_stopping_patience != -1:
         callbacks.append(
             EarlyStopping(

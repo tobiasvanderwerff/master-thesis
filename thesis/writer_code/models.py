@@ -1,4 +1,3 @@
-from enum import Enum
 from functools import partial
 from typing import Optional, Callable, Tuple
 
@@ -10,30 +9,8 @@ from torch import Tensor
 from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
 from htr.models.sar.sar import ShowAttendRead
 
+from thesis.writer_code.util import WriterEmbeddingType
 from thesis.util import freeze
-
-
-class WriterEmbeddingType(Enum):
-    """
-    Type of writer embedding. Choices:
-
-    learned: an embedding whose weights are learned with backpropagation
-    transformed: an embedding produced by some transform of features, e.g. a feature
-        map passed through a dense layer to produce the embedding.
-    """
-
-    LEARNED = 1
-    TRANSFORMED = 2
-
-    @staticmethod
-    def from_string(s: str):
-        s = s.lower()
-        if s == "learn":
-            return WriterEmbeddingType.LEARNED
-        elif s == "transform":
-            return WriterEmbeddingType.TRANSFORMED
-        else:
-            raise ValueError(f"{s} is not a valid embedding method.")
 
 
 class WriterCodeAdaptiveModel(nn.Module):
@@ -79,12 +56,17 @@ class WriterCodeAdaptiveModel(nn.Module):
         self.adaptation_opt_steps = adaptation_opt_steps
         self.use_adam_for_adaptation = use_adam_for_adaptation
 
-        self.writer_embs = nn.Embedding(num_writers, emb_size)
-        self.adaptation = AdaptationMLP(d_model, emb_size, num_hidden)
+        self.emb_transform = None
+        if self.embedding_type == WriterEmbeddingType.LEARNED:
+            self.writer_embs = nn.Embedding(num_writers, emb_size)
+        if self.embedding_type == WriterEmbeddingType.TRANSFORMED:
+            # TODO: multiple layers?
+            self.emb_transform = nn.Linear(d_model, num_hidden)
+        self.feature_transform = FeatureTransform(
+            AdaptationMLP(d_model, emb_size, num_hidden), self.emb_transform
+        )
         self.base_model_with_adaptation = BaseModelAdaptation(base_model)
 
-        assert all(p.requires_grad for p in self.writer_embs.parameters())
-        assert all(p.requires_grad for p in self.adaptation.parameters())
         assert base_model.loss_fn.reduction == "mean"
 
         freeze(base_model)  # make sure the base model weights are frozen
@@ -96,21 +78,39 @@ class WriterCodeAdaptiveModel(nn.Module):
         self, *args, mode: str = "train", **kwargs
     ) -> Tuple[Tensor, Tensor, Tensor]:
         assert mode in ["train", "val", "test"]
-        if mode == "train":  # use a pre-trained embedding
-            logits, loss = self.forward_existing_code(*args, **kwargs)
-        else:  # initialize and train a new writer embedding
-            logits, loss = self.forward_new_code(*args, **kwargs)
+        if self.embedding_type == WriterEmbeddingType.LEARNED:
+            if mode == "train":  # use a pre-trained embedding
+                logits, loss = self.forward_existing_code(*args, **kwargs)
+            else:  # initialize and train a new writer embedding
+                logits, loss = self.forward_new_code(*args, **kwargs)
+        else:  # WriterEmbeddingType.TRANSFORMED
+            logits, loss = self.forward_transform(*args, **kwargs)
         sampled_ids = logits.argmax(-1)
         return logits, sampled_ids, loss
+
+    def forward_transform(
+        self, imgs: Tensor, target: Tensor, *args, **kwargs
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Create a writer code by passing the average CNN feature vector through a MLP.
+        """
+        logits, loss = self.base_model_with_adaptation(
+            imgs,
+            target,
+            intermediate_transform=self.feature_transform,
+            teacher_forcing=True,
+        )
+        return logits, loss
 
     def forward_existing_code(
         self, imgs: Tensor, target: Tensor, writer_ids: Tensor
     ) -> Tuple[Tensor, Tensor]:
-        # Load an existing writer code.
+        """Perform adaptation using an existing writer code."""
+        # Load the writer code.
         writer_emb = self.writer_embs(writer_ids)  # (N, emb_size)
 
         # Run inference using the writer code.
-        intermediate_transform = partial(self.adaptation.forward, writer_emb=writer_emb)
+        intermediate_transform = partial(self.feature_transform, writer_emb=writer_emb)
         logits, loss = self.base_model_with_adaptation(
             imgs,
             target,
@@ -127,33 +127,27 @@ class WriterCodeAdaptiveModel(nn.Module):
         inference_tgts: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
         """
-        Adapt on a set of images for a particular writer and run inference on another set.
+        Create a writer embedding based on a set of adaptation images, and run
+        inference on another set.
 
         Args:
             adapt_imgs (Tensor): images to do adaptation on
             adapt_tgts (Tensor): targets for `adaptation_imgs`
             inference_imgs (Tensor): images to make predictions on
             inference_tgts (Optional[Tensor]): targets for `inference_imgs`
-        Returns:
-            predictions on `inference_imgs`, in the form of a 3-tuple:
-                - logits, obtained at each time step during decoding
-                - mean loss
         """
         # Train a writer code.
         writer_code = self.new_writer_code(adapt_imgs, adapt_tgts)
 
         # Run inference using the writer code.
+        intermediate_transform = partial(self.feature_transform, writer_emb=writer_code)
         with torch.inference_mode():
-            intermediate_transform = partial(
-                self.adaptation.forward, writer_emb=writer_code
-            )
             logits, loss = self.base_model_with_adaptation(
                 inference_imgs,
                 inference_tgts,
                 intermediate_transform=intermediate_transform,
                 teacher_forcing=False,
             )
-
         return logits, loss
 
     def new_writer_code(
@@ -178,7 +172,7 @@ class WriterCodeAdaptiveModel(nn.Module):
 
         for _ in range(self.adaptation_opt_steps):
             intermediate_transform = partial(
-                self.adaptation.forward, writer_emb=writer_emb
+                self.feature_transform, writer_emb=writer_emb
             )
             _, loss = self.base_model_with_adaptation(
                 adaptation_imgs,
@@ -255,9 +249,46 @@ class AdaptationMLP(nn.Module):
         return (res + features).movedim(-1, 1)
 
 
+class FeatureTransform(nn.Module):
+    def __init__(
+        self,
+        adaptation_transform: nn.Module,
+        emb_transform: Optional[nn.Module] = None,
+    ):
+        """
+        Args:
+            adaptation_transform (nn.Module): transformation from features and
+                writer embedding to adapted features
+            emb_transform (Optional[nn.Module]): transformation from features to a
+                writer embedding.
+        """
+        super().__init__()
+        self.emb_transform = emb_transform
+        self.adaptation_transform = adaptation_transform
+
+    def forward(self, features: Tensor, writer_emb: Optional[Tensor] = None):
+        """
+        Transform features using a writer code.
+
+        Args:
+            features (Tensor of shape (N, d_model, *)): features to adapt
+            writer_emb (Optional[Tensor]): writer embedding to be used for
+                adaptation. If not specified, a learnable feature transformation is used
+                to create the embedding.
+        Returns:
+            Tensor of shape (N, d_model, *) containing adapted features
+        """
+        if writer_emb is None:
+            # Transform features to create writer embedding.
+            # Average across spatial dimensions.
+            feats_mean = features.flatten(2, -1).mean(-1)
+            writer_emb = self.emb_transform(feats_mean)
+        return self.adaptation_transform(features, writer_emb)
+
+
 class BaseModelAdaptation(nn.Module):
     """
-    Base HTR model with an adaptation model injected in between.
+    Base HTR model with an adaptation transformation injected in between.
 
     Specifically, the adaptation model is injected right after the CNN feature map
     output.

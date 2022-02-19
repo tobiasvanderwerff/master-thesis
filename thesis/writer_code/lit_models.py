@@ -17,6 +17,8 @@ import learn2learn as l2l
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
+from thesis.writer_code.util import WriterEmbeddingType
+
 
 class LitWriterCodeAdaptiveModel(pl.LightningModule):
 
@@ -31,8 +33,8 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
         taskset_val: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
         taskset_test: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
         val_batch_size: int = 64,
-        writer_emb_method: str = "concat",
         writer_emb_size: int = 64,
+        writer_emb_type: WriterEmbeddingType = WriterEmbeddingType.LEARNED,
         adapt_num_hidden: int = 1000,
         ways: int = 8,
         shots: int = 8,
@@ -54,6 +56,7 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
             feature_size (int): size of the feature vectors to adapt, e.g. the output
                 feature vectors of a CNN
             num_writers (int): number of writers in the training set
+            writer_emb_type (WriterEmbeddingType): type of writer embedding used
         """
         super().__init__()
 
@@ -61,7 +64,6 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
             "When using cosine learning rate scheduler, specify `num_epochs` to "
             "configure the learning rate decay properly."
         )
-        assert writer_emb_method in ["sum", "concat", "transform"]
         assert isinstance(model, (FullPageHTREncoderDecoder, ShowAttendRead))
 
         self.model = model
@@ -71,8 +73,8 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
         self.taskset_val = taskset_val
         self.taskset_test = taskset_test
         self.val_batch_size = val_batch_size
-        self.writer_emb_method = writer_emb_method
         self.writer_emb_size = writer_emb_size
+        self.writer_emb_type = writer_emb_type
         self.adapt_num_hidden = adapt_num_hidden
         self.ways = ways
         self.shots = shots
@@ -96,12 +98,13 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
             num_hidden=adapt_num_hidden,
             num_writers=num_writers,
             learning_rate_emb=learning_rate_emb,
+            embedding_type=writer_emb_type,
             adaptation_opt_steps=adaptation_opt_steps,
             use_adam_for_adaptation=use_adam_for_adaptation,
         )
 
         self.save_hyperparameters(
-            "writer_emb_method",
+            "writer_emb_type",
             "writer_emb_size",
             "adapt_num_hidden",
             "ways",
@@ -304,11 +307,11 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
             help="Size of the writer embeddings for adaptation.",
         )
         parser.add_argument(
-            "--writer_emb_method",
+            "--writer_emb_type",
             type=str,
-            default="concat",
-            choices=["add", "concat", "transform"],
-            help="How to inject writer embeddings into the model.",
+            default="learned",
+            choices=["learned", "transformed"],
+            help="Type of writer embedding to use.",
         )
         parser.add_argument(
             "--adapt_num_hidden",

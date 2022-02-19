@@ -22,13 +22,13 @@ and an adaptation network. The embeddings are concatenated to each intermediate 
 network, as shown in the figure above. During inference, a new embedding is created by
 performing one or multiple gradient steps on a randomly initialized embedding, using an adaptation batch.
 
-**Strategy 2**: Transform the incoming features to create an initial embedding.
+**Strategy 2**: Transform the incoming features to create a writer embedding. The
+transform consists of a single dense layer, which is fed the average feature vector
+obtained from the CNN feature map. (It is an open question if taken the average
+feature vector is effective. I was inspired by classification tasks using BERT,
+where the word embeddings are simply averaged before being fed to a linear layer.)
 
 ## Implementation details
-New flags:
-    - embedding size
-    - how to include embeddings
-
 Possible setups:
 - Freeze original model and add adaptation layers with writer codes, as used in "Fast
   speaker adaptation of hybrid NN/HMM model for speech recognition based on
