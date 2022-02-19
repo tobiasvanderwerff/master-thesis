@@ -61,7 +61,8 @@ class WriterCodeAdaptiveModel(nn.Module):
             self.writer_embs = nn.Embedding(num_writers, emb_size)
         if self.embedding_type == WriterEmbeddingType.TRANSFORMED:
             # TODO: multiple layers?
-            self.emb_transform = nn.Linear(d_model, num_hidden)
+            # self.emb_transform = nn.Linear(d_model, num_hidden)
+            self.emb_transform = nn.Linear(d_model, emb_size)
         self.feature_transform = FeatureTransform(
             AdaptationMLP(d_model, emb_size, num_hidden), self.emb_transform
         )
