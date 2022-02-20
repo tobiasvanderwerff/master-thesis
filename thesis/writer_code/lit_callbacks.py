@@ -160,7 +160,7 @@ class LogWorstPredictions(Callback):
             taskset_train=pl_module.taskset_train,
             taskset_val=pl_module.taskset_val,
             taskset_test=pl_module.taskset_test,
-            writer_emb_method=pl_module.writer_emb_method,
+            writer_emb_type=pl_module.writer_emb_type.name,
             writer_emb_size=pl_module.writer_emb_size,
             adapt_num_hidden=pl_module.adapt_num_hidden,
             ways=pl_module.ways,
