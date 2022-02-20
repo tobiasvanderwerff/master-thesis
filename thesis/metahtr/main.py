@@ -5,13 +5,13 @@ from copy import copy
 from pathlib import Path
 from functools import partial
 
-from thesis.metahtr.lit_models import MetaHTR
-from thesis.metahtr.lit_util import MetaHTRCheckpointIO
+from thesis.metahtr.lit_models import MetaHTR, LitMetaHTR, LitMAMLHTR
+from thesis.metahtr.lit_util import MAMLHTRCheckpointIO
 from thesis.metahtr.lit_callbacks import (
-    LogModelPredictionsMetaHTR,
+    LogModelPredictionsMAML,
     LogLayerWiseLearningRates,
     LogInstanceSpecificWeights,
-    LogWorstPredictionsMetaHTR,
+    LogWorstPredictionsMAML,
 )
 from thesis.util import filter_df_by_freq, PtTaskDataset
 
@@ -37,7 +37,7 @@ PREDICTIONS_TO_LOG = {
 
 def main(args):
 
-    print(f"Base model used: {str(args.base_model).upper()}")
+    print(f"Base model used: {str(args.base_model_arch).upper()}")
 
     seed_everything(args.seed)
 
@@ -236,12 +236,6 @@ def main(args):
         taskset_train=taskset_train,
         taskset_val=taskset_val,
         taskset_test=taskset_test,
-        ways=args.ways,
-        shots=args.shots,
-        outer_lr=args.outer_lr,
-        num_workers=args.num_workers,
-        use_cosine_lr_scheduler=args.use_cosine_lr_scheduler,
-        use_batch_stats_for_batchnorm=args.use_batch_stats_for_batchnorm,
         use_instance_weights=(not args.no_instance_weights),
         allow_nograd=args.freeze_batchnorm_gamma,
         num_epochs=args.max_epochs,  # note this can be wrong when using early stopping
@@ -257,16 +251,16 @@ def main(args):
             "use_image_augmentations": args.use_image_augmentations,
             "use_batch_stats_for_batchnorm": args.use_batch_stats_for_batchnorm,
             "freeze_batchnorm_gamma": args.freeze_batchnorm_gamma,
-            "precision": args.precision,
         },
+        **vars(args),
     )
     # Initialize MAML with a trained base model.
-    if args.base_model == "fphtr":
-        learner = MetaHTR.init_with_base_model_from_checkpoint("fphtr", **args_)
+    cls = LitMAMLHTR if args.use_vanilla_maml else LitMetaHTR
+    if args.base_model_arch == "fphtr":
+        learner = cls.init_with_base_model_from_checkpoint(model_arch="fphtr", **args_)
     else:  # SAR
-        learner = MetaHTR.init_with_base_model_from_checkpoint("sar", **args_)
+        learner = cls.init_with_base_model_from_checkpoint(model_arch="sar", **args_)
 
-    # learner.freeze_all_layers_except_classifier()
     if args.freeze_batchnorm_gamma:
         learner.freeze_batchnorm_weights(freeze_bias=False)
 
@@ -274,7 +268,7 @@ def main(args):
     # the proper way. The weights should be stored in the same format as they would
     # be saved without using MAML, to make it straightforward to load the model
     # weights later on.
-    checkpoint_io = MetaHTRCheckpointIO()
+    checkpoint_io = MAMLHTRCheckpointIO()
 
     # Prepare fixed batches used for monitoring model predictions during training.
     im, t, wrtrs = next(iter(learner.val_dataloader()))
@@ -306,7 +300,7 @@ def main(args):
             filename="MAML-{epoch}-{char_error_rate:.4f}-{word_error_rate:.4f}",
             save_weights_only=True,
         ),
-        LogModelPredictionsMetaHTR(
+        LogModelPredictionsMAML(
             label_encoder=ds_train.label_enc,
             val_batch=val_batch,
             train_batch=train_batch,
@@ -315,12 +309,12 @@ def main(args):
         ),
         LogLayerWiseLearningRates(),
         LogInstanceSpecificWeights(ds_train.label_enc),
-        LogWorstPredictionsMetaHTR(
-            train_dataloader=learner.train_dataloader(),
-            val_dataloader=learner.val_dataloader(),
-            test_dataloader=learner.test_dataloader(),
-            training_skipped=(args.validate or args.test),
-        ),
+        # LogWorstPredictionsMAML(
+        #     train_dataloader=learner.train_dataloader(),
+        #     val_dataloader=learner.val_dataloader(),
+        #     test_dataloader=learner.test_dataloader(),
+        #     training_skipped=(args.validate or args.test),
+        # ),
     ]
     if args.early_stopping_patience != -1:
         callbacks.append(
@@ -358,8 +352,8 @@ if __name__ == "__main__":
     # fmt: off
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--base_model", type=str, required=True, choices=["fphtr", "sar"],
-                        default="fphtr")
+    parser.add_argument("--base_model_arch", type=str, required=True,
+                        choices=["fphtr", "sar"], default="fphtr")
     parser.add_argument("--trained_model_path", type=str, required=True,
                         help=("Path to a model checkpoint, which will be used as a "
                               "starting point for MAML/MetaHTR."))
@@ -371,6 +365,9 @@ if __name__ == "__main__":
                         help="Number of checks with no improvement after which "
                              "training will be stopped. Setting this to -1 will disable "
                              "early stopping.")
+    parser.add_argument("--use_vanilla_maml", action="store_true", default=False,
+                        help="Use default MAML implementation (e.g. without learnable "
+                             "inner loop learning rate")
     parser.add_argument("--use_aachen_splits", action="store_true", default=False)
     parser.add_argument("--use_image_augmentations", action="store_true", default=False,
                         help="Whether to use image augmentations during training. For "
@@ -384,7 +381,7 @@ if __name__ == "__main__":
                              "which logs are stored.")
     # fmt: on
 
-    parser = MetaHTR.add_model_specific_args(parser)
+    parser = LitMetaHTR.add_model_specific_args(parser)
     parser = Trainer.add_argparse_args(parser)  # adds Pytorch Lightning arguments
 
     args = parser.parse_args()

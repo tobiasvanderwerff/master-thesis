@@ -3,7 +3,7 @@ import re
 from typing import Tuple, Optional, Dict
 from pathlib import Path
 
-from thesis.metahtr.lit_models import MetaHTR
+from thesis.metahtr.lit_models import MetaHTR, LitMetaHTR
 from thesis.util import decode_prediction, split_batch_for_adaptation
 
 from htr.data import IAMDataset
@@ -26,7 +26,7 @@ PREDICTIONS_TO_LOG = {
 }
 
 
-class LogWorstPredictionsMetaHTR(Callback):
+class LogWorstPredictionsMAML(Callback):
     """
     At the end of training, log the worst image prediction, meaning the predictions
     with the highest character error rates.
@@ -81,10 +81,10 @@ class LogWorstPredictionsMetaHTR(Callback):
 
         print(f"Running {mode} inference on best model...")
 
-        eos_tkn_idx = pl_module.model.module.eos_tkn_idx
+        eos_tkn_idx = pl_module.model.gbml.module.eos_tkn_idx
         # Run inference on the validation set.
         torch.set_grad_enabled(True)
-        shots, ways = pl_module.shots, pl_module.ways
+        shots, ways = pl_module.model.shots, pl_module.model.ways
         for imgs, targets, writer_ids in dataloader:
             writer_batches = split_batch_for_adaptation(
                 [imgs, targets, writer_ids],
@@ -97,7 +97,7 @@ class LogWorstPredictionsMetaHTR(Callback):
                     *[t.to(device) for t in [adapt_imgs, adapt_tgts, query_imgs]]
                 )
 
-                cer_metric = pl_module.model.module.cer_metric
+                cer_metric = pl_module.model.gbml.module.cer_metric
                 for prd, tgt, im in zip(preds, query_tgts, query_imgs):
                     with torch.inference_mode():
                         cer_metric.reset()
@@ -113,11 +113,11 @@ class LogWorstPredictionsMetaHTR(Callback):
         for i, (im, cer, prd, tgt) in enumerate(img_cers):
             pred_str = decode_prediction(
                 prd[1:],
-                pl_module.model.module.label_encoder,
+                pl_module.model.gbml.module.label_encoder,
                 eos_tkn_idx,
             )
             target_str = decode_prediction(
-                tgt, pl_module.model.module.label_encoder, eos_tkn_idx
+                tgt, pl_module.model.gbml.module.label_encoder, eos_tkn_idx
             )
 
             # Create plot.
@@ -150,29 +150,31 @@ class LogWorstPredictionsMetaHTR(Callback):
         args = dict(
             checkpoint_path=best_model_path,
             model_hparams_file=model_hparams_file,
-            label_encoder=pl_module.model.module.label_encoder,
+            label_encoder=pl_module.model.gbml.module.label_encoder,
             load_meta_weights=True,
             taskset_train=pl_module.taskset_train,
             taskset_val=pl_module.taskset_val,
             taskset_test=pl_module.taskset_test,
-            ways=pl_module.ways,
-            shots=pl_module.shots,
+            ways=pl_module.model.ways,
+            shots=pl_module.model.shots,
             num_workers=pl_module.num_workers,
+            num_inner_steps=pl_module.model.num_inner_steps,
         )
 
-        if isinstance(pl_module.model.module, FullPageHTREncoderDecoder):
-            model = MetaHTR.init_with_base_model_from_checkpoint("fphtr", **args)
-        elif isinstance(pl_module.model.module, ShowAttendRead):
-            model = MetaHTR.init_with_base_model_from_checkpoint("sar", **args)
+        cls = pl_module.__class__
+        if isinstance(pl_module.model.gbml.module, FullPageHTREncoderDecoder):
+            model = cls.init_with_base_model_from_checkpoint(model_arch="fphtr", **args)
+        elif isinstance(pl_module.model.gbml.module, ShowAttendRead):
+            model = cls.init_with_base_model_from_checkpoint(model_arch="sar", **args)
         else:
             raise ValueError(
-                f"Unrecognized model class: {pl_module.model.module.__class__}"
+                f"Unrecognized model class: {pl_module.model.gbml.module.__class__}"
             )
 
         trainer.model = model
 
 
-class LogModelPredictionsMetaHTR(Callback):
+class LogModelPredictionsMAML(Callback):
     """
     Use a fixed test batch to monitor model predictions at the end of every epoch.
 
@@ -281,7 +283,7 @@ class LogModelPredictionsMetaHTR(Callback):
 
         assert imgs.shape[0] == targets.shape[0]
 
-        eos_tkn_idx = pl_module.model.module.eos_tkn_idx
+        eos_tkn_idx = pl_module.model.gbml.module.eos_tkn_idx
         # Generate plot.
         fig = plt.figure(figsize=(12, 16))
         for i, (tgt, im) in enumerate(zip(targets, imgs)):
@@ -319,7 +321,7 @@ class LogLayerWiseLearningRates(Callback):
         # Collect all inner loop learning rates.
         lrs = []
         for n, p in pl_module.state_dict().items():
-            if n.startswith("model.compute_update"):
+            if n.startswith("model.gbml.compute_update"):
                 ix = int(re.search(r"[0-9]+", n).group(0))
                 lrs.append((ix, p.item()))
         assert lrs != []

@@ -1,9 +1,9 @@
-from typing import Optional, Dict, Union, Tuple, Any, List
+from typing import Optional, Dict, Union, Tuple, Any, List, Sequence
 from pathlib import Path
 from collections import defaultdict
 
-from thesis.metahtr.util import LayerWiseLRTransform
-from thesis.util import identity_collate_fn
+from thesis.metahtr.models import MetaHTR, MAMLHTR
+from thesis.util import identity_collate_fn, TrainMode
 
 from htr.models.sar.sar import ShowAttendRead
 from htr.models.lit_models import LitShowAttendRead, LitFullPageHTREncoderDecoder
@@ -17,55 +17,35 @@ import numpy as np
 import learn2learn as l2l
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
-from torch.autograd import grad
 
 
-class MetaHTR(pl.LightningModule):
-    model: l2l.algorithms.GBML
-
-    meta_weights = ["model.compute_update", "inst_w_mlp"]
-
+class LitMAMLHTR(pl.LightningModule):
     def __init__(
         self,
-        model: nn.Module,
-        num_clf_weights: int,
-        taskset_train: Union[l2l.data.TaskDataset, Dataset],
+        base_model: Optional[nn.Module] = None,
+        taskset_train: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
         taskset_val: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
         taskset_test: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
-        inst_mlp_hidden_size: int = 8,
-        ways: int = 8,
-        shots: int = 16,
         outer_lr: float = 0.0001,
-        initial_inner_lr: float = 0.001,
+        val_batch_size: int = 64,
         grad_clip: Optional[float] = None,
-        use_cosine_lr_scheduler: bool = False,
-        use_batch_stats_for_batchnorm: bool = False,
-        use_dropout: bool = False,
-        use_instance_weights: bool = True,
-        num_inner_steps: int = 1,
         num_workers: int = 0,
-        allow_nograd: bool = False,
         num_epochs: Optional[int] = None,
+        use_cosine_lr_scheduler: bool = False,
         prms_to_log: Optional[Dict[str, Union[str, float, int]]] = None,
+        **kwargs,
     ):
-        """Docstring here. TODO.
-
+        """
         Args:
-            ....
-            num_clf_weights (int): number of weights in the final classification layer
-                of the base model. This is necessary for initializing the
-                instance-weight MLP.
+            TODO
+            ...
             use_cosine_lr_scheduler (bool): whether to use a cosine annealing
                 scheduler to decay the learning rate from its initial value.
-            use_dropout (bool): whether to use dropout in the outer loop.
-            use_instance_weights (bool): whether to use instance-specific weights from
-                the MetaHTR paper
             num_epochs (Optional[int]): number of epochs the model will be trained.
                 This is only used if `use_cosine_lr_scheduler` is set to True.
         """
         super().__init__()
 
-        assert num_inner_steps >= 1
         assert not (use_cosine_lr_scheduler and num_epochs is None), (
             "When using cosine learning rate scheduler, specify `num_epochs` to "
             "configure the learning rate decay properly."
@@ -74,258 +54,77 @@ class MetaHTR(pl.LightningModule):
         self.taskset_train = taskset_train
         self.taskset_val = taskset_val
         self.taskset_test = taskset_test
-        self.ways = ways
-        self.shots = shots
         self.outer_lr = outer_lr
+        self.val_batch_size = val_batch_size
         self.grad_clip = grad_clip
-        self.use_cosine_lr_schedule = use_cosine_lr_scheduler
-        self.use_batch_stats_for_batchnorm = use_batch_stats_for_batchnorm
-        self.use_dropout = use_dropout
-        self.use_instance_weights = use_instance_weights
-        self.num_inner_steps = num_inner_steps
         self.num_workers = num_workers
         self.num_epochs = num_epochs
+        self.use_cosine_lr_schedule = use_cosine_lr_scheduler
 
-        self.model = l2l.algorithms.GBML(
-            model,
-            transform=LayerWiseLRTransform(initial_inner_lr),
-            lr=1.0,  # this lr is replaced by a learnable one
-            first_order=False,
-            allow_unused=True,
-            allow_nograd=allow_nograd,
-        )
-        if use_instance_weights:
-            self.inst_w_mlp = nn.Sequential(  # instance-specific weight MLP
-                nn.Linear(
-                    num_clf_weights * 2,
-                    inst_mlp_hidden_size,
-                ),
-                nn.ReLU(inplace=True),
-                nn.Linear(inst_mlp_hidden_size, inst_mlp_hidden_size),
-                nn.ReLU(inplace=True),
-                nn.Linear(inst_mlp_hidden_size, 1),
-                nn.Sigmoid(),
+        self.model = None
+        if base_model is not None:
+            self.model = MAMLHTR(
+                base_model=base_model,
+                **kwargs,
             )
 
         self.automatic_optimization = False
+        self.use_instance_weights = False
         self.char_to_avg_inst_weight = None
-        self.ignore_index = self.model.module.pad_tkn_idx
-        # Disabling CuDNN is necessary for RNNs due to limitations in the CuDNN API
-        # for double backward passes.
-        self.use_cudnn = not isinstance(model, ShowAttendRead)
 
         self.save_hyperparameters(
             "ways",
             "shots",
             "outer_lr",
-            "initial_inner_lr",
             "num_inner_steps",
+            "use_instance_weights",
         )
         if prms_to_log is not None:
             self.save_hyperparameters(prms_to_log)
 
-    def meta_learn(self, batch, mode="train") -> Tuple[Tensor, Dict[int, List]]:
-        outer_loss = 0.0
-        inner_losses = []
-        char_to_inst_weights = defaultdict(list)
-        is_train = mode == "train"
-
-        imgs, target, writer_ids = batch
-        writer_ids_uniq = writer_ids.unique().tolist()
-
-        assert mode in ["train", "val", "test"]
-        assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
-        assert (
-            len(writer_ids_uniq) == self.ways
-        ), f"{len(writer_ids_uniq)} vs {self.ways}"
-
-        optimizer = self.optimizers()
-        optimizer.zero_grad()
-
-        # Split the batch into N different writers, where N = ways.
-        for task in range(self.ways):  # tasks correspond to different writers
-            wrtr_id = writer_ids_uniq[task]
-            task_slice = writer_ids == wrtr_id
-            imgs_, target_ = imgs[task_slice], target[task_slice]
-
-            # Separate data into support/query set.
-            support_indices = np.zeros(imgs_.size(0), dtype=bool)
-            # Select first k even indices for support set.
-            support_indices[np.arange(self.shots) * 2] = True
-            query_indices = torch.from_numpy(~support_indices)
-            support_indices = torch.from_numpy(support_indices)
-            support_imgs, support_tgts = (
-                imgs_[support_indices],
-                target_[support_indices],
-            )
-            query_imgs, query_tgts = imgs_[query_indices], target_[query_indices]
-
-            # Calling `model.clone()` allows updating the module while still allowing
-            # computation of derivatives of the new modules' parameters w.r.t. the
-            # original parameters.
-            learner = self.model.clone()
-
-            # Inner loop.
-            assert torch.is_grad_enabled()
-            for _ in range(self.num_inner_steps):
-                # Adapt the model to the support data.
-                learner, support_loss, instance_weights = self.fast_adaptation(
-                    learner, support_imgs, support_tgts
-                )
-
-                inner_losses.append(support_loss.item())
-                if self.use_instance_weights:
-                    # Store the instance-specific weights for logging.
-                    ignore_mask = support_tgts == self.ignore_index
-                    for tgt, w in zip(support_tgts[~ignore_mask], instance_weights):
-                        char_to_inst_weights[tgt.item()].append(w.item())
-
-            # Outer loop.
-            loss_fn = learner.module.loss_fn
-            reduction = loss_fn.reduction
-            loss_fn.reduction = "mean"
-            if is_train:
-                self.set_dropout_layers_train(self.use_dropout)
-                with torch.backends.cudnn.flags(enabled=self.use_cudnn):
-                    _, query_loss = learner.module.forward_teacher_forcing(
-                        query_imgs, query_tgts
-                    )
-                self.manual_backward(query_loss / self.ways)
-            else:  # val/test
-                with torch.inference_mode():
-                    _, preds, query_loss = learner(query_imgs, query_tgts)
-
-                # Log metrics.
-                self.model.module.cer_metric(preds, query_tgts)
-                self.model.module.wer_metric(preds, query_tgts)
-                self.log("char_error_rate", self.model.module.cer_metric, prog_bar=True)
-                self.log("word_error_rate", self.model.module.wer_metric, prog_bar=True)
-            outer_loss += query_loss
-            loss_fn.reduction = reduction
-
-        if is_train:
-            if self.grad_clip is not None:
-                self.clip_gradients(optimizer, self.grad_clip, "norm")
-            optimizer.step()
-
-        outer_loss /= self.ways
-        inner_loss_avg = np.mean(inner_losses)
-        self.log(f"{mode}_loss_inner", inner_loss_avg, sync_dist=True, prog_bar=False)
-
-        return outer_loss, char_to_inst_weights
-
-    def fast_adaptation(
-        self,
-        learner: l2l.algorithms.GBML,
-        adaptation_imgs: Tensor,
-        adaptation_targets: Tensor,
-    ):
-        """
-        Takes a single gradient step on a batch of data.
-        """
-        learner.train()
-        self.set_dropout_layers_train(False)  # disable dropout
-        self.set_batchnorm_layers_train(self.use_batch_stats_for_batchnorm)
-
-        with torch.backends.cudnn.flags(enabled=self.use_cudnn):
-            _, support_loss_unreduced = learner.module.forward_teacher_forcing(
-                adaptation_imgs, adaptation_targets
-            )
-
-        ignore_mask = adaptation_targets == self.ignore_index
-        instance_weights = None
-        if self.use_instance_weights:
-            instance_weights = self.calculate_instance_specific_weights(
-                learner, support_loss_unreduced, ignore_mask
-            )
-            support_loss = torch.sum(
-                support_loss_unreduced[~ignore_mask] * instance_weights
-            ) / adaptation_imgs.size(0)
-        else:
-            support_loss = torch.mean(support_loss_unreduced[~ignore_mask])
-
-        # Calculate gradients and take an optimization step.
-        learner.adapt(support_loss)
-
-        return learner, support_loss, instance_weights
-
-    def calculate_instance_specific_weights(
-        self,
-        learner: l2l.algorithms.GBML,
-        loss_unreduced: Tensor,
-        ignore_mask: Optional[Tensor] = None,
-    ) -> Tensor:
-        """
-        Calculates instance-specific weights, based on the per-instance gradient
-        w.r.t to the final classifcation layer.
-
-        Args:
-            learner (l2l.algorithms.GBML): learn2learn GBML learner
-            loss_unreduced (Tensor): tensor of shape (B*T,), where B = batch size and
-                T = maximum sequence length in the batch, containing the per-instance
-                loss, i.e. the loss for each decoding time step.
-            ignore_mask (Optional[Tensor]): mask of the same shape as
-                `loss_unreduced`, specifying what values to ignore for the loss
-
-        Returns:
-            Tensor of shape (B*T,), containing the instance specific weights
-        """
-        grad_inputs = []
-
-        if ignore_mask is not None:
-            assert (
-                ignore_mask.shape == loss_unreduced.shape
-            ), "Mask should have the same shape as the loss tensor."
-        else:
-            ignore_mask = torch.zeros_like(loss_unreduced)
-        ignore_mask = ignore_mask.bool()
-        mean_loss = loss_unreduced[~ignore_mask].mean()
-
-        mean_loss_grad = grad(
-            mean_loss,
-            learner.module.clf_layer.weight,
-            create_graph=True,
-            retain_graph=True,
-        )[0]
-        # It is not ideal to have to compute gradients like this in a loop - which
-        # loses the benefit of parallelization -, but unfortunately Pytorch does not
-        # provide any native functonality for calculating per-example gradients.
-        for instance_loss in loss_unreduced[~ignore_mask]:
-            instance_grad = grad(
-                instance_loss,
-                learner.module.clf_layer.weight,
-                create_graph=True,
-                retain_graph=True,
-            )[0]
-            grad_inputs.append(
-                torch.cat([instance_grad.flatten(), mean_loss_grad.flatten()])
-            )
-        grad_inputs = torch.stack(grad_inputs, 0)
-        instance_weights = self.inst_w_mlp(grad_inputs)
-        assert instance_weights.numel() == torch.sum(~ignore_mask)
-
-        return instance_weights
-
     def training_step(self, batch, batch_idx):
         torch.set_grad_enabled(True)
-        loss, inst_ws = self.meta_learn(batch, mode="train")
-        self.log("train_loss_outer", loss, sync_dist=True, prog_bar=False)
-        return {"loss": loss, "char_to_inst_weights": inst_ws}
+        opt = self.optimizers()
+        opt.zero_grad()
+        outer_loss, inner_loss, inst_ws = self.model.meta_learn(
+            batch, mode=TrainMode.TRAIN
+        )
+        if self.grad_clip is not None:
+            self.clip_gradients(opt, self.grad_clip, "norm")
+        opt.step()
+        self.log("train_loss_outer", outer_loss, sync_dist=True, prog_bar=False)
+        self.log(f"train_loss_inner", inner_loss, sync_dist=True, prog_bar=False)
+        return {"loss": outer_loss, "char_to_inst_weights": inst_ws}
 
     def validation_step(self, batch, batch_idx):
-        return self.val_or_test_step(batch, mode="val")
+        return self.val_or_test_step(batch, mode=TrainMode.VAL)
 
     def test_step(self, batch, batch_idx):
-        return self.val_or_test_step(batch, mode="test")
+        return self.val_or_test_step(batch, mode=TrainMode.TEST)
 
-    def val_or_test_step(self, batch, mode="val"):
+    def val_or_test_step(
+        self, batch: Tuple[Tensor, Tensor, Tensor], mode: TrainMode = TrainMode.VAL
+    ):
         # val/test requires finetuning a model in the inner loop, hence we need to
         # enable gradients.
         torch.set_grad_enabled(True)
-        loss, inst_ws = self.meta_learn(batch, mode=mode)
+        outer_loss, inner_loss, inst_ws = self.model.meta_learn(batch, mode=mode)
         torch.set_grad_enabled(False)
-        self.log(f"{mode}_loss_outer", loss, sync_dist=True, prog_bar=True)
-        return {"loss": loss, "char_to_inst_weights": inst_ws}
+        self.log(
+            f"{mode.name.lower()}_loss_outer", outer_loss, sync_dist=True, prog_bar=True
+        )
+        self.log(
+            f"{mode.name.lower()}_loss_inner",
+            inner_loss,
+            sync_dist=True,
+            prog_bar=False,
+        )
+        self.log("char_error_rate", self.model.gbml.module.cer_metric, prog_bar=True)
+        self.log("word_error_rate", self.model.gbml.module.wer_metric, prog_bar=True)
+        return {"loss": outer_loss, "char_to_inst_weights": inst_ws}
+
+    def forward(self, *args, **kwargs):
+        return self.model(*args, **kwargs)
 
     def training_epoch_end(self, epoch_outputs):
         sch = self.lr_schedulers()
@@ -342,7 +141,9 @@ class MetaHTR(pl.LightningModule):
         if self.use_instance_weights:
             self.aggregate_epoch_instance_weights(epoch_outputs)
 
-    def aggregate_epoch_instance_weights(self, training_epoch_outputs):
+    def aggregate_epoch_instance_weights(
+        self, training_epoch_outputs: Sequence[Dict[Any, Any]]
+    ):
         char_to_weights, char_to_avg_weight = defaultdict(list), defaultdict(float)
         # Aggregate all instance-specific weights.
         for dct in training_epoch_outputs:
@@ -353,77 +154,6 @@ class MetaHTR(pl.LightningModule):
         for c_idx, ws in char_to_weights.items():
             char_to_avg_weight[c_idx] = np.mean(ws)
         self.char_to_avg_inst_weight = char_to_avg_weight
-
-    def forward(
-        self,
-        adaptation_imgs: Tensor,
-        adaptation_targets: Tensor,
-        inference_imgs: Tensor,
-    ) -> Tuple[Tensor, Tensor]:
-        """
-        Do meta learning on a set of images and run inference on another set.
-
-        Args:
-            adaptation_imgs (Tensor): images to do adaptation on
-            adaptation_targets (Tensor): targets for `adaptation_imgs`
-            inference_imgs (Tensor): images to make predictions on
-        Returns:
-            predictions on `inference_imgs`, in the form of a 2-tuple:
-                - logits, obtained at each time step during decoding
-                - sampled class indices, i.e. model predictions, obtained by applying
-                      greedy decoding (argmax on logits) at each time step
-        """
-        learner = self.model.clone()
-
-        # For some reason using an autograd context manager like torch.enable_grad()
-        # here does not work, perhaps due to some unexpected interaction between
-        # Pytorch Lightning and the learn2learn lib. Therefore gradient
-        # calculation should be set beforehand, outside of the current function.
-        # Adapt the model.
-        learner, support_loss, instance_weights = self.fast_adaptation(
-            learner, adaptation_imgs, adaptation_targets
-        )
-
-        # Run inference on the adapted model.
-        with torch.inference_mode():
-            logits, sampled_ids, _ = learner(inference_imgs)
-
-        return logits, sampled_ids
-
-    def set_batchnorm_layers_train(self, training: bool = True):
-        _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d)
-        for m in self.modules():
-            if isinstance(m, _batchnorm_layers):
-                m.training = training
-
-    def set_dropout_layers_train(self, training: bool = True):
-        for m in self.modules():
-            if isinstance(m, nn.Dropout):
-                m.training = training
-
-    def batchnorm_reset_running_stats(self):
-        _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d)
-        for m in self.modules():
-            if isinstance(m, _batchnorm_layers):
-                m.reset_running_stats()
-
-    def freeze_all_layers_except_classifier(self):
-        # NOTE: Currently only works for FPHTR
-        for n, p in self.named_parameters():
-            if not n.split(".")[-2] == "clf":
-                p.requires_grad = False
-
-    def freeze_batchnorm_weights(self, freeze_bias=False):
-        """
-        For all normalization layers (of the form x * w + b), freeze w,
-        and optionally the bias.
-        """
-        _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)
-        for m in self.modules():
-            if isinstance(m, _batchnorm_layers):
-                m.weight.requires_grad = False
-                if freeze_bias:
-                    m.bias.requires_grad = False
 
     def train_dataloader(self):
         # Since we are using a l2l TaskDataset which already batches the data,
@@ -484,7 +214,7 @@ class MetaHTR(pl.LightningModule):
         label_encoder: LabelEncoder,
         load_meta_weights: bool = False,
         model_params_to_log: Optional[Dict[str, Any]] = None,
-        *args,
+        metahtr: bool = False,
         **kwargs,
     ):
         assert model_arch in ["fphtr", "sar"], "Invalid base model architecture."
@@ -516,9 +246,12 @@ class MetaHTR(pl.LightningModule):
                 * base_model.lstm_decoder.prediction.out_features
             )
 
-        model = MetaHTR(
-            base_model.model, num_clf_weights=num_clf_weights, *args, **kwargs
-        )
+        if metahtr:
+            model = LitMetaHTR(
+                base_model=base_model.model, num_clf_weights=num_clf_weights, **kwargs
+            )
+        else:
+            model = LitMAMLHTR(base_model=base_model.model, **kwargs)
 
         if load_meta_weights:
             # Load weights specific to the meta-learning algorithm.
@@ -527,7 +260,7 @@ class MetaHTR(pl.LightningModule):
                 checkpoint_path, map_location=lambda storage, loc: storage
             )
             for n, p in ckpt["state_dict"].items():
-                if any(n.startswith(wn) for wn in MetaHTR.meta_weights):
+                if any(n.startswith("model." + wn) for wn in MetaHTR.meta_weights):
                     with torch.no_grad():
                         model.state_dict()[n][:] = p
                     loaded.append(n)
@@ -536,12 +269,12 @@ class MetaHTR(pl.LightningModule):
 
     @staticmethod
     def add_model_specific_args(parent_parser):
-        parser = parent_parser.add_argument_group("MetaHTR")
+        parser = parent_parser.add_argument_group("MAML")
         parser.add_argument("--shots", type=int, default=16)
         parser.add_argument("--ways", type=int, default=8)
         parser.add_argument("--outer_lr", type=float, default=0.0001)
-        parser.add_argument("--initial_inner_lr", type=float, default=0.001)
         parser.add_argument("--grad_clip", type=float, help="Max. gradient norm.")
+        parser.add_argument("--num_inner_steps", type=int, default=1)
         parser.add_argument(
             "--use_cosine_lr_scheduler",
             action="store_true",
@@ -574,3 +307,45 @@ class MetaHTR(pl.LightningModule):
             help="Freeze gamma (scaling factor) for all batchnorm layers.",
         )
         return parent_parser
+
+
+class LitMetaHTR(LitMAMLHTR):
+    def __init__(
+        self,
+        base_model: nn.Module,
+        num_clf_weights: int,
+        inst_mlp_hidden_size: int = 8,
+        initial_inner_lr: float = 0.001,
+        use_instance_weights: bool = True,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+
+        self.num_clf_weights = num_clf_weights
+        self.inst_mlp_hidden_size = inst_mlp_hidden_size
+        self.initial_inner_lr = initial_inner_lr
+        self.use_instance_weights = use_instance_weights
+
+        self.model = MetaHTR(
+            base_model=base_model,
+            num_clf_weights=num_clf_weights,
+            inst_mlp_hidden_size=inst_mlp_hidden_size,
+            initial_inner_lr=initial_inner_lr,
+            use_instance_weights=use_instance_weights,
+            **kwargs,
+        )
+
+        self.save_hyperparameters("inst_mlp_hidden_size", "initial_inner_lr")
+
+    @staticmethod
+    def init_with_base_model_from_checkpoint(*args, **kwargs):
+        return LitMAMLHTR.init_with_base_model_from_checkpoint(
+            metahtr=True, *args, **kwargs
+        )
+
+    @staticmethod
+    def add_model_specific_args(parent_parser):
+        parser = parent_parser.add_argument_group("MetaHTR")
+        parser.add_argument("--inst_mlp_hidden_size", type=int, default=8)
+        parser.add_argument("--initial_inner_lr", type=float, default=0.001)
+        return LitMAMLHTR.add_model_specific_args(parent_parser)

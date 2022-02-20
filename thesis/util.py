@@ -1,3 +1,4 @@
+from enum import Enum
 from typing import Optional, Tuple, List, Sequence, Any
 
 from htr.util import LabelEncoder
@@ -9,6 +10,24 @@ import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset
 from torch import Tensor
+
+
+class TrainMode(Enum):
+    TRAIN = 1
+    VAL = 2
+    TEST = 3
+
+    @staticmethod
+    def from_string(s: str):
+        s = s.lower()
+        if s == "train":
+            return TrainMode.TRAIN
+        elif s == "val":
+            return TrainMode.VAL
+        elif s == "test":
+            return TrainMode.TEST
+        else:
+            raise ValueError(f"{s} is not a valid embedding method.")
 
 
 class PtTaskDataset(Dataset):
@@ -71,16 +90,14 @@ def split_batch_for_adaptation(
     for task in range(ways):  # tasks correspond to different writers
         wrtr_id = writer_ids_uniq[task]
         task_slice = writer_ids == wrtr_id
-        imgs_, target_, writer_ids_ = (
+        imgs_, target_ = (
             imgs[task_slice],
             target[task_slice],
-            writer_ids[task_slice],
         )
         if limit_num_samples_per_task is not None:
-            imgs_, target_, writer_ids_ = (
+            imgs_, target_ = (
                 imgs[:limit_num_samples_per_task],
                 target[:limit_num_samples_per_task],
-                writer_ids[:limit_num_samples_per_task],
             )
 
         # Separate data into support/query set.
@@ -120,3 +137,24 @@ def filter_df_by_freq(df: pd.DataFrame, column: str, min_freq: int) -> pd.DataFr
     frequent_values = freq[freq >= min_freq].index
     # Return only rows with value frequency above threshold.
     return df[df[column].isin(frequent_values)]
+
+
+def set_batchnorm_layers_train(model: nn.Module, training: bool = True):
+    _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d)
+    for m in model.modules():
+        if isinstance(m, _batchnorm_layers):
+            m.training = training
+
+
+@torch.no_grad()
+def batchnorm_reset_running_stats(model: nn.Module):
+    _batchnorm_layers = (nn.BatchNorm1d, nn.BatchNorm2d)
+    for m in model.modules():
+        if isinstance(m, _batchnorm_layers):
+            m.reset_running_stats()
+
+
+def set_dropout_layers_train(model: nn.Module, training: bool = True):
+    for m in model.modules():
+        if isinstance(m, nn.Dropout):
+            m.training = training
