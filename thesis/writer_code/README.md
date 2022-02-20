@@ -27,6 +27,8 @@ transform consists of a single dense layer, which is fed the average feature vec
 obtained from the CNN feature map. (It is an open question if taken the average
 feature vector is effective. I was inspired by classification tasks using BERT,
 where the word embeddings are simply averaged before being fed to a linear layer.)
+**Update**: spatially averaging all the feature vectors does not produce good
+results (90%+ WER).
 
 ## Implementation details
 Possible setups:

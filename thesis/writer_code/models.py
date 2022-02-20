@@ -60,9 +60,16 @@ class WriterCodeAdaptiveModel(nn.Module):
         if self.embedding_type == WriterEmbeddingType.LEARNED:
             self.writer_embs = nn.Embedding(num_writers, emb_size)
         if self.embedding_type == WriterEmbeddingType.TRANSFORMED:
-            # TODO: multiple layers?
-            # self.emb_transform = nn.Linear(d_model, num_hidden)
-            self.emb_transform = nn.Linear(d_model, emb_size)
+            # self.emb_transform = nn.Linear(d_model, emb_size)
+            self.emb_transform = nn.LSTM(
+                # These settings were chosen ad-hoc.
+                input_size=d_model,
+                hidden_size=emb_size,
+                num_layers=2,
+                batch_first=True,
+                dropout=0.1,
+                bidirectional=False,
+            )
         self.feature_transform = FeatureTransform(
             AdaptationMLP(d_model, emb_size, num_hidden), self.emb_transform
         )
@@ -273,17 +280,20 @@ class FeatureTransform(nn.Module):
 
         Args:
             features (Tensor of shape (N, d_model, *)): features to adapt
-            writer_emb (Optional[Tensor]): writer embedding to be used for
-                adaptation. If not specified, a learnable feature transformation is used
-                to create the embedding.
+            writer_emb (Optional[Tensor] of shape (N, emb_size): writer embedding to be
+                used for adaptation. If not specified, a learnable feature transformation
+                is used to create the embedding.
         Returns:
             Tensor of shape (N, d_model, *) containing adapted features
         """
         if writer_emb is None:
             # Transform features to create writer embedding.
             # Average across spatial dimensions.
-            feats_mean = features.flatten(2, -1).mean(-1)
-            writer_emb = self.emb_transform(feats_mean)
+            # h_feat = features.size(2)
+            # feat_v = F.max_pool2d(feat, kernel_size=(h_feat, 1), stride=1, padding=0)
+            # feat_v = feat_v.squeeze(2)  # bsz * C * W
+            feats_lstm = features.flatten(2, -1).permute(0, 2, 1).contiguous()
+            writer_emb = self.emb_transform(feats_lstm)[0][:, -1, :]
         return self.adaptation_transform(features, writer_emb)
 
 
