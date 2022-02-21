@@ -39,7 +39,7 @@ class MAMLHTR(nn.Module):
         **kwargs,
     ):
         """
-        Base implementation of MAML applied to Handwritten Text Recognition.
+        Implementation of vanilla MAML applied to Handwritten Text Recognition.
 
         Some implementation details to note:
         - for batchnorm layers, stored statistics are used by default during
@@ -47,11 +47,21 @@ class MAMLHTR(nn.Module):
           the `--use_batch_stats_for_batchnorm` argument (specified in the PL module).
 
         Args:
-            TODO
-            ....
+            base_model (nn.Module): base model to apply MAML on
+            base_model_arch (str): base model architecture, e.g. fphtr
+            transform (Optional[Callable]): transform used to update the module. See
+                learn2learn docs for more details.
+            ways (int): number of writers per batch
+            shots (int): number of samples per writer per batch
+            inner_lr (float): learning rate used in the inner loop
             instance_weights_fn (Callable): function to calculate instance-specific
                 weights.
+            use_batch_stats_for_batchnorm (bool): if True, batch statistics will be
+                used for batchnorm layers, rather than stored statistics
             use_dropout (bool): whether to use dropout in the outer loop.
+            num_inner_steps (int): how many inner loop optimization steps to perform
+            allow_nograd (bool): Whether to allow adaptation with parameters that
+                have `requires_grad = False`.
         """
         super().__init__()
 
