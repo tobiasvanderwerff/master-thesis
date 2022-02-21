@@ -21,11 +21,12 @@ from torch.autograd import grad
 
 
 class MAMLHTR(nn.Module):
-    meta_weights = ["gbml.compute update"]
+    meta_weights = []
 
     def __init__(
         self,
         base_model: nn.Module,
+        base_model_arch: str,
         transform: Optional[Callable] = None,
         ways: int = 8,
         shots: int = 16,
@@ -45,7 +46,6 @@ class MAMLHTR(nn.Module):
           both inner and outer loop, but this can be changed to batch statistics using
           the `--use_batch_stats_for_batchnorm` argument (specified in the PL module).
 
-
         Args:
             TODO
             ....
@@ -57,6 +57,7 @@ class MAMLHTR(nn.Module):
 
         assert num_inner_steps >= 1
 
+        self.base_model_arch = base_model_arch
         self.ways = ways
         self.shots = shots
         self.inner_lr = inner_lr
@@ -64,15 +65,24 @@ class MAMLHTR(nn.Module):
         self.use_batch_stats_for_batchnorm = use_batch_stats_for_batchnorm
         self.use_dropout = use_dropout
         self.num_inner_steps = num_inner_steps
+        self.allow_nograd = allow_nograd
 
-        self.gbml = l2l.algorithms.GBML(
-            base_model,
-            transform=transform,
-            lr=inner_lr,  # if transform is set, this lr is replaced by a learnable one
-            first_order=False,
-            allow_unused=True,
-            allow_nograd=allow_nograd,
-        )
+        if transform is not None:
+            self.gbml = l2l.algorithms.GBML(
+                base_model,
+                transform=transform,
+                first_order=False,
+                allow_unused=True,
+                allow_nograd=allow_nograd,
+            )
+        else:
+            self.gbml = l2l.algorithms.MAML(
+                base_model,
+                lr=inner_lr,
+                first_order=False,
+                allow_unused=True,
+                allow_nograd=allow_nograd,
+            )
 
         self.ignore_index = self.gbml.module.pad_tkn_idx
         # Disabling CuDNN is necessary for RNNs due to limitations in the CuDNN API
@@ -208,7 +218,7 @@ class MAMLHTR(nn.Module):
         # calculation should be set beforehand, outside of the current function.
 
         # Adapt the model.
-        learner, support_loss, instance_weights = self.fast_adaptation(
+        learner, _, _ = self.fast_adaptation(
             learner, adaptation_imgs, adaptation_targets
         )
 

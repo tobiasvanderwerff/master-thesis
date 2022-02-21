@@ -256,10 +256,7 @@ def main(args):
     )
     # Initialize MAML with a trained base model.
     cls = LitMAMLHTR if args.use_vanilla_maml else LitMetaHTR
-    if args.base_model_arch == "fphtr":
-        learner = cls.init_with_base_model_from_checkpoint(model_arch="fphtr", **args_)
-    else:  # SAR
-        learner = cls.init_with_base_model_from_checkpoint(model_arch="sar", **args_)
+    learner = cls.init_with_base_model_from_checkpoint(**args_)
 
     if args.freeze_batchnorm_gamma:
         learner.freeze_batchnorm_weights(freeze_bias=False)
@@ -307,15 +304,20 @@ def main(args):
             enable_grad=True,
             predict_on_train_start=True,
         ),
-        LogLayerWiseLearningRates(),
-        LogInstanceSpecificWeights(ds_train.label_enc),
-        # LogWorstPredictionsMAML(
-        #     train_dataloader=learner.train_dataloader(),
-        #     val_dataloader=learner.val_dataloader(),
-        #     test_dataloader=learner.test_dataloader(),
-        #     training_skipped=(args.validate or args.test),
-        # ),
+        LogWorstPredictionsMAML(
+            train_dataloader=learner.train_dataloader(),
+            val_dataloader=learner.val_dataloader(),
+            test_dataloader=learner.test_dataloader(),
+            training_skipped=(args.validate or args.test),
+        ),
     ]
+    if not args.use_vanilla_maml:
+        callbacks.extend(
+            [
+                LogLayerWiseLearningRates(),
+                LogInstanceSpecificWeights(ds_train.label_enc),
+            ]
+        )
     if args.early_stopping_patience != -1:
         callbacks.append(
             EarlyStopping(
@@ -367,7 +369,7 @@ if __name__ == "__main__":
                              "early stopping.")
     parser.add_argument("--use_vanilla_maml", action="store_true", default=False,
                         help="Use default MAML implementation (e.g. without learnable "
-                             "inner loop learning rate")
+                             "inner loop learning rate)")
     parser.add_argument("--use_aachen_splits", action="store_true", default=False)
     parser.add_argument("--use_image_augmentations", action="store_true", default=False,
                         help="Whether to use image augmentations during training. For "

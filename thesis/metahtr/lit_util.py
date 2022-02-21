@@ -19,7 +19,7 @@ class MAMLHTRCheckpointIO(TorchCheckpointIO):
 
     @staticmethod
     def _correct_prefix_for_weight_names(
-        checkpoint: Dict[str, Any], old_prefix="model.gbml.module."
+        checkpoint: Dict[str, Any], old_prefix="model.gbml.module"
     ):
         """
         Turn parameter names of the form `{prefix}.a.b.c` into `model.a.b.c`
@@ -28,10 +28,10 @@ class MAMLHTRCheckpointIO(TorchCheckpointIO):
         """
         new_dict = OrderedDict()
         state_dict = checkpoint["state_dict"]
+        prfx_n_cmps = len(old_prefix.split("."))
         while len(state_dict) > 0:
             k, p = state_dict.popitem()
             cmps = k.split(".")
-            prfx_n_cmps = len(old_prefix.split("."))
             if k.startswith(old_prefix):
                 if not any(k.startswith(n) for n in MetaHTR.meta_weights):
                     k = "model." + ".".join(cmps[prfx_n_cmps:])

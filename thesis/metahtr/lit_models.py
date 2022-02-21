@@ -1,11 +1,10 @@
-from typing import Optional, Dict, Union, Tuple, Any, List, Sequence
+from typing import Optional, Dict, Union, Tuple, Any, Sequence
 from pathlib import Path
 from collections import defaultdict
 
 from thesis.metahtr.models import MetaHTR, MAMLHTR
 from thesis.util import identity_collate_fn, TrainMode
 
-from htr.models.sar.sar import ShowAttendRead
 from htr.models.lit_models import LitShowAttendRead, LitFullPageHTREncoderDecoder
 from htr.util import LabelEncoder
 
@@ -208,7 +207,7 @@ class LitMAMLHTR(pl.LightningModule):
 
     @staticmethod
     def init_with_base_model_from_checkpoint(
-        model_arch: str,
+        base_model_arch: str,
         checkpoint_path: Union[str, Path],
         model_hparams_file: Union[str, Path],
         label_encoder: LabelEncoder,
@@ -217,9 +216,9 @@ class LitMAMLHTR(pl.LightningModule):
         metahtr: bool = False,
         **kwargs,
     ):
-        assert model_arch in ["fphtr", "sar"], "Invalid base model architecture."
+        assert base_model_arch in ["fphtr", "sar"], "Invalid base model architecture."
 
-        if model_arch == "fphtr":
+        if base_model_arch == "fphtr":
             # Load FPHTR model.
             base_model = LitFullPageHTREncoderDecoder.load_from_checkpoint(
                 checkpoint_path,
@@ -248,10 +247,15 @@ class LitMAMLHTR(pl.LightningModule):
 
         if metahtr:
             model = LitMetaHTR(
-                base_model=base_model.model, num_clf_weights=num_clf_weights, **kwargs
+                base_model=base_model.model,
+                base_model_arch=base_model_arch,
+                num_clf_weights=num_clf_weights,
+                **kwargs,
             )
         else:
-            model = LitMAMLHTR(base_model=base_model.model, **kwargs)
+            model = LitMAMLHTR(
+                base_model=base_model.model, base_model_arch=base_model_arch, **kwargs
+            )
 
         if load_meta_weights:
             # Load weights specific to the meta-learning algorithm.

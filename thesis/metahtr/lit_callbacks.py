@@ -3,13 +3,11 @@ import re
 from typing import Tuple, Optional, Dict
 from pathlib import Path
 
-from thesis.metahtr.lit_models import MetaHTR, LitMetaHTR
+from thesis.metahtr.lit_models import LitMetaHTR, LitMAMLHTR
 from thesis.util import decode_prediction, split_batch_for_adaptation
 
 from htr.data import IAMDataset
 from htr.util import matplotlib_imshow, LabelEncoder
-from htr.models.sar.sar import ShowAttendRead
-from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
 
 import torch
 import pytorch_lightning as pl
@@ -148,6 +146,7 @@ class LogWorstPredictionsMAML(Callback):
 
         model_hparams_file = Path(best_model_path).parent.parent / "model_hparams.yaml"
         args = dict(
+            base_model_arch=pl_module.model.base_model_arch,
             checkpoint_path=best_model_path,
             model_hparams_file=model_hparams_file,
             label_encoder=pl_module.model.gbml.module.label_encoder,
@@ -159,17 +158,18 @@ class LogWorstPredictionsMAML(Callback):
             shots=pl_module.model.shots,
             num_workers=pl_module.num_workers,
             num_inner_steps=pl_module.model.num_inner_steps,
+            use_instance_weights=pl_module.use_instance_weights,
         )
 
         cls = pl_module.__class__
-        if isinstance(pl_module.model.gbml.module, FullPageHTREncoderDecoder):
-            model = cls.init_with_base_model_from_checkpoint(model_arch="fphtr", **args)
-        elif isinstance(pl_module.model.gbml.module, ShowAttendRead):
-            model = cls.init_with_base_model_from_checkpoint(model_arch="sar", **args)
+        if isinstance(pl_module, LitMetaHTR):
+            args.update({"inst_mlp_hidden_size": pl_module.inst_mlp_hidden_size})
+        elif isinstance(pl_module, LitMAMLHTR):
+            pass
         else:
-            raise ValueError(
-                f"Unrecognized model class: {pl_module.model.gbml.module.__class__}"
-            )
+            raise ValueError(f"Unrecognized model class: {cls}")
+
+        model = cls.init_with_base_model_from_checkpoint(**args)
 
         trainer.model = model
 
