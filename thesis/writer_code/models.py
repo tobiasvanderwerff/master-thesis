@@ -55,16 +55,6 @@ class WriterCodeAdaptiveMAML(nn.Module, MAMLLearner):
         num_inner_steps: int = 1,
         **kwargs,
     ):
-        # super().__init__(
-        #     base_model=base_model,
-        #     base_model_arch=base_model_arch,
-        #     transform=None,  # TODO
-        #     ways=ways,
-        #     shots=shots,
-        #     use_batch_stats_for_batchnorm=use_batch_stats_for_batchnorm,
-        #     use_dropout=use_dropout,
-        #     num_inner_steps=num_inner_steps,
-        # )
         super().__init__()
 
         self.base_model_arch = base_model_arch

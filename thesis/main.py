@@ -8,7 +8,6 @@ from thesis.writer_code.lit_models import (
     LitWriterCodeAdaptiveModel,
     LitWriterCodeAdaptiveModelMAML,
 )
-from thesis.writer_code.util import WriterEmbeddingType
 from thesis.util import (
     filter_df_by_freq,
     get_label_encoder,
@@ -97,13 +96,13 @@ def main(args):
         shots=train_min_bsz,
     )
     taskset_val = prepare_l2l_taskset(
-        ds_train,
+        ds_val,
         ways,
         cache_dir,
         cache_dir / f"val_l2l_bookkeeping_shots={shots}.pkl",
     )
     taskset_test = prepare_l2l_taskset(
-        ds_train,
+        ds_test,
         ways,
         cache_dir,
         cache_dir / f"test_l2l_bookkeeping_shots={shots}.pkl",
