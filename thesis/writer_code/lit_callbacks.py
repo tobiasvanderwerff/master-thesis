@@ -2,9 +2,13 @@ import math
 from typing import Tuple, Optional
 from pathlib import Path
 
-from thesis.writer_code.lit_models import LitWriterCodeAdaptiveModel
+import thesis.writer_code.lit_models
 from thesis.writer_code.util import WriterEmbeddingType
-from thesis.util import decode_prediction, split_batch_for_adaptation
+from thesis.util import (
+    decode_prediction,
+    split_batch_for_adaptation,
+    PREDICTIONS_TO_LOG,
+)
 
 from htr.data import IAMDataset
 from htr.util import matplotlib_imshow, LabelEncoder
@@ -17,13 +21,6 @@ import matplotlib.pyplot as plt
 from torch import Tensor
 from torch.utils.data import DataLoader
 from pytorch_lightning.callbacks import Callback, ModelCheckpoint
-
-
-PREDICTIONS_TO_LOG = {
-    "word": 10,
-    "line": 6,
-    "form": 1,
-}
 
 
 class LogWorstPredictions(Callback):
@@ -152,6 +149,7 @@ class LogWorstPredictions(Callback):
 
         model_hparams_file = Path(best_model_path).parent.parent / "model_hparams.yaml"
         args = dict(
+            base_model_arch=pl_module.model.base_model_arch,
             checkpoint_path=best_model_path,
             model_hparams_file=model_hparams_file,
             label_encoder=pl_module.model.label_encoder,
@@ -171,16 +169,14 @@ class LogWorstPredictions(Callback):
             num_workers=pl_module.num_workers,
         )
 
-        if isinstance(pl_module.model, FullPageHTREncoderDecoder):
-            model = LitWriterCodeAdaptiveModel.init_with_base_model_from_checkpoint(
-                "fphtr", **args
-            )
-        elif isinstance(pl_module.model, ShowAttendRead):
-            model = LitWriterCodeAdaptiveModel.init_with_base_model_from_checkpoint(
-                "sar", **args
-            )
+        cls = pl_module.__class__
+        if isinstance(
+            pl_module, thesis.writer_code.lit_models.LitWriterCodeAdaptiveModel
+        ):
+            pass
         else:
-            raise ValueError(f"Unrecognized model class: {pl_module.model.__class__}")
+            raise ValueError(f"Unrecognized model class: {cls}")
+        model = cls.init_with_base_model_from_checkpoint(**args)
 
         trainer.model = model
 

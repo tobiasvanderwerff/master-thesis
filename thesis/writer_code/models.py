@@ -1,16 +1,197 @@
 from functools import partial
 from typing import Optional, Callable, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import learn2learn as l2l
 from torch import Tensor
 
 from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
 from htr.models.sar.sar import ShowAttendRead
 
 from thesis.writer_code.util import WriterEmbeddingType
-from thesis.util import freeze
+from thesis.models import MAMLLearner
+from thesis.util import (
+    freeze,
+    TrainMode,
+    split_batch_for_adaptation,
+    set_dropout_layers_train,
+    set_batchnorm_layers_train,
+)
+
+
+class WriterCode(nn.Module):
+    """A simple Module wrapper for a writer code."""
+
+    def __init__(self, num_features: int = 64):
+        super().__init__()
+        self.writer_code = torch.empty(1, num_features)
+        self.writer_code.normal_()  # mean 0, std 1
+        self.writer_code = nn.Parameter(self.writer_code)
+
+    def forward(self, *args, **kwargs):
+        return self.writer_code
+
+
+class WriterCodeAdaptiveMAML(nn.Module, MAMLLearner):
+    """<Model description here.>"""  # TODO
+
+    meta_weights = ["gbml.module.writer_code", "adaptation"]  # TODO: verify
+
+    def __init__(
+        self,
+        base_model: "BaseModelAdaptation",
+        base_model_arch: str,
+        d_model: int,
+        emb_size: int,
+        adaptation_mlp_num_hidden: int,
+        num_writers: int,
+        ways: int = 8,
+        shots: int = 16,
+        use_batch_stats_for_batchnorm: bool = False,
+        use_dropout: bool = False,
+        num_inner_steps: int = 1,
+        **kwargs,
+    ):
+        # super().__init__(
+        #     base_model=base_model,
+        #     base_model_arch=base_model_arch,
+        #     transform=None,  # TODO
+        #     ways=ways,
+        #     shots=shots,
+        #     use_batch_stats_for_batchnorm=use_batch_stats_for_batchnorm,
+        #     use_dropout=use_dropout,
+        #     num_inner_steps=num_inner_steps,
+        # )
+        super().__init__()
+
+        self.base_model_arch = base_model_arch
+        self.d_model = d_model
+        self.emb_size = emb_size
+        self.adaptation_mlp_num_hidden = adaptation_mlp_num_hidden
+        self.num_writers = num_writers
+        self.ways = ways
+        self.shots = shots
+        self.use_batch_stats_for_batchnorm = use_batch_stats_for_batchnorm
+        self.use_dropout = use_dropout
+        self.num_inner_steps = num_inner_steps
+
+        assert base_model.loss_fn.reduction == "mean"
+
+        self.gbml = l2l.algorithms.MetaSGD(WriterCode(emb_size), first_order=False)
+        self.adaptation = FeatureTransform(
+            AdaptationMLP(d_model, emb_size, adaptation_mlp_num_hidden)
+        )
+        self.base_model_with_adaptation = BaseModelAdaptation(base_model)
+
+        freeze(base_model)  # make sure the base model weights are frozen
+        # Finetune the linear layer in the base model directly following the adaptation
+        # model.
+        base_model.encoder.linear.requires_grad_(True)
+
+    def meta_learn(
+        self, batch: Tuple[Tensor, Tensor, Tensor], mode: TrainMode = TrainMode.TRAIN
+    ) -> Tuple[Tensor, float, Optional[Tensor]]:
+        outer_loss = 0.0
+        inner_losses = []
+        imgs, target, writer_ids = batch
+
+        assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
+
+        # Split the batch into N different writers, for K-shot adaptation.
+        tasks = split_batch_for_adaptation(batch, self.ways, self.shots)
+
+        for support_imgs, support_tgts, query_imgs, query_tgts in tasks:
+            # Calling `model.clone()` allows updating the module while still allowing
+            # computation of derivatives of the new modules' parameters w.r.t. the
+            # original parameters.
+            learner = self.gbml.clone()
+
+            # Inner loop.
+            assert torch.is_grad_enabled()
+            for _ in range(self.num_inner_steps):
+                # Adapt the model to the support data.
+                learner, support_loss = self.fast_adaptation(
+                    learner, support_imgs, support_tgts
+                )
+                inner_losses.append(support_loss.item())
+
+            # Outer loop.
+            intermediate_transform = partial(
+                self.adaptation, writer_emb=learner.module.writer_code
+            )
+            if mode is TrainMode.TRAIN:
+                # set_dropout_layers_train(self, self.use_dropout)
+                _, query_loss = self.base_model_with_adaptation(
+                    query_imgs,
+                    query_tgts,
+                    intermediate_transform=intermediate_transform,
+                    teacher_forcing=True,
+                )
+                # Using the torch `backward()` function rather than PLs
+                # `manual_backward` means that mixed precision cannot be used.
+                (query_loss / self.ways).backward()
+            else:  # val/test
+                with torch.inference_mode():
+                    logits, query_loss = self.base_model_with_adaptation(
+                        query_imgs,
+                        query_tgts,
+                        intermediate_transform=intermediate_transform,
+                        teacher_forcing=False,
+                    )
+                    preds = logits.argmax(-1)
+
+                # Calculate metrics.
+                self.gbml.module.cer_metric(preds, query_tgts)
+                self.gbml.module.wer_metric(preds, query_tgts)
+            outer_loss += query_loss
+
+        outer_loss /= self.ways
+        inner_loss_avg = np.mean(inner_losses)
+
+        return outer_loss, inner_loss_avg, None
+
+    def fast_adaptation(
+        self,
+        learner: l2l.algorithms.MetaSGD,
+        adaptation_imgs: Tensor,
+        adaptation_targets: Tensor,
+    ) -> Tuple[Tensor, float, Optional[Tensor]]:
+        """Takes a single gradient step on a batch of data."""
+        # set_dropout_layers_train(self, False)  # disable dropout
+        # set_batchnorm_layers_train(self, self.use_batch_stats_for_batchnorm)
+
+        intermediate_transform = partial(
+            self.adaptation, writer_emb=learner.module.writer_code
+        )
+        _, support_loss = self.base_model_with_adaptation(
+            adaptation_imgs,
+            adaptation_targets,
+            intermediate_transform=intermediate_transform,
+            teacher_forcing=True,
+        )
+
+        # Calculate gradients and take an optimization step.
+        learner.adapt(support_loss)
+
+        return learner, support_loss, None
+
+    def forward(
+        self, imgs: Tensor, target: Tensor, writer_ids: Tensor
+    ) -> Tuple[Tensor, Tensor, Tensor]:
+        intermediate_transform = partial(
+            self.adaptation, writer_emb=self.gbml.module.writer_code
+        )
+        logits, loss = self.base_model_with_adaptation(
+            imgs,
+            target,
+            intermediate_transform=intermediate_transform,
+            teacher_forcing=False,
+        )
+        sampled_ids = logits.argmax(-1)
+        return logits, sampled_ids, loss
 
 
 class WriterCodeAdaptiveModel(nn.Module):
@@ -18,6 +199,8 @@ class WriterCodeAdaptiveModel(nn.Module):
     Implementation of speaker-adaptive model by Abdel-Hamid et al. (2013),
     adapted to HTR models.
     """
+
+    meta_weights = ["writer_embs", "adaptation"]
 
     def __init__(
         self,

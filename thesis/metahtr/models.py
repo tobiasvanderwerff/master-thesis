@@ -3,6 +3,7 @@ from typing import Optional, Dict, Tuple, List, Callable
 from collections import defaultdict
 
 from thesis.metahtr.util import LayerWiseLRTransform
+from thesis.models import MAMLLearner
 from thesis.util import (
     TrainMode,
     split_batch_for_adaptation,
@@ -20,7 +21,7 @@ from torch import Tensor
 from torch.autograd import grad
 
 
-class MAMLHTR(nn.Module):
+class MAMLHTR(nn.Module, MAMLLearner):
     meta_weights = []
 
     def __init__(

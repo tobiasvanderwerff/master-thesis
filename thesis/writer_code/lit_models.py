@@ -1,8 +1,20 @@
-from typing import Optional, Dict, Union, Tuple, Any
+from typing import Optional, Dict, Union, Tuple, Any, List
 from pathlib import Path
 
-from thesis.writer_code.models import WriterCodeAdaptiveModel
-from thesis.util import split_batch_for_adaptation, identity_collate_fn
+from pytorch_lightning import Callback
+
+from thesis.lit_models import LitMAMLLearner, LitBaseAdaptive
+from thesis.writer_code.lit_callbacks import LogWorstPredictions, LogModelPredictions
+from thesis.writer_code.models import (
+    WriterCodeAdaptiveModel,
+    WriterCodeAdaptiveMAML,
+    BaseModelAdaptation,
+)
+from thesis.util import (
+    split_batch_for_adaptation,
+    identity_collate_fn,
+    PREDICTIONS_TO_LOG,
+)
 
 from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
 from htr.models.sar.sar import ShowAttendRead
@@ -20,34 +32,44 @@ from torch.utils.data import DataLoader, Dataset
 from thesis.writer_code.util import WriterEmbeddingType
 
 
-class LitWriterCodeAdaptiveModel(pl.LightningModule):
+class LitWriterCodeAdaptiveModelMAML(LitMAMLLearner):
+    def __init__(self, base_model: BaseModelAdaptation, **kwargs):
+        super().__init__(**kwargs)
 
-    meta_weights = ["writer_embs", "adaptation"]
+        self.model = WriterCodeAdaptiveMAML(
+            base_model=base_model,
+            **kwargs,
+        )
 
+    @staticmethod
+    def add_model_specific_args(parent_parser):
+        parser = parent_parser.add_argument_group("LitWriterCodeAdaptiveModelMAML")
+        parser.add_argument(
+            "--emb_size",
+            type=int,
+            default=64,
+            help="Size of the writer embeddings for adaptation.",
+        )
+        return parent_parser
+
+
+class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
     def __init__(
         self,
         model: nn.Module,
         feature_size: int,
         num_writers: int,
-        taskset_train: Union[l2l.data.TaskDataset, Dataset],
-        taskset_val: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
-        taskset_test: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
-        val_batch_size: int = 64,
         writer_emb_size: int = 64,
-        writer_emb_type: WriterEmbeddingType = WriterEmbeddingType.LEARNED,
+        writer_emb_type: Union[WriterEmbeddingType, str] = WriterEmbeddingType.LEARNED,
         adapt_num_hidden: int = 1000,
         ways: int = 8,
         shots: int = 8,
-        learning_rate: float = 0.0001,
         learning_rate_emb: float = 0.0001,
         weight_decay: float = 0.0001,
         adaptation_opt_steps: int = 1,
-        grad_clip: Optional[float] = None,
         use_adam_for_adaptation: bool = False,
-        use_cosine_lr_scheduler: bool = False,
-        num_workers: int = 0,
-        num_epochs: Optional[int] = None,
         prms_to_log: Optional[Dict[str, Union[str, float, int]]] = None,
+        **kwargs,
     ):
         """
         Args:
@@ -56,37 +78,27 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
             feature_size (int): size of the feature vectors to adapt, e.g. the output
                 feature vectors of a CNN
             num_writers (int): number of writers in the training set
-            writer_emb_type (WriterEmbeddingType): type of writer embedding used
+            writer_emb_type (Union[WriterEmbeddingType, str]): type of writer embedding
+                used
         """
-        super().__init__()
+        super().__init__(**kwargs)
 
-        assert not (use_cosine_lr_scheduler and num_epochs is None), (
-            "When using cosine learning rate scheduler, specify `num_epochs` to "
-            "configure the learning rate decay properly."
-        )
         assert isinstance(model, (FullPageHTREncoderDecoder, ShowAttendRead))
+        if isinstance(writer_emb_type, str):
+            writer_emb_type = WriterEmbeddingType.from_string(writer_emb_type)
 
         self.model = model
         self.feature_size = feature_size
         self.num_writers = num_writers
-        self.taskset_train = taskset_train
-        self.taskset_val = taskset_val
-        self.taskset_test = taskset_test
-        self.val_batch_size = val_batch_size
         self.writer_emb_size = writer_emb_size
         self.writer_emb_type = writer_emb_type
         self.adapt_num_hidden = adapt_num_hidden
         self.ways = ways
         self.shots = shots
-        self.learning_rate = learning_rate
         self.learning_rate_emb = learning_rate_emb
         self.weight_decay = weight_decay
         self.adaptation_opt_steps = adaptation_opt_steps
-        self.grad_clip = grad_clip
         self.use_adam_for_adaptation = use_adam_for_adaptation
-        self.use_cosine_lr_schedule = use_cosine_lr_scheduler
-        self.num_workers = num_workers
-        self.num_epochs = num_epochs
 
         self.ignore_index = model.pad_tkn_idx
         self.automatic_optimization = False
@@ -109,10 +121,26 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
             "adapt_num_hidden",
             "ways",
             "shots",
-            "learning_rate",
         )
         if prms_to_log is not None:
             self.save_hyperparameters(prms_to_log)
+
+    def forward(
+        self,
+        adaptation_imgs: Tensor,
+        adaptation_targets: Tensor,
+        inference_imgs: Tensor,
+        inference_tgts: Optional[Tensor] = None,
+        mode: str = "train",
+    ) -> Tuple[Tensor, Tensor, Tensor]:
+        self.eval()
+        return self.adaptive_model(
+            adaptation_imgs,
+            adaptation_targets,
+            inference_imgs,
+            inference_tgts,
+            mode=mode,
+        )
 
     def training_step(self, batch, batch_idx):
         imgs, target, writer_ids = batch
@@ -169,84 +197,53 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
         self.log(f"{mode}_loss", loss, sync_dist=True, prog_bar=True)
         return loss
 
-    def forward(
+    def add_model_specific_callbacks(
         self,
-        adaptation_imgs: Tensor,
-        adaptation_targets: Tensor,
-        inference_imgs: Tensor,
-        inference_tgts: Optional[Tensor] = None,
-        mode: str = "train",
-    ) -> Tuple[Tensor, Tensor, Tensor]:
-        self.eval()
-        return self.adaptive_model(
-            adaptation_imgs,
-            adaptation_targets,
-            inference_imgs,
-            inference_tgts,
-            mode=mode,
+        callbacks: List[Callback],
+        shots: int,
+        ways: int,
+        label_encoder: LabelEncoder,
+        is_train: bool,
+    ) -> List[Callback]:
+        callbacks = super().add_model_specific_callbacks(
+            callbacks,
+            shots=shots,
+            ways=ways,
+            label_encoder=label_encoder,
+            is_train=is_train,
         )
 
-    def training_epoch_end(self, epoch_outputs):
-        sch = self.lr_schedulers()
-        if sch is not None:
-            sch.step()
-
-    def train_dataloader(self):
-        # Since we are using a l2l TaskDataset which already batches the data,
-        # using a PyTorch DataLoader is redundant. However, Pytorch Lightning
-        # requires the use of a proper DataLoader. Therefore, we pass a DataLoader
-        # that acts as an identity function, simply passing a single batch of data
-        # prepared by the TaskDataset. This is a bit of an ugly hack and not ideal,
-        # but should suffice for the time being.
-        return DataLoader(
-            self.taskset_train,
-            batch_size=1,
-            shuffle=False,
-            num_workers=self.num_workers,
-            collate_fn=identity_collate_fn,
-            pin_memory=False,
+        # Prepare fixed batches used for monitoring model predictions during training.
+        im, t, wrtrs = next(iter(self.train_dataloader()))
+        train_batch = (im[:shots], t[:shots], wrtrs[:shots])
+        im, t, wrtrs = next(iter(self.val_dataloader()))
+        val_batch = (
+            im[:shots],
+            t[:shots],
+            im[shots : shots + PREDICTIONS_TO_LOG["word"]],
+            t[shots : shots + PREDICTIONS_TO_LOG["word"]],
         )
-
-    def val_dataloader(self):
-        if self.taskset_val is not None:
-            return DataLoader(
-                self.taskset_val,
-                batch_size=1,
-                shuffle=False,
-                num_workers=self.num_workers,
-                collate_fn=identity_collate_fn,
-                pin_memory=False,
-            )
-
-    def test_dataloader(self):
-        if self.taskset_test is not None:
-            return DataLoader(
-                self.taskset_test,
-                batch_size=1,
-                shuffle=False,
-                num_workers=self.num_workers,
-                collate_fn=identity_collate_fn,
-                pin_memory=False,
-            )
-
-    def configure_optimizers(self):
-        optimizer = optim.AdamW(
-            self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
+        callbacks.extend(
+            [
+                LogModelPredictions(
+                    label_encoder=label_encoder,
+                    val_batch=val_batch,
+                    train_batch=train_batch,
+                    predict_on_train_start=False,
+                ),
+                LogWorstPredictions(
+                    train_dataloader=self.train_dataloader(),
+                    val_dataloader=self.val_dataloader(),
+                    test_dataloader=self.test_dataloader(),
+                    training_skipped=not is_train,
+                ),
+            ]
         )
-        if self.use_cosine_lr_schedule:
-            num_epochs = self.num_epochs or 20
-            lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer,
-                T_max=num_epochs,
-                eta_min=1e-06,  # final learning rate
-                verbose=True,
-            )
-            return [optimizer], [lr_scheduler]
-        return optimizer
+        return callbacks
 
     @staticmethod
     def init_with_base_model_from_checkpoint(
-        model_arch: str,
+        base_model_arch: str,
         checkpoint_path: Union[str, Path],
         model_hparams_file: Union[str, Path],
         label_encoder: LabelEncoder,
@@ -255,9 +252,9 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
         *args,
         **kwargs,
     ):
-        assert model_arch in ["fphtr", "sar"], "Invalid base model architecture."
+        assert base_model_arch in ["fphtr", "sar"], "Invalid base model architecture."
 
-        if model_arch == "fphtr":
+        if base_model_arch == "fphtr":
             # Load FPHTR model.
             base_model = LitFullPageHTREncoderDecoder.load_from_checkpoint(
                 checkpoint_path,
@@ -288,9 +285,7 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
                 checkpoint_path, map_location=lambda storage, loc: storage
             )
             for n, p in ckpt["state_dict"].items():
-                if any(
-                    n.startswith(wn) for wn in LitWriterCodeAdaptiveModel.meta_weights
-                ):
+                if any(n.startswith(wn) for wn in WriterCodeAdaptiveModel.meta_weights):
                     with torch.no_grad():
                         model.state_dict()[n][:] = p
                     loaded.append(n)
@@ -319,7 +314,6 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
             default=1000,
             help="Number of features for the hidden layers of the " "adaptation MLP",
         )
-        parser.add_argument("--learning_rate", type=float, default=0.0001)
         parser.add_argument(
             "--learning_rate_emb",
             type=float,
@@ -338,14 +332,5 @@ class LitWriterCodeAdaptiveModel(pl.LightningModule):
             action="store_true",
             default=False,
             help="Use Adam during val/test for training new writer codes.",
-        )
-        parser.add_argument("--weight_decay", type=float, default=0.0001)
-        parser.add_argument("--shots", type=int, default=8)
-        parser.add_argument("--ways", type=int, default=8)
-        parser.add_argument(
-            "--use_cosine_lr_scheduler",
-            action="store_true",
-            default=False,
-            help="Use a cosine annealing scheduler to " "decay the learning rate.",
         )
         return parent_parser

@@ -3,7 +3,7 @@ import re
 from typing import Tuple, Optional, Dict
 from pathlib import Path
 
-from thesis.metahtr.lit_models import LitMetaHTR, LitMAMLHTR
+# from thesis.metahtr.lit_models import LitMetaHTR, LitMAMLLearner
 from thesis.util import decode_prediction, split_batch_for_adaptation
 
 from htr.data import IAMDataset
@@ -162,12 +162,12 @@ class LogWorstPredictionsMAML(Callback):
         )
 
         cls = pl_module.__class__
-        if isinstance(pl_module, LitMetaHTR):
-            args.update({"inst_mlp_hidden_size": pl_module.inst_mlp_hidden_size})
-        elif isinstance(pl_module, LitMAMLHTR):
-            pass
-        else:
-            raise ValueError(f"Unrecognized model class: {cls}")
+        # if isinstance(pl_module, LitMetaHTR):
+        #     args.update({"inst_mlp_hidden_size": pl_module.inst_mlp_hidden_size})
+        # elif isinstance(pl_module, LitMAMLLearner):
+        #     pass
+        # else:
+        raise ValueError(f"Unrecognized model class: {cls}")
 
         model = cls.init_with_base_model_from_checkpoint(**args)
 
