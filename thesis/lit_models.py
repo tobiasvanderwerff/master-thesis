@@ -241,7 +241,7 @@ class LitMAMLLearner(LitBaseAdaptive):
             sync_dist=True,
             prog_bar=False,
         )
-        self.log("char_error_rate", self.cer_metric, prog_bar=True)
+        self.log("char_error_rate", self.cer_metric, prog_bar=False)
         self.log("word_error_rate", self.wer_metric, prog_bar=True)
 
         return {"loss": outer_loss, "char_to_inst_weights": inst_ws}
