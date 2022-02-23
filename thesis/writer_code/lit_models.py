@@ -61,11 +61,13 @@ class LitWriterCodeAdaptiveModelMAML(LitMAMLLearner):
         #  conflict because both argument parsers are used).
         return parent_parser
 
+    # TODO: callback for logging inner loop lrs
+
 
 class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
     def __init__(
         self,
-        model: nn.Module,
+        base_model: nn.Module,
         feature_size: int,
         num_writers: int,
         writer_emb_size: int = 64,
@@ -83,7 +85,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         """
         Args:
             TODO
-            model (nn.Module): base model
+            base_model (nn.Module): base model
             feature_size (int): size of the feature vectors to adapt, e.g. the output
                 feature vectors of a CNN
             num_writers (int): number of writers in the training set
@@ -92,11 +94,11 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         """
         super().__init__(**kwargs)
 
-        assert isinstance(model, (FullPageHTREncoderDecoder, ShowAttendRead))
+        assert isinstance(base_model, (FullPageHTREncoderDecoder, ShowAttendRead))
         if isinstance(writer_emb_type, str):
             writer_emb_type = WriterEmbeddingType.from_string(writer_emb_type)
 
-        self.model = model
+        self.base_model = base_model
         self.feature_size = feature_size
         self.num_writers = num_writers
         self.writer_emb_size = writer_emb_size
@@ -109,11 +111,11 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         self.adaptation_opt_steps = adaptation_opt_steps
         self.use_adam_for_adaptation = use_adam_for_adaptation
 
-        self.ignore_index = model.pad_tkn_idx
+        self.ignore_index = base_model.pad_tkn_idx
         self.automatic_optimization = False
 
         self.adaptive_model = WriterCodeAdaptiveModel(
-            base_model=model,
+            base_model=base_model,
             d_model=feature_size,
             emb_size=writer_emb_size,
             adaptation_num_hidden=adaptation_num_hidden,
@@ -195,10 +197,10 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             torch.set_grad_enabled(False)
 
             # Log metrics.
-            self.model.cer_metric(preds, query_tgts)
-            self.model.wer_metric(preds, query_tgts)
-            self.log("char_error_rate", self.model.cer_metric, prog_bar=False)
-            self.log("word_error_rate", self.model.wer_metric, prog_bar=True)
+            self.base_model.cer_metric(preds, query_tgts)
+            self.base_model.wer_metric(preds, query_tgts)
+            self.log("char_error_rate", self.base_model.cer_metric, prog_bar=False)
+            self.log("word_error_rate", self.base_model.wer_metric, prog_bar=True)
 
             loss += query_loss * query_imgs.size(0)
             n_samples += query_imgs.size(0)
