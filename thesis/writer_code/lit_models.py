@@ -20,12 +20,8 @@ from htr.models.lit_models import LitShowAttendRead, LitFullPageHTREncoderDecode
 from htr.util import LabelEncoder
 
 import torch
-import torch.optim as optim
 import torch.nn as nn
-import pytorch_lightning as pl
-import learn2learn as l2l
 from torch import Tensor
-from torch.utils.data import DataLoader, Dataset
 
 from thesis.writer_code.util import WriterEmbeddingType
 

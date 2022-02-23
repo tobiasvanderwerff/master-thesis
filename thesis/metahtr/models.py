@@ -170,7 +170,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
                     learner, support_imgs, support_tgts
                 )
 
-                inner_losses.append(support_loss.detach())
+                inner_losses.append(support_loss.item())
                 if instance_weights is not None:
                     # Store the instance-specific weights for logging.
                     ignore_mask = support_tgts == self.ignore_index

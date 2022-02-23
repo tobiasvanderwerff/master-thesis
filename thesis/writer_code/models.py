@@ -123,7 +123,7 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
                 learner, support_loss, _ = self.fast_adaptation(
                     learner, support_imgs, support_tgts
                 )
-                inner_losses.append(support_loss.detach())
+                inner_losses.append(support_loss.item())
 
             # Outer loop.
             intermediate_transform = partial(
