@@ -121,7 +121,7 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
                 learner, support_loss, _ = self.fast_adaptation(
                     learner, support_imgs, support_tgts
                 )
-                inner_losses.append(support_loss.item())
+                inner_losses.append(support_loss.detach())
 
             # Outer loop.
             intermediate_transform = partial(
@@ -341,7 +341,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         passes on a batch of adaptation data in order to train a new writer
         embedding.
         """
-        writer_emb = torch.empty(1, self.emb_size).to(adaptation_imgs.device)
+        writer_emb = torch.empty(1, self.emb_size, device=adaptation_imgs.device)
         writer_emb.normal_()  # mean 0, std 1
         writer_emb.requires_grad = True
 
