@@ -12,6 +12,7 @@ from thesis.writer_code.models import (
 from thesis.util import (
     split_batch_for_adaptation,
     PREDICTIONS_TO_LOG,
+    load_meta_weights,
 )
 
 from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
@@ -92,7 +93,6 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         if isinstance(writer_emb_type, str):
             writer_emb_type = WriterEmbeddingType.from_string(writer_emb_type)
 
-        self.base_model = base_model
         self.feature_size = feature_size
         self.num_writers = num_writers
         self.writer_emb_size = writer_emb_size
@@ -108,7 +108,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         self.ignore_index = base_model.pad_tkn_idx
         self.automatic_optimization = False
 
-        self.adaptive_model = WriterCodeAdaptiveModel(
+        self.model = WriterCodeAdaptiveModel(
             base_model=base_model,
             d_model=feature_size,
             emb_size=writer_emb_size,
@@ -139,7 +139,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         mode: str = "train",
     ) -> Tuple[Tensor, Tensor, Tensor]:
         self.eval()
-        return self.adaptive_model(
+        return self.model(
             adaptation_imgs,
             adaptation_targets,
             inference_imgs,
@@ -149,7 +149,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
 
     def training_step(self, batch, batch_idx):
         imgs, target, writer_ids = batch
-        _, _, loss = self.adaptive_model(imgs, target, writer_ids, mode="train")
+        _, _, loss = self.model(imgs, target, writer_ids, mode="train")
         self.opt_step(loss)
         self.log("train_loss", loss, sync_dist=True, prog_bar=True)
         return loss
@@ -191,10 +191,12 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             torch.set_grad_enabled(False)
 
             # Log metrics.
-            self.base_model.cer_metric(preds, query_tgts)
-            self.base_model.wer_metric(preds, query_tgts)
-            self.log("char_error_rate", self.base_model.cer_metric, prog_bar=False)
-            self.log("word_error_rate", self.base_model.wer_metric, prog_bar=True)
+            cer_metric = self.model.base_model_with_adaptation.model.cer_metric
+            wer_metric = self.model.base_model_with_adaptation.model.wer_metric
+            cer_metric(preds, query_tgts)
+            wer_metric(preds, query_tgts)
+            self.log("char_error_rate", cer_metric, prog_bar=False)
+            self.log("word_error_rate", wer_metric, prog_bar=True)
 
             loss += query_loss * query_imgs.size(0)
             n_samples += query_imgs.size(0)
@@ -230,12 +232,12 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         )
         callbacks.extend(
             [
-                LogModelPredictions(
-                    label_encoder=label_encoder,
-                    val_batch=val_batch,
-                    train_batch=train_batch,
-                    predict_on_train_start=False,
-                ),
+                # LogModelPredictions(
+                #     label_encoder=label_encoder,
+                #     val_batch=val_batch,
+                #     train_batch=train_batch,
+                #     predict_on_train_start=False,
+                # ),
                 LogWorstPredictions(
                     train_dataloader=self.train_dataloader(),
                     val_dataloader=self.val_dataloader(),
@@ -253,7 +255,6 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         checkpoint_path: Union[str, Path],
         model_hparams_file: Union[str, Path],
         label_encoder: LabelEncoder,
-        load_meta_weights: bool = False,
         model_params_to_log: Optional[Dict[str, Any]] = None,
         *args,
         **kwargs,
@@ -265,6 +266,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             "WriterCodeAdaptiveModelMAML",
         ]
 
+        # Initialize base model.
         if base_model_arch == "fphtr":
             # Load FPHTR model.
             base_model = LitFullPageHTREncoderDecoder.load_from_checkpoint(
@@ -285,30 +287,26 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             )
             feature_size = base_model.rnn_encoder.input_size
 
+        # Initialize meta-model.
         if main_model_arch == "WriterCodeAdaptiveModel":
-            model = LitWriterCodeAdaptiveModel(
-                feature_size=feature_size, base_model=base_model.model, **kwargs
+            model = LitWriterCodeAdaptiveModel.load_from_checkpoint(
+                checkpoint_path,
+                strict=False,
+                feature_size=feature_size,
+                base_model=base_model.model,
+                **kwargs,
             )
         else:
-            model = LitWriterCodeAdaptiveModelMAML(
+            model = LitWriterCodeAdaptiveModelMAML.load_from_checkpoint(
+                checkpoint_path,
+                strict=False,
+                cer_metric=base_model.model.cer_metric,
+                wer_metric=base_model.model.wer_metric,
                 base_model=base_model.model,
                 d_model=feature_size,
                 base_model_arch=base_model_arch,
                 **kwargs,
             )
-
-        if load_meta_weights:
-            # Load weights specific to the meta-learning algorithm.
-            loaded = []
-            ckpt = torch.load(
-                checkpoint_path, map_location=lambda storage, loc: storage
-            )
-            for n, p in ckpt["state_dict"].items():
-                if any(n.startswith(wn) for wn in WriterCodeAdaptiveModel.meta_weights):
-                    with torch.no_grad():
-                        model.state_dict()[n][:] = p
-                    loaded.append(n)
-            print(f"Loaded meta weights: {loaded}")
         return model
 
     @staticmethod

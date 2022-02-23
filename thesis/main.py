@@ -155,13 +155,13 @@ def main(args):
         ),
     ]
     # TODO: make sure model-specific callbacks work in all cases.
-    # callbacks = cls.add_model_specific_callbacks(
-    #     callbacks,
-    #     shots=args.shots,
-    #     ways=args.ways,
-    #     label_encoder=ds_train.label_enc,
-    #     is_train=(args.validate or args.test),
-    # )
+    callbacks = learner.add_model_specific_callbacks(
+        callbacks,
+        shots=args.shots,
+        ways=args.ways,
+        label_encoder=ds_train.label_enc,
+        is_train=(args.validate or args.test),
+    )
     if args.early_stopping_patience != -1:
         callbacks.append(
             EarlyStopping(

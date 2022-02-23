@@ -13,7 +13,12 @@ from thesis.metahtr.lit_callbacks import (
 # import thesis.metahtr.lit_models
 from thesis.metahtr.models import MetaHTR, MAMLHTR
 from thesis.models import MAMLLearner
-from thesis.util import identity_collate_fn, TrainMode, PREDICTIONS_TO_LOG
+from thesis.util import (
+    identity_collate_fn,
+    TrainMode,
+    PREDICTIONS_TO_LOG,
+    load_meta_weights,
+)
 
 from htr.models.lit_models import LitShowAttendRead, LitFullPageHTREncoderDecoder
 from htr.util import LabelEncoder
@@ -311,11 +316,10 @@ class LitMAMLLearner(LitBaseAdaptive):
     @staticmethod
     def init_with_base_model_from_checkpoint(
         base_model_arch: str,
-        maml_arch: str,
         checkpoint_path: Union[str, Path],
         model_hparams_file: Union[str, Path],
         label_encoder: LabelEncoder,
-        load_meta_weights: bool = False,
+        maml_arch: str = "maml",
         model_params_to_log: Optional[Dict[str, Any]] = None,
         **kwargs,
     ):
@@ -323,6 +327,7 @@ class LitMAMLLearner(LitBaseAdaptive):
         assert base_model_arch in ["fphtr", "sar"], "Invalid base model architecture."
         assert maml_arch in ["maml", "metahtr"]
 
+        # Initialize base model.
         if base_model_arch == "fphtr":
             # Load FPHTR model.
             base_model = LitFullPageHTREncoderDecoder.load_from_checkpoint(
@@ -350,33 +355,36 @@ class LitMAMLLearner(LitBaseAdaptive):
                 * base_model.lstm_decoder.prediction.out_features
             )
 
+        # Initialize meta-model.
         if maml_arch == "maml":
-            model = LitMAMLLearner(
-                base_model=base_model.model, base_model_arch=base_model_arch, **kwargs
+            model = LitMAMLLearner.load_from_checkpoint(
+                checkpoint_path,
+                strict=False,
+                cer_metric=base_model.model.cer_metric,
+                wer_metric=base_model.model.wer_metric,
+                base_model=base_model.model,
+                base_model_arch=base_model_arch,
+                **kwargs,
             )
         else:  # metahtr
             from thesis.metahtr.lit_models import LitMetaHTR
 
-            model = LitMetaHTR(
+            model = LitMetaHTR.load_from_checkpoint(
+                checkpoint_path,
+                strict=False,
+                cer_metric=base_model.model.cer_metric,
+                wer_metric=base_model.model.wer_metric,
                 base_model=base_model.model,
                 base_model_arch=base_model_arch,
                 num_clf_weights=num_clf_weights,
                 **kwargs,
             )
 
-        if load_meta_weights:
-            # Load weights specific to the meta-learning algorithm.
-            loaded = []
-            ckpt = torch.load(
-                checkpoint_path, map_location=lambda storage, loc: storage
-            )
-            for n, p in ckpt["state_dict"].items():
-                # TODO: change meta weights based on class
-                if any(n.startswith("model." + wn) for wn in MetaHTR.meta_weights):
-                    with torch.no_grad():
-                        model.state_dict()[n][:] = p
-                    loaded.append(n)
-            print(f"Loaded meta weights: {loaded}")
+        # # Load meta-weights.
+        # model_weights = [wn for wn, _ in model.named_parameters()]
+        # meta_weights = [wn for wn in model_weights if base_model.state_dict().get(wn) is None]
+        # loaded_weights = load_meta_weights(model, checkpoint_path, meta_weights)
+        # print(f"Loaded meta weights: {loaded_weights}")
         return model
 
     @staticmethod
