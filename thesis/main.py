@@ -34,6 +34,10 @@ def main(args):
 
     seed_everything(args.seed)
 
+    assert (
+        args.val_batch_size >= args.shots * 2
+    ), "For K-shot adaptation, validation batch size should be at least 2K."
+
     # Initalize logging/cache directories.
     tb_logger = get_pl_tb_logger(__file__, args.experiment_name)
     log_dir = tb_logger.log_dir
@@ -73,8 +77,8 @@ def main(args):
         else args.shots * 2
     )
     ds_train.data = filter_df_by_freq(ds_train.data, "writer_id", train_min_bsz)
-    ds_val.data = filter_df_by_freq(ds_val.data, "writer_id", args.shots)
-    ds_test.data = filter_df_by_freq(ds_test.data, "writer_id", args.shots)
+    ds_val.data = filter_df_by_freq(ds_val.data, "writer_id", args.shots * 2)
+    ds_test.data = filter_df_by_freq(ds_test.data, "writer_id", args.shots * 2)
 
     # Set image transforms.
     ds_train.set_transforms_for_split(augmentations)

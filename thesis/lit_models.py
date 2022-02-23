@@ -151,7 +151,12 @@ class LitBaseAdaptive(pl.LightningModule):
     def add_model_specific_args(parser):
         parser.add_argument("--learning_rate", type=float, default=0.0001)
         parser.add_argument("--weight_decay", type=float, default=0.0)
-        parser.add_argument("--val_batch_size", type=int, default=64)
+        parser.add_argument(
+            "--val_batch_size",
+            type=int,
+            default=64,
+            help="Number of samples per writer per batch for val/test",
+        )
         parser.add_argument(
             "--grad_clip", type=float, default=None, help="Max gradient norm."
         )
