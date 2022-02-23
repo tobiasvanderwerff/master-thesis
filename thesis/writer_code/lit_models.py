@@ -7,7 +7,7 @@ from thesis.lit_models import LitMAMLLearner, LitBaseAdaptive
 from thesis.writer_code.lit_callbacks import LogWorstPredictions, LogModelPredictions
 from thesis.writer_code.models import (
     WriterCodeAdaptiveModel,
-    WriterCodeAdaptiveMAML,
+    WriterCodeAdaptiveModelMAML,
     BaseModelAdaptation,
 )
 from thesis.util import (
@@ -33,13 +33,19 @@ from thesis.writer_code.util import WriterEmbeddingType
 
 
 class LitWriterCodeAdaptiveModelMAML(LitMAMLLearner):
-    def __init__(self, base_model: BaseModelAdaptation, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, base_model: nn.Module, **kwargs):
+        super().__init__(
+            cer_metric=base_model.cer_metric, wer_metric=base_model.wer_metric, **kwargs
+        )
 
-        self.model = WriterCodeAdaptiveMAML(
+        self.model = WriterCodeAdaptiveModelMAML(
             base_model=base_model,
             **kwargs,
         )
+
+    @staticmethod
+    def init_with_base_model_from_checkpoint(**kwargs):
+        return LitWriterCodeAdaptiveModel.init_with_base_model_from_checkpoint(**kwargs)
 
     @staticmethod
     def add_model_specific_args(parent_parser):
@@ -50,6 +56,9 @@ class LitWriterCodeAdaptiveModelMAML(LitMAMLLearner):
             default=64,
             help="Size of the writer embeddings for adaptation.",
         )
+        # TODO: some necessary arguments are used from the LitWriterCodeAdaptiveModel
+        #  class. Ideally, these are also defined here (but right now would lead to
+        #  conflict because both argument parsers are used).
         return parent_parser
 
 
@@ -61,7 +70,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         num_writers: int,
         writer_emb_size: int = 64,
         writer_emb_type: Union[WriterEmbeddingType, str] = WriterEmbeddingType.LEARNED,
-        adapt_num_hidden: int = 1000,
+        adaptation_num_hidden: int = 1000,
         ways: int = 8,
         shots: int = 8,
         learning_rate_emb: float = 0.0001,
@@ -92,7 +101,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         self.num_writers = num_writers
         self.writer_emb_size = writer_emb_size
         self.writer_emb_type = writer_emb_type
-        self.adapt_num_hidden = adapt_num_hidden
+        self.adaptation_num_hidden = adaptation_num_hidden
         self.ways = ways
         self.shots = shots
         self.learning_rate_emb = learning_rate_emb
@@ -107,7 +116,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             base_model=model,
             d_model=feature_size,
             emb_size=writer_emb_size,
-            num_hidden=adapt_num_hidden,
+            adaptation_num_hidden=adaptation_num_hidden,
             num_writers=num_writers,
             learning_rate_emb=learning_rate_emb,
             embedding_type=writer_emb_type,
@@ -118,7 +127,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         self.save_hyperparameters(
             "writer_emb_type",
             "writer_emb_size",
-            "adapt_num_hidden",
+            "adaptation_num_hidden",
             "ways",
             "shots",
         )
@@ -244,6 +253,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
     @staticmethod
     def init_with_base_model_from_checkpoint(
         base_model_arch: str,
+        main_model_arch: str,
         checkpoint_path: Union[str, Path],
         model_hparams_file: Union[str, Path],
         label_encoder: LabelEncoder,
@@ -252,7 +262,12 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         *args,
         **kwargs,
     ):
+        # TODO: make one single implementation of this method for all lit models.
         assert base_model_arch in ["fphtr", "sar"], "Invalid base model architecture."
+        assert main_model_arch in [
+            "WriterCodeAdaptiveModel",
+            "WriterCodeAdaptiveModelMAML",
+        ]
 
         if base_model_arch == "fphtr":
             # Load FPHTR model.
@@ -274,9 +289,17 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             )
             feature_size = base_model.rnn_encoder.input_size
 
-        model = LitWriterCodeAdaptiveModel(
-            base_model.model, feature_size, *args, **kwargs
-        )
+        if main_model_arch == "WriterCodeAdaptiveModel":
+            model = LitWriterCodeAdaptiveModel(
+                feature_size=feature_size, base_model=base_model.model, **kwargs
+            )
+        else:
+            model = LitWriterCodeAdaptiveModelMAML(
+                base_model=base_model.model,
+                d_model=feature_size,
+                base_model_arch=base_model_arch,
+                **kwargs,
+            )
 
         if load_meta_weights:
             # Load weights specific to the meta-learning algorithm.
@@ -309,7 +332,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             help="Type of writer embedding to use.",
         )
         parser.add_argument(
-            "--adapt_num_hidden",
+            "--adaptation_num_hidden",
             type=int,
             default=1000,
             help="Number of features for the hidden layers of the " "adaptation MLP",

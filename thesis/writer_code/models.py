@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Optional, Callable, Tuple
+from typing import Optional, Callable, Tuple, List, Dict, Any
 
 import numpy as np
 import torch
@@ -35,18 +35,18 @@ class WriterCode(nn.Module):
         return self.writer_code
 
 
-class WriterCodeAdaptiveMAML(nn.Module, MAMLLearner):
+class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
     """<Model description here.>"""  # TODO
 
     meta_weights = ["gbml.module.writer_code", "adaptation"]  # TODO: verify
 
     def __init__(
         self,
-        base_model: "BaseModelAdaptation",
+        base_model: nn.Module,
         base_model_arch: str,
         d_model: int,
         emb_size: int,
-        adaptation_mlp_num_hidden: int,
+        adaptation_num_hidden: int,
         num_writers: int,
         ways: int = 8,
         shots: int = 16,
@@ -60,7 +60,7 @@ class WriterCodeAdaptiveMAML(nn.Module, MAMLLearner):
         self.base_model_arch = base_model_arch
         self.d_model = d_model
         self.emb_size = emb_size
-        self.adaptation_mlp_num_hidden = adaptation_mlp_num_hidden
+        self.adaptation_num_hidden = adaptation_num_hidden
         self.num_writers = num_writers
         self.ways = ways
         self.shots = shots
@@ -72,7 +72,7 @@ class WriterCodeAdaptiveMAML(nn.Module, MAMLLearner):
 
         self.gbml = l2l.algorithms.MetaSGD(WriterCode(emb_size), first_order=False)
         self.adaptation = FeatureTransform(
-            AdaptationMLP(d_model, emb_size, adaptation_mlp_num_hidden)
+            AdaptationMLP(d_model, emb_size, adaptation_num_hidden)
         )
         self.base_model_with_adaptation = BaseModelAdaptation(base_model)
 
@@ -81,9 +81,24 @@ class WriterCodeAdaptiveMAML(nn.Module, MAMLLearner):
         # model.
         base_model.encoder.linear.requires_grad_(True)
 
+    def forward(
+        self, imgs: Tensor, target: Tensor, writer_ids: Tensor
+    ) -> Tuple[Tensor, Tensor, Tensor]:
+        intermediate_transform = partial(
+            self.adaptation, writer_emb=self.gbml.module.writer_code
+        )
+        logits, loss = self.base_model_with_adaptation(
+            imgs,
+            target,
+            intermediate_transform=intermediate_transform,
+            teacher_forcing=False,
+        )
+        sampled_ids = logits.argmax(-1)
+        return logits, sampled_ids, loss
+
     def meta_learn(
         self, batch: Tuple[Tensor, Tensor, Tensor], mode: TrainMode = TrainMode.TRAIN
-    ) -> Tuple[Tensor, float, Optional[Tensor]]:
+    ) -> Tuple[Tensor, float, Optional[Dict[int, List]]]:
         outer_loss = 0.0
         inner_losses = []
         imgs, target, writer_ids = batch
@@ -103,7 +118,7 @@ class WriterCodeAdaptiveMAML(nn.Module, MAMLLearner):
             assert torch.is_grad_enabled()
             for _ in range(self.num_inner_steps):
                 # Adapt the model to the support data.
-                learner, support_loss = self.fast_adaptation(
+                learner, support_loss, _ = self.fast_adaptation(
                     learner, support_imgs, support_tgts
                 )
                 inner_losses.append(support_loss.item())
@@ -134,8 +149,8 @@ class WriterCodeAdaptiveMAML(nn.Module, MAMLLearner):
                     preds = logits.argmax(-1)
 
                 # Calculate metrics.
-                self.gbml.module.cer_metric(preds, query_tgts)
-                self.gbml.module.wer_metric(preds, query_tgts)
+                self.base_model_with_adaptation.model.cer_metric(preds, query_tgts)
+                self.base_model_with_adaptation.model.wer_metric(preds, query_tgts)
             outer_loss += query_loss
 
         outer_loss /= self.ways
@@ -148,7 +163,7 @@ class WriterCodeAdaptiveMAML(nn.Module, MAMLLearner):
         learner: l2l.algorithms.MetaSGD,
         adaptation_imgs: Tensor,
         adaptation_targets: Tensor,
-    ) -> Tuple[Tensor, float, Optional[Tensor]]:
+    ) -> Tuple[Any, float, Optional[Tensor]]:
         """Takes a single gradient step on a batch of data."""
         # set_dropout_layers_train(self, False)  # disable dropout
         # set_batchnorm_layers_train(self, self.use_batch_stats_for_batchnorm)
@@ -168,21 +183,6 @@ class WriterCodeAdaptiveMAML(nn.Module, MAMLLearner):
 
         return learner, support_loss, None
 
-    def forward(
-        self, imgs: Tensor, target: Tensor, writer_ids: Tensor
-    ) -> Tuple[Tensor, Tensor, Tensor]:
-        intermediate_transform = partial(
-            self.adaptation, writer_emb=self.gbml.module.writer_code
-        )
-        logits, loss = self.base_model_with_adaptation(
-            imgs,
-            target,
-            intermediate_transform=intermediate_transform,
-            teacher_forcing=False,
-        )
-        sampled_ids = logits.argmax(-1)
-        return logits, sampled_ids, loss
-
 
 class WriterCodeAdaptiveModel(nn.Module):
     """
@@ -197,7 +197,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         base_model: nn.Module,
         d_model: int,
         emb_size: int,
-        num_hidden: int,
+        adaptation_num_hidden: int,
         num_writers: int,
         learning_rate_emb: float,
         embedding_type: WriterEmbeddingType = WriterEmbeddingType.LEARNED,
@@ -210,7 +210,7 @@ class WriterCodeAdaptiveModel(nn.Module):
             d_model (int): size of the feature vectors produced by the feature
                 extractor (e.g. CNN).
             emb_size (int): size of the writer embeddings
-            num_hidden (int): hidden size for adaptation MLP
+            adaptation_num_hidden (int): hidden size for adaptation MLP
             num_writers (int): number of writers in the training set
             learning_rate_emb (float): learning rate used for fast adaptation of an
                 initial embedding during val/test
@@ -222,7 +222,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.emb_size = emb_size
-        self.num_hidden = num_hidden
+        self.adaptation_num_hidden = adaptation_num_hidden
         self.num_writers = num_writers
         self.learning_rate_emb = learning_rate_emb
         self.embedding_type = embedding_type
@@ -244,7 +244,7 @@ class WriterCodeAdaptiveModel(nn.Module):
                 bidirectional=False,
             )
         self.feature_transform = FeatureTransform(
-            AdaptationMLP(d_model, emb_size, num_hidden), self.emb_transform
+            AdaptationMLP(d_model, emb_size, adaptation_num_hidden), self.emb_transform
         )
         self.base_model_with_adaptation = BaseModelAdaptation(base_model)
 

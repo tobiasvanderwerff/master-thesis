@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Tuple, List, Optional
+from typing import Dict, Tuple, List, Optional, Any
 
 from thesis.util import TrainMode
 
@@ -31,7 +31,7 @@ class MAMLLearner(ABC):
         learner: l2l.algorithms.GBML,
         adaptation_imgs: Tensor,
         adaptation_targets: Tensor,
-    ) -> Tuple[Tensor, float, Optional[Tensor]]:
+    ) -> Tuple[Any, float, Optional[Tensor]]:
         """Take a single gradient step on a batch of data."""
         pass
 

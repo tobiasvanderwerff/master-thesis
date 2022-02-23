@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Optional, Dict, Tuple, List, Callable
+from typing import Optional, Dict, Tuple, List, Callable, Any
 from collections import defaultdict
 
 from thesis.metahtr.util import LayerWiseLRTransform
@@ -101,9 +101,46 @@ class MAMLHTR(nn.Module, MAMLLearner):
         self.use_cudnn = not isinstance(base_model, ShowAttendRead)
         self.char_to_avg_inst_weight = None
 
+    def forward(
+        self,
+        adaptation_imgs: Tensor,
+        adaptation_targets: Tensor,
+        inference_imgs: Tensor,
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Do meta learning on a set of images and run inference on another set.
+
+        Args:
+            adaptation_imgs (Tensor): images to do adaptation on
+            adaptation_targets (Tensor): targets for `adaptation_imgs`
+            inference_imgs (Tensor): images to make predictions on
+        Returns:
+            predictions on `inference_imgs`, in the form of a 2-tuple:
+                - logits, obtained at each time step during decoding
+                - sampled class indices, i.e. model predictions, obtained by applying
+                      greedy decoding (argmax on logits) at each time step
+        """
+        learner = self.gbml.clone()
+
+        # For some reason using an autograd context manager like torch.enable_grad()
+        # here does not work, perhaps due to some unexpected interaction between
+        # Pytorch Lightning and the learn2learn lib. Therefore gradient
+        # calculation should be set beforehand, outside of the current function.
+
+        # Adapt the model.
+        learner, _, _ = self.fast_adaptation(
+            learner, adaptation_imgs, adaptation_targets
+        )
+
+        # Run inference on the adapted model.
+        with torch.inference_mode():
+            logits, sampled_ids, _ = learner(inference_imgs)
+
+        return logits, sampled_ids
+
     def meta_learn(
         self, batch: Tuple[Tensor, Tensor, Tensor], mode: TrainMode = TrainMode.TRAIN
-    ) -> Tuple[Tensor, Tensor, Dict[int, List]]:
+    ) -> Tuple[Tensor, float, Optional[Dict[int, List]]]:
         outer_loss = 0.0
         inner_losses = []
         char_to_inst_weights = defaultdict(list)
@@ -169,7 +206,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
         learner: l2l.algorithms.GBML,
         adaptation_imgs: Tensor,
         adaptation_targets: Tensor,
-    ):
+    ) -> Tuple[Any, float, Optional[Tensor]]:
         """
         Takes a single gradient step on a batch of data.
         """
@@ -201,43 +238,6 @@ class MAMLHTR(nn.Module, MAMLLearner):
         learner.adapt(support_loss)
 
         return learner, support_loss, instance_weights
-
-    def forward(
-        self,
-        adaptation_imgs: Tensor,
-        adaptation_targets: Tensor,
-        inference_imgs: Tensor,
-    ) -> Tuple[Tensor, Tensor]:
-        """
-        Do meta learning on a set of images and run inference on another set.
-
-        Args:
-            adaptation_imgs (Tensor): images to do adaptation on
-            adaptation_targets (Tensor): targets for `adaptation_imgs`
-            inference_imgs (Tensor): images to make predictions on
-        Returns:
-            predictions on `inference_imgs`, in the form of a 2-tuple:
-                - logits, obtained at each time step during decoding
-                - sampled class indices, i.e. model predictions, obtained by applying
-                      greedy decoding (argmax on logits) at each time step
-        """
-        learner = self.gbml.clone()
-
-        # For some reason using an autograd context manager like torch.enable_grad()
-        # here does not work, perhaps due to some unexpected interaction between
-        # Pytorch Lightning and the learn2learn lib. Therefore gradient
-        # calculation should be set beforehand, outside of the current function.
-
-        # Adapt the model.
-        learner, _, _ = self.fast_adaptation(
-            learner, adaptation_imgs, adaptation_targets
-        )
-
-        # Run inference on the adapted model.
-        with torch.inference_mode():
-            logits, sampled_ids, _ = learner(inference_imgs)
-
-        return logits, sampled_ids
 
 
 class MetaHTR(MAMLHTR):

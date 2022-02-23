@@ -30,7 +30,7 @@ from pytorch_lightning.plugins import DDPPlugin
 def main(args):
 
     print(f"Main model used: {str(args.main_model_arch)}")
-    print(f"Base model used: {str(args.base_model_arch)}")
+    print(f"Base model used: {str(args.base_model_arch).upper()}")
 
     seed_everything(args.seed)
 
@@ -223,6 +223,7 @@ if __name__ == "__main__":
     parser = LitBaseAdaptive.add_model_specific_args(parser)
     parser = LitMetaHTR.add_model_specific_args(parser)
     parser = LitWriterCodeAdaptiveModel.add_model_specific_args(parser)
+    parser = LitWriterCodeAdaptiveModelMAML.add_model_specific_args(parser)
     parser = Trainer.add_argparse_args(parser)  # adds Pytorch Lightning arguments
 
     args = parser.parse_args()

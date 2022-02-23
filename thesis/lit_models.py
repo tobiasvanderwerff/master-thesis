@@ -4,12 +4,13 @@ from collections import defaultdict
 
 from pytorch_lightning import Callback
 
+from htr.metrics import WordErrorRate, CharacterErrorRate
 from thesis.metahtr.lit_callbacks import (
     LogModelPredictionsMAML,
     LogWorstPredictionsMAML,
 )
 
-# from thesis.metahtr.lit_models import LitMetaHTR
+# import thesis.metahtr.lit_models
 from thesis.metahtr.models import MetaHTR, MAMLHTR
 from thesis.models import MAMLLearner
 from thesis.util import identity_collate_fn, TrainMode, PREDICTIONS_TO_LOG
@@ -169,10 +170,15 @@ class LitMAMLLearner(LitBaseAdaptive):
 
     def __init__(
         self,
+        cer_metric: CharacterErrorRate,
+        wer_metric: WordErrorRate,
         base_model: Optional[nn.Module] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
+
+        self.cer_metric = cer_metric
+        self.wer_metric = wer_metric
 
         # For sub-classes of the current class, self.model can be defined in the
         # sub-class itself after __init__, or initialized here by passing `base_model`.
@@ -235,8 +241,8 @@ class LitMAMLLearner(LitBaseAdaptive):
             sync_dist=True,
             prog_bar=False,
         )
-        self.log("char_error_rate", self.model.gbml.module.cer_metric, prog_bar=True)
-        self.log("word_error_rate", self.model.gbml.module.wer_metric, prog_bar=True)
+        self.log("char_error_rate", self.cer_metric, prog_bar=True)
+        self.log("word_error_rate", self.wer_metric, prog_bar=True)
 
         return {"loss": outer_loss, "char_to_inst_weights": inst_ws}
 
@@ -310,7 +316,7 @@ class LitMAMLLearner(LitBaseAdaptive):
     ):
         # TODO: turn these into enums
         assert base_model_arch in ["fphtr", "sar"], "Invalid base model architecture."
-        assert maml_arch in ["maml", "metahtr", "writer_code_maml"]
+        assert maml_arch in ["maml", "metahtr"]
 
         if base_model_arch == "fphtr":
             # Load FPHTR model.
@@ -343,17 +349,14 @@ class LitMAMLLearner(LitBaseAdaptive):
             model = LitMAMLLearner(
                 base_model=base_model.model, base_model_arch=base_model_arch, **kwargs
             )
-        # elif maml_arch == "metahtr":
-        #     model = LitMetaHTR(
-        #         base_model=base_model.model,
-        #         base_model_arch=base_model_arch,
-        #         num_clf_weights=num_clf_weights,
-        #         **kwargs,
-        #     )
-        else:  # writer_code_maml
-            # TODO: Same as first option. Remove this option.
-            model = LitMAMLLearner(
-                base_model=base_model.model, base_model_arch=base_model_arch, **kwargs
+        else:  # metahtr
+            from thesis.metahtr.lit_models import LitMetaHTR
+
+            model = LitMetaHTR(
+                base_model=base_model.model,
+                base_model_arch=base_model_arch,
+                num_clf_weights=num_clf_weights,
+                **kwargs,
             )
 
         if load_meta_weights:

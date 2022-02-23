@@ -26,7 +26,9 @@ class LitMetaHTR(LitMAMLLearner):
         use_instance_weights: bool = True,
         **kwargs,
     ):
-        super().__init__(**kwargs)
+        super().__init__(
+            cer_metric=base_model.cer_metric, wer_metric=base_model.wer_metric, **kwargs
+        )
 
         self.num_clf_weights = num_clf_weights
         self.inst_mlp_hidden_size = inst_mlp_hidden_size
