@@ -94,11 +94,10 @@ def save_label_encoder(label_encoder: LabelEncoder, path: Union[str, Path]):
     label_encoder.dump(path)
 
 
-def get_pl_tb_logger(main_path: Union[str, Path], version: Optional[str] = None):
+def get_pl_tb_logger(log_dir: Union[str, Path], version: Optional[str] = None):
     """Get a Pytorch Lightning Tensorboard logger."""
-    log_dir_root = Path(main_path).resolve().parent
     return pl_loggers.TensorBoardLogger(
-        str(log_dir_root / LOGGING_DIR), name="", version=version
+        str(Path(log_dir) / LOGGING_DIR), name="", version=version
     )
 
 

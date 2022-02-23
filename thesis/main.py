@@ -39,7 +39,10 @@ def main(args):
     ), "For K-shot adaptation, validation batch size should be at least 2K."
 
     # Initalize logging/cache directories.
-    tb_logger = get_pl_tb_logger(__file__, args.experiment_name)
+    log_dir = args.log_dir
+    if log_dir is None:
+        log_dir = Path(__file__).parent.resolve()
+    tb_logger = get_pl_tb_logger(log_dir, args.experiment_name)
     log_dir = tb_logger.log_dir
     cache_dir = Path(args.cache_dir) if args.cache_dir else log_dir / "cache"
     cache_dir.mkdir(exist_ok=True, parents=True)
@@ -155,13 +158,13 @@ def main(args):
         ),
     ]
     # TODO: make sure model-specific callbacks work in all cases.
-    callbacks = learner.add_model_specific_callbacks(
-        callbacks,
-        shots=args.shots,
-        ways=args.ways,
-        label_encoder=ds_train.label_enc,
-        is_train=(args.validate or args.test),
-    )
+    # callbacks = learner.add_model_specific_callbacks(
+    #     callbacks,
+    #     shots=args.shots,
+    #     ways=args.ways,
+    #     label_encoder=ds_train.label_enc,
+    #     is_train=(args.validate or args.test),
+    # )
     if args.early_stopping_patience != -1:
         callbacks.append(
             EarlyStopping(
@@ -206,6 +209,8 @@ if __name__ == "__main__":
                         help=("Path to a base model checkpoint"))
     parser.add_argument("--data_dir", type=str, required=True, help="IAM dataset root folder.")
     parser.add_argument("--cache_dir", type=str, required=True)
+    parser.add_argument("--log_dir", type=str, required=True,
+                        help="Directory where the lighning logs will be stored.")
     parser.add_argument("--validate", action="store_true", default=False)
     parser.add_argument("--test", action="store_true", default=False)
     parser.add_argument("--early_stopping_patience", type=int, default=10,

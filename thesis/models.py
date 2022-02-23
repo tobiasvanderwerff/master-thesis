@@ -8,16 +8,6 @@ from torch import Tensor
 
 
 class MAMLLearner(ABC):
-    @property
-    @abstractmethod
-    def meta_weights(self):
-        """
-        Names of the weights specific to MAML, e.g. the names of inner loop
-        learnable learning rate weights. Will be used to load meta-weights
-        from a saved checkpoint.
-        """
-        pass
-
     @abstractmethod
     def meta_learn(
         self, batch: Tuple[Tensor, Tensor, Tensor], mode: TrainMode = TrainMode.TRAIN

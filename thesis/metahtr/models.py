@@ -22,8 +22,6 @@ from torch.autograd import grad
 
 
 class MAMLHTR(nn.Module, MAMLLearner):
-    meta_weights = []
-
     def __init__(
         self,
         base_model: nn.Module,
@@ -245,8 +243,6 @@ class MAMLHTR(nn.Module, MAMLLearner):
 
 
 class MetaHTR(MAMLHTR):
-    meta_weights = ["gbml.compute_update", "inst_w_mlp"]
-
     def __init__(
         self,
         base_model: nn.Module,

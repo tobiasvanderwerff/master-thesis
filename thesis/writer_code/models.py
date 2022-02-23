@@ -38,8 +38,6 @@ class WriterCode(nn.Module):
 class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
     """<Model description here.>"""  # TODO
 
-    meta_weights = ["gbml.module.writer_code", "adaptation"]  # TODO: verify
-
     def __init__(
         self,
         base_model: nn.Module,
@@ -193,8 +191,6 @@ class WriterCodeAdaptiveModel(nn.Module):
     Implementation of speaker-adaptive model by Abdel-Hamid et al. (2013),
     adapted to HTR models.
     """
-
-    meta_weights = ["writer_embs", "adaptation"]
 
     def __init__(
         self,
