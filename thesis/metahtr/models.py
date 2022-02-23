@@ -33,6 +33,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
         shots: int = 16,
         inner_lr: float = 0.001,
         instance_weights_fn: Optional[Callable] = None,
+        val_batch_size: int = 64,
         use_batch_stats_for_batchnorm: bool = False,
         use_dropout: bool = False,
         num_inner_steps: int = 1,
@@ -73,6 +74,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
         self.shots = shots
         self.inner_lr = inner_lr
         self.instance_weights_fn = instance_weights_fn
+        self.val_batch_size = val_batch_size
         self.use_batch_stats_for_batchnorm = use_batch_stats_for_batchnorm
         self.use_dropout = use_dropout
         self.num_inner_steps = num_inner_steps

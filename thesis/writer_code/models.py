@@ -48,6 +48,7 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
         num_writers: int,
         ways: int = 8,
         shots: int = 16,
+        val_batch_size: int = 64,
         use_batch_stats_for_batchnorm: bool = False,
         use_dropout: bool = False,
         num_inner_steps: int = 1,
@@ -62,6 +63,7 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
         self.num_writers = num_writers
         self.ways = ways
         self.shots = shots
+        self.val_batch_size = val_batch_size
         self.use_batch_stats_for_batchnorm = use_batch_stats_for_batchnorm
         self.use_dropout = use_dropout
         self.num_inner_steps = num_inner_steps
