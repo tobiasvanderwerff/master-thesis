@@ -8,11 +8,9 @@ from thesis.writer_code.lit_callbacks import LogWorstPredictions, LogModelPredic
 from thesis.writer_code.models import (
     WriterCodeAdaptiveModel,
     WriterCodeAdaptiveModelMAML,
-    BaseModelAdaptation,
 )
 from thesis.util import (
     split_batch_for_adaptation,
-    identity_collate_fn,
     PREDICTIONS_TO_LOG,
 )
 
