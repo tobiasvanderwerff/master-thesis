@@ -3,6 +3,7 @@ from pathlib import Path
 
 from pytorch_lightning import Callback
 
+from thesis.lit_callbacks import LogLearnableInnerLoopLearningRates
 from thesis.lit_models import LitMAMLLearner, LitBaseAdaptive
 from thesis.writer_code.lit_callbacks import LogWorstPredictions, LogModelPredictions
 from thesis.writer_code.models import (
@@ -37,6 +38,17 @@ class LitWriterCodeAdaptiveModelMAML(LitMAMLLearner):
             base_model=base_model,
             **kwargs,
         )
+
+    def add_model_specific_callbacks(
+        self, callbacks: List[Callback], label_encoder: LabelEncoder, **kwargs
+    ) -> List[Callback]:
+        callbacks = super().add_model_specific_callbacks(
+            callbacks,
+            label_encoder=label_encoder,
+            **kwargs,
+        )
+        callbacks.append(LogLearnableInnerLoopLearningRates())
+        return callbacks
 
     @staticmethod
     def init_with_base_model_from_checkpoint(**kwargs):

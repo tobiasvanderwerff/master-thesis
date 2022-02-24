@@ -6,9 +6,9 @@ import numpy as np
 from pytorch_lightning import Callback
 
 from htr.util import LabelEncoder
+from thesis.lit_callbacks import LogLearnableInnerLoopLearningRates
 from thesis.lit_models import LitMAMLLearner
 from thesis.metahtr.lit_callbacks import (
-    LogLayerWiseLearningRates,
     LogInstanceSpecificWeights,
 )
 from thesis.metahtr.models import MetaHTR
@@ -85,7 +85,7 @@ class LitMetaHTR(LitMAMLLearner):
         )
         callbacks.extend(
             [
-                LogLayerWiseLearningRates(),
+                LogLearnableInnerLoopLearningRates(),
                 LogInstanceSpecificWeights(label_encoder),
             ]
         )
