@@ -25,7 +25,6 @@ class MAMLHTR(nn.Module, MAMLLearner):
     def __init__(
         self,
         base_model: nn.Module,
-        base_model_arch: str,
         transform: Optional[Callable] = None,
         ways: int = 8,
         shots: int = 16,
@@ -48,7 +47,6 @@ class MAMLHTR(nn.Module, MAMLLearner):
 
         Args:
             base_model (nn.Module): base model to apply MAML on
-            base_model_arch (str): base model architecture, e.g. fphtr
             transform (Optional[Callable]): transform used to update the module. See
                 learn2learn docs for more details.
             ways (int): number of writers per batch
@@ -67,7 +65,6 @@ class MAMLHTR(nn.Module, MAMLLearner):
 
         assert num_inner_steps >= 1
 
-        self.base_model_arch = base_model_arch
         self.ways = ways
         self.shots = shots
         self.inner_lr = inner_lr

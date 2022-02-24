@@ -17,6 +17,7 @@ from thesis.util import (
     prepare_iam_splits,
     prepare_l2l_taskset,
     main_lit_models,
+    get_parameter_names,
 )
 
 from htr.data import IAMDataset
@@ -52,6 +53,7 @@ def main(args):
     model_hparams_file, hparams = copy_hyperparameters_to_logging_dir(
         args.trained_model_path, log_dir
     )
+    base_model_params = get_parameter_names(args.trained_model_path)
 
     only_lowercase = hparams["only_lowercase"]
     augmentations = "train" if args.use_image_augmentations else "val"
@@ -143,7 +145,7 @@ def main(args):
     if isinstance(
         learner, (LitMAMLLearner, LitMetaHTR, LitWriterCodeAdaptiveModelMAML)
     ):
-        plugins = [MAMLHTRCheckpointIO()]
+        plugins = [MAMLHTRCheckpointIO(base_model_params)]
 
     callbacks = [
         ModelSummary(max_depth=3),
@@ -157,13 +159,12 @@ def main(args):
             save_weights_only=True,
         ),
     ]
-    # TODO: make sure model-specific callbacks work in all cases.
     callbacks = learner.add_model_specific_callbacks(
         callbacks,
         shots=args.shots,
         ways=args.ways,
         label_encoder=ds_train.label_enc,
-        is_train=(args.validate or args.test),
+        is_train=not (args.validate or args.test),
     )
     if args.early_stopping_patience != -1:
         callbacks.append(

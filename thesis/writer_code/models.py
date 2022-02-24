@@ -41,11 +41,9 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
     def __init__(
         self,
         base_model: nn.Module,
-        base_model_arch: str,
         d_model: int,
         emb_size: int,
         adaptation_num_hidden: int,
-        num_writers: int,
         ways: int = 8,
         shots: int = 16,
         val_batch_size: int = 64,
@@ -56,11 +54,9 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
     ):
         super().__init__()
 
-        self.base_model_arch = base_model_arch
         self.d_model = d_model
         self.emb_size = emb_size
         self.adaptation_num_hidden = adaptation_num_hidden
-        self.num_writers = num_writers
         self.ways = ways
         self.shots = shots
         self.val_batch_size = val_batch_size
@@ -82,19 +78,45 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
         base_model.encoder.linear.requires_grad_(True)
 
     def forward(
-        self, imgs: Tensor, target: Tensor, writer_ids: Tensor
-    ) -> Tuple[Tensor, Tensor, Tensor]:
+        self,
+        adaptation_imgs: Tensor,
+        adaptation_targets: Tensor,
+        inference_imgs: Tensor,
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Do meta learning on a set of images and run inference on another set.
+
+        Args:
+            adaptation_imgs (Tensor): images to do adaptation on
+            adaptation_targets (Tensor): targets for `adaptation_imgs`
+            inference_imgs (Tensor): images to make predictions on
+        Returns:
+            predictions on `inference_imgs`, in the form of a 2-tuple:
+                - logits, obtained at each time step during decoding
+                - sampled class indices, i.e. model predictions, obtained by applying
+                      greedy decoding (argmax on logits) at each time step
+        """
+        learner = self.gbml.clone()
+
+        # Adapt the model.
+        for _ in range(self.num_inner_steps):
+            learner, support_loss, _ = self.fast_adaptation(
+                learner, adaptation_imgs, adaptation_targets
+            )
+
+        # Run inference on the adapted model.
         intermediate_transform = partial(
-            self.adaptation, writer_emb=self.gbml.module.writer_code
+            self.adaptation, writer_emb=learner.module.writer_code
         )
-        logits, loss = self.base_model_with_adaptation(
-            imgs,
-            target,
-            intermediate_transform=intermediate_transform,
-            teacher_forcing=False,
-        )
-        sampled_ids = logits.argmax(-1)
-        return logits, sampled_ids, loss
+        with torch.inference_mode():
+            logits, _ = self.base_model_with_adaptation(
+                inference_imgs,
+                intermediate_transform=intermediate_transform,
+                teacher_forcing=False,
+            )
+            sampled_ids = logits.argmax(-1)
+
+        return logits, sampled_ids
 
     def meta_learn(
         self, batch: Tuple[Tensor, Tensor, Tensor], mode: TrainMode = TrainMode.TRAIN
@@ -200,6 +222,8 @@ class WriterCodeAdaptiveModel(nn.Module):
         adaptation_num_hidden: int,
         num_writers: int,
         learning_rate_emb: float,
+        ways: int = 8,
+        shots: int = 8,
         embedding_type: WriterEmbeddingType = WriterEmbeddingType.LEARNED,
         adaptation_opt_steps: int = 1,
         use_adam_for_adaptation: bool = False,
@@ -214,6 +238,8 @@ class WriterCodeAdaptiveModel(nn.Module):
             num_writers (int): number of writers in the training set
             learning_rate_emb (float): learning rate used for fast adaptation of an
                 initial embedding during val/test
+            ways (int): ways
+            shots (int): shots
             embedding_type (WriterEmbeddingType): type of writer embedding used
             adaptation_opt_steps (int): number of optimization steps during adaptation
             use_adam_for_adaptation (bool): whether to use Adam during adaptation
@@ -225,6 +251,8 @@ class WriterCodeAdaptiveModel(nn.Module):
         self.adaptation_num_hidden = adaptation_num_hidden
         self.num_writers = num_writers
         self.learning_rate_emb = learning_rate_emb
+        self.ways = ways
+        self.shots = shots
         self.embedding_type = embedding_type
         self.adaptation_opt_steps = adaptation_opt_steps
         self.use_adam_for_adaptation = use_adam_for_adaptation

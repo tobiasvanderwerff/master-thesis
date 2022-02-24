@@ -1,6 +1,5 @@
-from typing import Optional, Dict, Union, Tuple, Any, Sequence, List
+from typing import Optional, Dict, Union, Tuple, Any, List
 from pathlib import Path
-from collections import defaultdict
 
 from pytorch_lightning import Callback
 
@@ -10,14 +9,12 @@ from thesis.metahtr.lit_callbacks import (
     LogWorstPredictionsMAML,
 )
 
-# import thesis.metahtr.lit_models
-from thesis.metahtr.models import MetaHTR, MAMLHTR
+from thesis.metahtr.models import MAMLHTR
 from thesis.models import MAMLLearner
 from thesis.util import (
     identity_collate_fn,
     TrainMode,
     PREDICTIONS_TO_LOG,
-    load_meta_weights,
 )
 
 from htr.models.lit_models import LitShowAttendRead, LitFullPageHTREncoderDecoder
@@ -37,6 +34,8 @@ class LitBaseAdaptive(pl.LightningModule):
 
     def __init__(
         self,
+        base_model_arch: str,
+        main_model_arch: str,
         taskset_train: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
         taskset_val: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
         taskset_test: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
@@ -52,6 +51,8 @@ class LitBaseAdaptive(pl.LightningModule):
     ):
         """
         Args:
+            base_model_arch (str): base model architecture descriptor
+            main_model_arch (str): main model architecture descriptor
             taskset_train (Optional[Union[l2l.data.TaskDataset, Dataset]]):
                 learn2learn train taskset
             taskset_val (Optional[Union[l2l.data.TaskDataset, Dataset]]):
@@ -75,6 +76,8 @@ class LitBaseAdaptive(pl.LightningModule):
             "configure the learning rate decay properly."
         )
 
+        self.base_model_arch = base_model_arch
+        self.main_model_arch = main_model_arch
         self.taskset_train = taskset_train
         self.taskset_val = taskset_val
         self.taskset_test = taskset_test
@@ -262,7 +265,7 @@ class LitMAMLLearner(LitBaseAdaptive):
         shots: int,
         ways: int,
         label_encoder: LabelEncoder,
-        is_train: bool,
+        is_train: bool = True,
     ) -> List[Callback]:
         callbacks = super().add_model_specific_callbacks(
             callbacks,
@@ -300,13 +303,15 @@ class LitMAMLLearner(LitBaseAdaptive):
                     label_encoder=label_encoder,
                     val_batch=val_batch,
                     train_batch=train_batch,
-                    enable_grad=True,
                     predict_on_train_start=True,
                 ),
                 LogWorstPredictionsMAML(
+                    label_encoder=label_encoder,
                     train_dataloader=self.train_dataloader(),
                     val_dataloader=self.val_dataloader(),
                     test_dataloader=self.test_dataloader(),
+                    shots=shots,
+                    ways=ways,
                     training_skipped=not is_train,
                 ),
             ]

@@ -1,6 +1,9 @@
 from enum import Enum
 
 
+AVAILABLE_MODELS = ["LitWriterCodeAdaptiveModel"]
+
+
 class WriterEmbeddingType(Enum):
     """
     Type of writer embedding. Choices:

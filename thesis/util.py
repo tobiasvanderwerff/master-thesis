@@ -1,7 +1,6 @@
 from copy import copy
 from enum import Enum
 from functools import partial
-import math
 from pathlib import Path
 import shutil
 from typing import Optional, Tuple, List, Sequence, Any, Union, Dict
@@ -26,6 +25,9 @@ PREDICTIONS_TO_LOG = {
     "line": 6,
     "form": 1,
 }
+EOS_TOKEN = "<EOS>"
+SOS_TOKEN = "<SOS>"
+PAD_TOKEN = "<PAD>"
 
 
 class ExtendedEnum(Enum):
@@ -159,7 +161,7 @@ def prepare_l2l_taskset(
     shots: Optional[int] = None,
 ):
     eos_tkn_idx, sos_tkn_idx, pad_tkn_idx = dataset.label_enc.transform(
-        [dataset._eos_token, dataset._sos_token, dataset._pad_token]
+        [EOS_TOKEN, SOS_TOKEN, PAD_TOKEN]
     )
     collate_fn = partial(
         IAMDataset.collate_fn,
@@ -238,19 +240,9 @@ def freeze(model: nn.Module):
         p.requires_grad = False
 
 
-def load_meta_weights(
-    model: nn.Module, checkpoint_path: Union[str, Path], meta_weights: List[str]
-):
-    """Load weights specific to a meta-learning algorithm."""
-    # TODO: this function is currently not used. If this is still the case, delete it.
-    loaded_weights = []
+def get_parameter_names(checkpoint_path: Union[str, Path]):
     ckpt = torch.load(checkpoint_path, map_location=lambda storage, loc: storage)
-    for wn, p in ckpt["state_dict"].items():
-        if any(wn.endswith(wn_meta) for wn_meta in meta_weights):
-            with torch.no_grad():
-                model.state_dict()[wn][:] = p
-            loaded_weights.append(wn)
-    return loaded_weights
+    return [wn for wn in ckpt["state_dict"].keys()]
 
 
 def split_batch_for_adaptation(

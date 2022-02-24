@@ -13,7 +13,6 @@ from thesis.writer_code.models import (
 from thesis.util import (
     split_batch_for_adaptation,
     PREDICTIONS_TO_LOG,
-    load_meta_weights,
 )
 
 from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
@@ -30,9 +29,7 @@ from thesis.writer_code.util import WriterEmbeddingType
 
 class LitWriterCodeAdaptiveModelMAML(LitMAMLLearner):
     def __init__(self, base_model: nn.Module, **kwargs):
-        super().__init__(
-            cer_metric=base_model.cer_metric, wer_metric=base_model.wer_metric, **kwargs
-        )
+        super().__init__(**kwargs)
 
         self.model = WriterCodeAdaptiveModelMAML(
             base_model=base_model,
@@ -67,8 +64,6 @@ class LitWriterCodeAdaptiveModelMAML(LitMAMLLearner):
         #  class. Ideally, these are also defined here (but right now would lead to
         #  conflict because both argument parsers are used).
         return parent_parser
-
-    # TODO: callback for logging inner loop lrs
 
 
 class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
@@ -268,10 +263,8 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         model_hparams_file: Union[str, Path],
         label_encoder: LabelEncoder,
         model_params_to_log: Optional[Dict[str, Any]] = None,
-        *args,
         **kwargs,
     ):
-        # TODO: make one single implementation of this method for all lit models.
         assert base_model_arch in ["fphtr", "sar"], "Invalid base model architecture."
         assert main_model_arch in [
             "WriterCodeAdaptiveModel",
@@ -317,6 +310,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
                 base_model=base_model.model,
                 d_model=feature_size,
                 base_model_arch=base_model_arch,
+                main_model_arch=main_model_arch,
                 **kwargs,
             )
         return model

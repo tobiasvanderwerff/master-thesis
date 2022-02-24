@@ -1,7 +1,8 @@
-from typing import Any, Sequence
-
 import torch.nn as nn
 import learn2learn as l2l
+
+
+AVAILABLE_MODELS = ["LitMetaHTR", "LitMetaHTR", "LitWriterCodeAdaptiveModelMAML"]
 
 
 class LayerWiseLRTransform:
