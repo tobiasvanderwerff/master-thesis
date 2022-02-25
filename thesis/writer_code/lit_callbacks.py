@@ -147,10 +147,6 @@ class LogModelPredictions(LogModelPredictionsCallback):
                 mode="train",
             )
         else:  # val/test
-            # TODO: for transform model, i.e. pl_module.writer_emb_type ==
-            #  WriterEmbeddingType.TRANSFORMED, only pass query_imgs, query_tgts and
-            #  writer_ids. It's possible that the val batch needs to be
-            #  designed diferently.
             support_imgs, support_tgts, query_imgs, query_tgts = batch
             torch.set_grad_enabled(True)
             _, preds, *_ = pl_module(*[t.to(device) for t in batch], mode="val")

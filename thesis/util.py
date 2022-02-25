@@ -19,7 +19,6 @@ from pytorch_lightning import loggers as pl_loggers
 from torch.utils.data import Dataset
 from torch import Tensor
 
-LOGGING_DIR = "lightning_logs/"
 PREDICTIONS_TO_LOG = {
     "word": 10,
     "line": 6,
@@ -98,9 +97,7 @@ def save_label_encoder(label_encoder: LabelEncoder, path: Union[str, Path]):
 
 def get_pl_tb_logger(log_dir: Union[str, Path], version: Optional[str] = None):
     """Get a Pytorch Lightning Tensorboard logger."""
-    return pl_loggers.TensorBoardLogger(
-        str(Path(log_dir) / LOGGING_DIR), name="", version=version
-    )
+    return pl_loggers.TensorBoardLogger(str(Path(log_dir)), name="", version=version)
 
 
 def copy_hyperparameters_to_logging_dir(
