@@ -233,7 +233,7 @@ if __name__ == "__main__":
     parser = LitBaseAdaptive.add_model_specific_args(parser)
     parser = LitMetaHTR.add_model_specific_args(parser)
     parser = LitWriterCodeAdaptiveModel.add_model_specific_args(parser)
-    parser = LitWriterCodeAdaptiveModelMAML.add_model_specific_args(parser)
+    # parser = LitWriterCodeAdaptiveModelMAML.add_model_specific_args(parser)
     parser = Trainer.add_argparse_args(parser)  # adds Pytorch Lightning arguments
 
     args = parser.parse_args()

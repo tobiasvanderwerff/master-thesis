@@ -28,13 +28,14 @@ from thesis.writer_code.util import WriterEmbeddingType
 
 
 class LitWriterCodeAdaptiveModelMAML(LitMAMLLearner):
-    def __init__(self, base_model: nn.Module, **kwargs):
+    def __init__(self, base_model: nn.Module, code_size: int, **kwargs):
         super().__init__(**kwargs)
-
         self.model = WriterCodeAdaptiveModelMAML(
             base_model=base_model,
+            code_size=code_size,
             **kwargs,
         )
+        self.save_hyperparameters("code_size")
 
     def add_model_specific_callbacks(
         self, callbacks: List[Callback], label_encoder: LabelEncoder, **kwargs
@@ -55,10 +56,10 @@ class LitWriterCodeAdaptiveModelMAML(LitMAMLLearner):
     def add_model_specific_args(parent_parser):
         parser = parent_parser.add_argument_group("LitWriterCodeAdaptiveModelMAML")
         parser.add_argument(
-            "--emb_size",
+            "--code_size",
             type=int,
             default=64,
-            help="Size of the writer embeddings for adaptation.",
+            help="Size of the writer codes for adaptation.",
         )
         # TODO: some necessary arguments are used from the LitWriterCodeAdaptiveModel
         #  class. Ideally, these are also defined here (but right now would lead to
@@ -72,7 +73,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         base_model: nn.Module,
         feature_size: int,
         num_writers: int,
-        writer_emb_size: int = 64,
+        code_size: int = 64,
         writer_emb_type: Union[WriterEmbeddingType, str] = WriterEmbeddingType.LEARNED,
         adaptation_num_hidden: int = 1000,
         ways: int = 8,
@@ -102,7 +103,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
 
         self.feature_size = feature_size
         self.num_writers = num_writers
-        self.writer_emb_size = writer_emb_size
+        self.code_size = code_size
         self.writer_emb_type = writer_emb_type
         self.adaptation_num_hidden = adaptation_num_hidden
         self.ways = ways
@@ -118,7 +119,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         self.model = WriterCodeAdaptiveModel(
             base_model=base_model,
             d_model=feature_size,
-            emb_size=writer_emb_size,
+            code_size=code_size,
             adaptation_num_hidden=adaptation_num_hidden,
             num_writers=num_writers,
             learning_rate_emb=learning_rate_emb,
@@ -129,7 +130,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
 
         self.save_hyperparameters(
             "writer_emb_type",
-            "writer_emb_size",
+            "code_size",
             "adaptation_num_hidden",
             "ways",
             "shots",
@@ -239,16 +240,19 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         )
         callbacks.extend(
             [
-                # LogModelPredictions(
-                #     label_encoder=label_encoder,
-                #     val_batch=val_batch,
-                #     train_batch=train_batch,
-                #     predict_on_train_start=False,
-                # ),
+                LogModelPredictions(
+                    label_encoder=label_encoder,
+                    val_batch=val_batch,
+                    train_batch=train_batch,
+                    predict_on_train_start=False,
+                ),
                 LogWorstPredictions(
+                    label_encoder=label_encoder,
                     train_dataloader=self.train_dataloader(),
                     val_dataloader=self.val_dataloader(),
                     test_dataloader=self.test_dataloader(),
+                    shots=shots,
+                    ways=ways,
                     training_skipped=not is_train,
                 ),
             ]
@@ -299,6 +303,8 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
                 strict=False,
                 feature_size=feature_size,
                 base_model=base_model.model,
+                base_model_arch=base_model_arch,
+                main_model_arch=main_model_arch,
                 **kwargs,
             )
         else:
@@ -319,7 +325,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
     def add_model_specific_args(parent_parser):
         parser = parent_parser.add_argument_group("LitWriterCodeAdaptiveModel")
         parser.add_argument(
-            "--writer_emb_size",
+            "--code_size",
             type=int,
             default=64,
             help="Size of the writer embeddings for adaptation.",

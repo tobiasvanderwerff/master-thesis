@@ -64,7 +64,7 @@ class LogWorstPredictions(LogWorstPredictionsCallback):
             dict(
                 num_writers=pl_module.num_writers,
                 writer_emb_type=pl_module.writer_emb_type.name,
-                writer_emb_size=pl_module.writer_emb_size,
+                code_size=pl_module.code_size,
                 adaptation_num_hidden=pl_module.adaptation_num_hidden,
                 ways=pl_module.ways,
                 shots=pl_module.shots,

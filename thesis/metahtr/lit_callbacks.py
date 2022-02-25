@@ -52,7 +52,7 @@ class LogWorstPredictionsMAML(LogWorstPredictionsCallback):
         ) = super().get_args_for_loading_model(trainer, pl_module, label_encoder)
         args.update(
             dict(
-                emb_size=getattr(pl_module.model, "emb_size", None),
+                code_size=getattr(pl_module.model, "code_size", None),
                 adaptation_num_hidden=getattr(
                     pl_module.model, "adaptation_num_hidden", None
                 ),

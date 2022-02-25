@@ -42,7 +42,7 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
         self,
         base_model: nn.Module,
         d_model: int,
-        emb_size: int,
+        code_size: int,
         adaptation_num_hidden: int,
         ways: int = 8,
         shots: int = 16,
@@ -55,7 +55,7 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
         super().__init__()
 
         self.d_model = d_model
-        self.emb_size = emb_size
+        self.code_size = code_size
         self.adaptation_num_hidden = adaptation_num_hidden
         self.ways = ways
         self.shots = shots
@@ -66,9 +66,9 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
 
         assert base_model.loss_fn.reduction == "mean"
 
-        self.gbml = l2l.algorithms.MetaSGD(WriterCode(emb_size), first_order=False)
+        self.gbml = l2l.algorithms.MetaSGD(WriterCode(code_size), first_order=False)
         self.adaptation = FeatureTransform(
-            AdaptationMLP(d_model, emb_size, adaptation_num_hidden)
+            AdaptationMLP(d_model, code_size, adaptation_num_hidden)
         )
         self.base_model_with_adaptation = BaseModelAdaptation(base_model)
 
@@ -218,7 +218,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         self,
         base_model: nn.Module,
         d_model: int,
-        emb_size: int,
+        code_size: int,
         adaptation_num_hidden: int,
         num_writers: int,
         learning_rate_emb: float,
@@ -233,7 +233,7 @@ class WriterCodeAdaptiveModel(nn.Module):
             base_model (nn.Module): pre-trained HTR model, frozen during adaptation
             d_model (int): size of the feature vectors produced by the feature
                 extractor (e.g. CNN).
-            emb_size (int): size of the writer embeddings
+            code_size (int): size of the writer embeddings
             adaptation_num_hidden (int): hidden size for adaptation MLP
             num_writers (int): number of writers in the training set
             learning_rate_emb (float): learning rate used for fast adaptation of an
@@ -247,7 +247,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         """
         super().__init__()
         self.d_model = d_model
-        self.emb_size = emb_size
+        self.code_size = code_size
         self.adaptation_num_hidden = adaptation_num_hidden
         self.num_writers = num_writers
         self.learning_rate_emb = learning_rate_emb
@@ -258,21 +258,21 @@ class WriterCodeAdaptiveModel(nn.Module):
         self.use_adam_for_adaptation = use_adam_for_adaptation
 
         self.emb_transform = None
-        if self.embedding_type == WriterEmbeddingType.LEARNED:
-            self.writer_embs = nn.Embedding(num_writers, emb_size)
+        if self.embedding_type == WriterEmbeddingType.LEARNED and code_size > 0:
+            self.writer_embs = nn.Embedding(num_writers, code_size)
         if self.embedding_type == WriterEmbeddingType.TRANSFORMED:
-            # self.emb_transform = nn.Linear(d_model, emb_size)
+            # self.emb_transform = nn.Linear(d_model, code_size)
             self.emb_transform = nn.LSTM(
                 # These settings were chosen ad-hoc.
                 input_size=d_model,
-                hidden_size=emb_size,
+                hidden_size=code_size,
                 num_layers=2,
                 batch_first=True,
                 dropout=0.1,
                 bidirectional=False,
             )
         self.feature_transform = FeatureTransform(
-            AdaptationMLP(d_model, emb_size, adaptation_num_hidden), self.emb_transform
+            AdaptationMLP(d_model, code_size, adaptation_num_hidden), self.emb_transform
         )
         self.base_model_with_adaptation = BaseModelAdaptation(base_model)
 
@@ -284,11 +284,11 @@ class WriterCodeAdaptiveModel(nn.Module):
         base_model.encoder.linear.requires_grad_(True)
 
     def forward(
-        self, *args, mode: str = "train", **kwargs
+        self, *args, mode: TrainMode = TrainMode.TRAIN, **kwargs
     ) -> Tuple[Tensor, Tensor, Tensor]:
-        assert mode in ["train", "val", "test"]
         if self.embedding_type == WriterEmbeddingType.LEARNED:
-            if mode == "train":  # use a pre-trained embedding
+            if mode == TrainMode.TRAIN or self.use_zero_emb:
+                # Use a pre-trained embedding.
                 logits, loss = self.forward_existing_code(*args, **kwargs)
             else:  # initialize and train a new writer embedding
                 logits, loss = self.forward_new_code(*args, **kwargs)
@@ -316,7 +316,10 @@ class WriterCodeAdaptiveModel(nn.Module):
     ) -> Tuple[Tensor, Tensor]:
         """Perform adaptation using an existing writer code."""
         # Load the writer code.
-        writer_emb = self.writer_embs(writer_ids)  # (N, emb_size)
+        if self.use_zero_emb:
+            writer_emb = torch.zeros(imgs.size(0), self.code_size, device=imgs.device)
+        else:
+            writer_emb = self.writer_embs(writer_ids)  # (N, code_size)
 
         # Run inference using the writer code.
         intermediate_transform = partial(self.feature_transform, writer_emb=writer_emb)
@@ -369,7 +372,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         passes on a batch of adaptation data in order to train a new writer
         embedding.
         """
-        writer_emb = torch.empty(1, self.emb_size, device=adaptation_imgs.device)
+        writer_emb = torch.empty(1, self.code_size, device=adaptation_imgs.device)
         writer_emb.normal_()  # mean 0, std 1
         writer_emb.requires_grad = True
 
@@ -399,35 +402,35 @@ class WriterCodeAdaptiveModel(nn.Module):
 
 
 class AdaptationMLP(nn.Module):
-    def __init__(self, d_model: int, emb_size: int, num_hidden: int):
+    def __init__(self, d_model: int, code_size: int, num_hidden: int):
         """
         A multi-layer perceptron used for adapting features based on writer embeddings.
 
         Args:
             d_model (int): size of the feature vectors produced by the feature
                 extractor (e.g. CNN).
-            emb_size (int): size of the writer embeddings
+            code_size (int): size of the writer codes
             num_hidden (int): hidden size for adaptation MLP
         """
         super().__init__()
 
         self.d_model = d_model
-        self.emb_size = emb_size
+        self.code_size = code_size
         self.num_hidden = num_hidden
 
         self.layers = nn.ModuleList(
             [
                 nn.Sequential(
-                    nn.Linear(d_model + emb_size, num_hidden),
+                    nn.Linear(d_model + code_size, num_hidden),
                     nn.ReLU(inplace=True),
                     # BatchNorm1dPermute(num_hidden),
                 ),
                 nn.Sequential(
-                    nn.Linear(num_hidden + emb_size, num_hidden),
+                    nn.Linear(num_hidden + code_size, num_hidden),
                     nn.ReLU(inplace=True),
                     # BatchNorm1dPermute(num_hidden),
                 ),
-                nn.Sequential(nn.Linear(num_hidden + emb_size, d_model)),
+                nn.Sequential(nn.Linear(num_hidden + code_size, d_model)),
             ]
         )
 
@@ -442,7 +445,7 @@ class AdaptationMLP(nn.Module):
 
         Args:
              features (Tensor of shape (N, d_model, *)): features to adapt
-             writer_emb (Tensor of shape (N, emb_size)): writer embeddings, used for adapting the features
+             writer_emb (Tensor of shape (N, code_size)): writer embeddings, used for adapting the features
         Returns:
             Tensor of shape (N, d_model, *), containing transformed features
         """
@@ -481,7 +484,7 @@ class FeatureTransform(nn.Module):
 
         Args:
             features (Tensor of shape (N, d_model, *)): features to adapt
-            writer_emb (Optional[Tensor] of shape (N, emb_size): writer embedding to be
+            writer_emb (Optional[Tensor] of shape (N, code_size): writer embedding to be
                 used for adaptation. If not specified, a learnable feature transformation
                 is used to create the embedding.
         Returns:
