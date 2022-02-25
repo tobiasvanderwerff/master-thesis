@@ -1,5 +1,5 @@
-torch==1.9
-torchvision==0.10
+torch>=1.9
+torchvision>=0.10
 pytorch-lightning>=1.5.1
 editdistance
 torchmetrics>=0.7.0
@@ -11,5 +11,5 @@ sklearn
 scikit-learn
 Pillow
 matplotlib
-learn2learn
+learn2learn>=0.1.7
 rich
