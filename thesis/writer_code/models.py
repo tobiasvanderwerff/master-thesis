@@ -1,4 +1,5 @@
 from functools import partial
+import math
 from typing import Optional, Callable, Tuple, List, Dict, Any
 
 import numpy as np
@@ -127,10 +128,16 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
 
         assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
 
+        # TODO: for validation, cover the full set of images for each writer in the
+        #  batch (rather than limiting it to val_batch_size). Do this by chunking the
+        #  writer-specific data into batches. For even more stable results: use
+        #  multiple adaptation/validatin splits for a single writer and take the
+        #  average performance (e.g. repeated 10 times in MetaHTR paper).
+
+        # TODO: change val_batch_size to max_batch_size
+
         # Split the batch into N different writers, for K-shot adaptation.
-        tasks = split_batch_for_adaptation(
-            batch, self.ways, self.shots, limit_num_samples_per_task=self.val_batch_size
-        )
+        tasks = split_batch_for_adaptation(batch, self.ways, self.shots)
 
         for support_imgs, support_tgts, query_imgs, query_tgts in tasks:
             # Calling `model.clone()` allows updating the module while still allowing
@@ -162,20 +169,27 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
                 # Using the torch `backward()` function rather than PLs
                 # `manual_backward` means that mixed precision cannot be used.
                 (query_loss / self.ways).backward()
+                outer_loss += query_loss
             else:  # val/test
-                with torch.inference_mode():
-                    logits, query_loss = self.base_model_with_adaptation(
-                        query_imgs,
-                        query_tgts,
-                        intermediate_transform=intermediate_transform,
-                        teacher_forcing=False,
-                    )
-                    preds = logits.argmax(-1)
+                n_chunks = math.ceil(query_imgs.size(0) / self.val_batch_size)
+                query_img_chunks = torch.chunk(query_imgs, n_chunks)
+                query_tgt_chunks = torch.chunk(query_tgts, n_chunks)
 
-                # Calculate metrics.
-                self.base_model_with_adaptation.model.cer_metric(preds, query_tgts)
-                self.base_model_with_adaptation.model.wer_metric(preds, query_tgts)
-            outer_loss += query_loss
+                for img, tgt in zip(query_img_chunks, query_tgt_chunks):
+                    with torch.inference_mode():
+                        logits, query_loss = self.base_model_with_adaptation(
+                            img,
+                            tgt,
+                            intermediate_transform=intermediate_transform,
+                            teacher_forcing=False,
+                        )
+                        preds = logits.argmax(-1)
+
+                    # Calculate metrics.
+                    self.base_model_with_adaptation.model.cer_metric(preds, query_tgts)
+                    self.base_model_with_adaptation.model.wer_metric(preds, query_tgts)
+                    outer_loss += query_loss * img.size(0)
+                outer_loss /= query_imgs.size(0)
 
         outer_loss /= self.ways
         inner_loss_avg = np.mean(inner_losses)

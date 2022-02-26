@@ -146,6 +146,12 @@ class MAMLHTR(nn.Module, MAMLLearner):
 
         assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
 
+        # TODO: for validation, cover the full set of images for each writer in the
+        #  batch (rather than limiting it to val_batch_size). Do this by chunking the
+        #  writer-specific data into batches. For even more stable results: use
+        #  multiple adaptation/validatin splits for a single writer and take the
+        #  average performance (e.g. repeated 10 times in MetaHTR paper).
+
         # Split the batch into N different writers, for K-shot adaptation.
         tasks = split_batch_for_adaptation(
             batch, self.ways, self.shots, limit_num_samples_per_task=self.val_batch_size

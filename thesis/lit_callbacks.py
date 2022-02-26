@@ -253,6 +253,13 @@ class LogWorstPredictionsCallback(Callback):
         # Run inference on the validation set.
         torch.set_grad_enabled(True)
         for imgs, targets, writer_ids in dataloader:
+
+            # TODO: for validation, cover the full set of images for each writer in the
+            #  batch (rather than limiting it to val_batch_size). Do this by chunking the
+            #  writer-specific data into batches. For even more stable results: use
+            #  multiple adaptation/validatin splits for a single writer and take the
+            #  average performance (e.g. repeated 10 times in MetaHTR paper).
+
             writer_batches = split_batch_for_adaptation(
                 [imgs, targets, writer_ids],
                 self.ways,
