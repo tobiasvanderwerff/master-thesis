@@ -3,6 +3,7 @@ from pathlib import Path
 
 from pytorch_lightning import Callback
 
+from htr.metrics import CharacterErrorRate, WordErrorRate
 from thesis.lit_callbacks import LogLearnableInnerLoopLearningRates
 from thesis.lit_models import LitMAMLLearner, LitBaseAdaptive
 from thesis.writer_code.lit_callbacks import LogWorstPredictions, LogModelPredictions
@@ -13,6 +14,7 @@ from thesis.writer_code.models import (
 from thesis.util import (
     split_batch_for_adaptation,
     PREDICTIONS_TO_LOG,
+    TrainMode,
 )
 
 from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
@@ -71,6 +73,8 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
     def __init__(
         self,
         base_model: nn.Module,
+        cer_metric: CharacterErrorRate,
+        wer_metric: WordErrorRate,
         feature_size: int,
         num_writers: int,
         code_size: int = 64,
@@ -101,6 +105,8 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         if isinstance(writer_emb_type, str):
             writer_emb_type = WriterEmbeddingType.from_string(writer_emb_type)
 
+        self.cer_metric = cer_metric
+        self.wer_metric = wer_metric
         self.feature_size = feature_size
         self.num_writers = num_writers
         self.code_size = code_size
@@ -144,7 +150,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         adaptation_targets: Tensor,
         inference_imgs: Tensor,
         inference_tgts: Optional[Tensor] = None,
-        mode: str = "train",
+        mode: TrainMode = TrainMode.TRAIN,
     ) -> Tuple[Tensor, Tensor, Tensor]:
         self.eval()
         return self.model(
@@ -157,7 +163,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
 
     def training_step(self, batch, batch_idx):
         imgs, target, writer_ids = batch
-        _, _, loss = self.model(imgs, target, writer_ids, mode="train")
+        _, _, loss = self.model(imgs, target, writer_ids, mode=TrainMode.TRAIN)
         self.opt_step(loss)
         self.log("train_loss", loss, sync_dist=True, prog_bar=True)
         return loss
@@ -171,12 +177,12 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         optimizer.step()
 
     def validation_step(self, batch, batch_idx):
-        return self.val_or_test_step(batch, mode="val")
+        return self.val_or_test_step(batch, mode=TrainMode.VAL)
 
     def test_step(self, batch, batch_idx):
-        return self.val_or_test_step(batch, mode="test")
+        return self.val_or_test_step(batch, mode=TrainMode.TEST)
 
-    def val_or_test_step(self, batch, mode="val"):
+    def val_or_test_step(self, batch, mode=TrainMode.VAL):
         """
         Val/test step. The difference with a train step:
 
@@ -194,7 +200,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             # TODO: see if this can be processed in a single batch (multiple writers)
             torch.set_grad_enabled(True)
             _, preds, query_loss = self(
-                adapt_imgs, adapt_tgts, query_imgs, query_tgts, mode="val"
+                adapt_imgs, adapt_tgts, query_imgs, query_tgts, mode=TrainMode.VAL
             )
             torch.set_grad_enabled(False)
 
@@ -209,7 +215,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             loss += query_loss * query_imgs.size(0)
             n_samples += query_imgs.size(0)
         loss /= n_samples
-        self.log(f"{mode}_loss", loss, sync_dist=True, prog_bar=True)
+        self.log(f"{mode.name.lower()}_loss", loss, sync_dist=True, prog_bar=True)
         return loss
 
     def add_model_specific_callbacks(

@@ -144,12 +144,16 @@ class LogModelPredictions(LogModelPredictionsCallback):
             query_imgs, query_tgts, writer_ids = batch
             _, preds, *_ = pl_module.model(
                 *[t.to(device) for t in [query_imgs, query_tgts, writer_ids]],
-                mode="train",
+                mode=TrainMode.TRAIN,
             )
         else:  # val/test
             support_imgs, support_tgts, query_imgs, query_tgts = batch
+            if pl_module.code_size == 0:
+                # If the writer code is of size 0 (i.e. not used), use the
+                # adaptation batch as the only input.
+                query_imgs, query_tgts = support_imgs, support_tgts
             torch.set_grad_enabled(True)
-            _, preds, *_ = pl_module(*[t.to(device) for t in batch], mode="val")
+            _, preds, *_ = pl_module(*[t.to(device) for t in batch], mode=TrainMode.VAL)
             torch.set_grad_enabled(False)
 
         # Log the results.

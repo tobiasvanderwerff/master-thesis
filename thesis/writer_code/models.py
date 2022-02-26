@@ -106,7 +106,7 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
 
         # Run inference on the adapted model.
         intermediate_transform = partial(
-            self.adaptation, writer_emb=learner.module.writer_code
+            self.adaptation, writer_code=learner.module.writer_code
         )
         with torch.inference_mode():
             logits, _ = self.base_model_with_adaptation(
@@ -149,7 +149,7 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
 
             # Outer loop.
             intermediate_transform = partial(
-                self.adaptation, writer_emb=learner.module.writer_code
+                self.adaptation, writer_code=learner.module.writer_code
             )
             if mode is TrainMode.TRAIN:
                 set_dropout_layers_train(self, self.use_dropout)
@@ -193,7 +193,7 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
         set_batchnorm_layers_train(self, self.use_batch_stats_for_batchnorm)
 
         intermediate_transform = partial(
-            self.adaptation, writer_emb=learner.module.writer_code
+            self.adaptation, writer_code=learner.module.writer_code
         )
         _, support_loss = self.base_model_with_adaptation(
             adaptation_imgs,
@@ -233,7 +233,8 @@ class WriterCodeAdaptiveModel(nn.Module):
             base_model (nn.Module): pre-trained HTR model, frozen during adaptation
             d_model (int): size of the feature vectors produced by the feature
                 extractor (e.g. CNN).
-            code_size (int): size of the writer embeddings
+            code_size (int): size of the writer embeddings. If code_size=0, no code
+                will be used.
             adaptation_num_hidden (int): hidden size for adaptation MLP
             num_writers (int): number of writers in the training set
             learning_rate_emb (float): learning rate used for fast adaptation of an
@@ -258,6 +259,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         self.use_adam_for_adaptation = use_adam_for_adaptation
 
         self.emb_transform = None
+        self.writer_embs = None
         if self.embedding_type == WriterEmbeddingType.LEARNED and code_size > 0:
             self.writer_embs = nn.Embedding(num_writers, code_size)
         if self.embedding_type == WriterEmbeddingType.TRANSFORMED:
@@ -272,7 +274,9 @@ class WriterCodeAdaptiveModel(nn.Module):
                 bidirectional=False,
             )
         self.feature_transform = FeatureTransform(
-            AdaptationMLP(d_model, code_size, adaptation_num_hidden), self.emb_transform
+            AdaptationMLP(d_model, code_size, adaptation_num_hidden),
+            self.emb_transform,
+            generate_code=(embedding_type == WriterEmbeddingType.TRANSFORMED),
         )
         self.base_model_with_adaptation = BaseModelAdaptation(base_model)
 
@@ -287,13 +291,15 @@ class WriterCodeAdaptiveModel(nn.Module):
         self, *args, mode: TrainMode = TrainMode.TRAIN, **kwargs
     ) -> Tuple[Tensor, Tensor, Tensor]:
         if self.embedding_type == WriterEmbeddingType.LEARNED:
-            if mode == TrainMode.TRAIN or self.use_zero_emb:
+            if mode == TrainMode.TRAIN:
                 # Use a pre-trained embedding.
                 logits, loss = self.forward_existing_code(*args, **kwargs)
             else:  # initialize and train a new writer embedding
                 logits, loss = self.forward_new_code(*args, **kwargs)
-        else:  # WriterEmbeddingType.TRANSFORMED
+        elif self.embedding_type == WriterEmbeddingType.TRANSFORMED:
             logits, loss = self.forward_transform(*args, **kwargs)
+        else:
+            raise ValueError(f"Unrecognized emb type: {mode}")
         sampled_ids = logits.argmax(-1)
         return logits, sampled_ids, loss
 
@@ -312,17 +318,18 @@ class WriterCodeAdaptiveModel(nn.Module):
         return logits, loss
 
     def forward_existing_code(
-        self, imgs: Tensor, target: Tensor, writer_ids: Tensor
+        self, imgs: Tensor, target: Tensor, writer_ids: Tensor, *args, **kwargs
     ) -> Tuple[Tensor, Tensor]:
         """Perform adaptation using an existing writer code."""
         # Load the writer code.
-        if self.use_zero_emb:
-            writer_emb = torch.zeros(imgs.size(0), self.code_size, device=imgs.device)
-        else:
-            writer_emb = self.writer_embs(writer_ids)  # (N, code_size)
+        writer_code = None
+        if self.code_size > 0:
+            writer_code = self.writer_embs(writer_ids)  # (N, code_size)
 
         # Run inference using the writer code.
-        intermediate_transform = partial(self.feature_transform, writer_emb=writer_emb)
+        intermediate_transform = partial(
+            self.feature_transform, writer_code=writer_code
+        )
         logits, loss = self.base_model_with_adaptation(
             imgs,
             target,
@@ -339,7 +346,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         inference_tgts: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
         """
-        Create a writer embedding based on a set of adaptation images, and run
+        Create a writer code based on a set of adaptation images, and run
         inference on another set.
 
         Args:
@@ -349,10 +356,18 @@ class WriterCodeAdaptiveModel(nn.Module):
             inference_tgts (Optional[Tensor]): targets for `inference_imgs`
         """
         # Train a writer code.
-        writer_code = self.new_writer_code(adapt_imgs, adapt_tgts)
+        writer_code = None
+        if self.code_size > 0:
+            writer_code = self.new_writer_code(adapt_imgs, adapt_tgts)
+        else:
+            # If the writer code is of size 0 (i.e. not used), use the
+            # adaptation batch as the only input.
+            inference_imgs, inference_tgts = adapt_imgs, adapt_tgts
 
         # Run inference using the writer code.
-        intermediate_transform = partial(self.feature_transform, writer_emb=writer_code)
+        intermediate_transform = partial(
+            self.feature_transform, writer_code=writer_code
+        )
         with torch.inference_mode():
             logits, loss = self.base_model_with_adaptation(
                 inference_imgs,
@@ -372,19 +387,19 @@ class WriterCodeAdaptiveModel(nn.Module):
         passes on a batch of adaptation data in order to train a new writer
         embedding.
         """
-        writer_emb = torch.empty(1, self.code_size, device=adaptation_imgs.device)
-        writer_emb.normal_()  # mean 0, std 1
-        writer_emb.requires_grad = True
+        writer_code = torch.empty(1, self.code_size, device=adaptation_imgs.device)
+        writer_code.normal_()  # mean 0, std 1
+        writer_code.requires_grad = True
 
         if self.use_adam_for_adaptation:
-            optimizer = optim.Adam(iter([writer_emb]), lr=self.learning_rate_emb)
+            optimizer = optim.Adam(iter([writer_code]), lr=self.learning_rate_emb)
         else:
             # Plain SGD, i.e. update rule `g = g - lr * grad(loss)`
-            optimizer = optim.SGD(iter([writer_emb]), lr=self.learning_rate_emb)
+            optimizer = optim.SGD(iter([writer_code]), lr=self.learning_rate_emb)
 
         for _ in range(self.adaptation_opt_steps):
             intermediate_transform = partial(
-                self.feature_transform, writer_emb=writer_emb
+                self.feature_transform, writer_emb=writer_code
             )
             _, loss = self.base_model_with_adaptation(
                 adaptation_imgs,
@@ -394,17 +409,17 @@ class WriterCodeAdaptiveModel(nn.Module):
             )
 
             optimizer.zero_grad()
-            loss.backward(inputs=writer_emb)
+            loss.backward(inputs=writer_code)
             optimizer.step()  # update the embedding
-        writer_emb.detach_()
+        writer_code.detach_()
 
-        return writer_emb
+        return writer_code
 
 
 class AdaptationMLP(nn.Module):
     def __init__(self, d_model: int, code_size: int, num_hidden: int):
         """
-        A multi-layer perceptron used for adapting features based on writer embeddings.
+        A multi-layer perceptron used for adapting features based on writer codes.
 
         Args:
             d_model (int): size of the feature vectors produced by the feature
@@ -434,7 +449,7 @@ class AdaptationMLP(nn.Module):
             ]
         )
 
-    def forward(self, features: Tensor, writer_emb: Tensor) -> Tensor:
+    def forward(self, features: Tensor, writer_code: Optional[Tensor] = None) -> Tensor:
         """
         Adapt features based on a writer code (embedding).
 
@@ -445,18 +460,21 @@ class AdaptationMLP(nn.Module):
 
         Args:
              features (Tensor of shape (N, d_model, *)): features to adapt
-             writer_emb (Tensor of shape (N, code_size)): writer embeddings, used for adapting the features
+             writer_code (Optional tensor of shape (N, code_size)): writer codes,
+                used for adapting the features
         Returns:
             Tensor of shape (N, d_model, *), containing transformed features
         """
         features = features.movedim(1, -1)  # (N, *, d_model)
-        extra_dims = features.ndim - writer_emb.ndim
-        for _ in range(extra_dims):
-            writer_emb = writer_emb.unsqueeze(1)
-        writer_emb = writer_emb.expand(*features.shape[:-1], -1)
+        if writer_code is not None:
+            extra_dims = features.ndim - writer_code.ndim
+            for _ in range(extra_dims):
+                writer_code = writer_code.unsqueeze(1)
+            writer_code = writer_code.expand(*features.shape[:-1], -1)
         res = features
         for layer in self.layers:
-            res = torch.cat((res, writer_emb), -1)
+            if writer_code is not None:
+                res = torch.cat((res, writer_code), -1)
             res = layer(res)
         return (res + features).movedim(-1, 1)
 
@@ -466,6 +484,7 @@ class FeatureTransform(nn.Module):
         self,
         adaptation_transform: nn.Module,
         emb_transform: Optional[nn.Module] = None,
+        generate_code: bool = False,
     ):
         """
         Args:
@@ -473,32 +492,35 @@ class FeatureTransform(nn.Module):
                 writer embedding to adapted features
             emb_transform (Optional[nn.Module]): transformation from features to a
                 writer embedding.
+            generate_code (bool): whether to use a learned transform to create a
+                write code.
         """
         super().__init__()
         self.emb_transform = emb_transform
         self.adaptation_transform = adaptation_transform
+        self.generate_code = generate_code
 
-    def forward(self, features: Tensor, writer_emb: Optional[Tensor] = None):
+    def forward(self, features: Tensor, writer_code: Optional[Tensor] = None):
         """
         Transform features using a writer code.
 
         Args:
             features (Tensor of shape (N, d_model, *)): features to adapt
-            writer_emb (Optional[Tensor] of shape (N, code_size): writer embedding to be
+            writer_code (Optional[Tensor] of shape (N, code_size): writer embedding to be
                 used for adaptation. If not specified, a learnable feature transformation
                 is used to create the embedding.
         Returns:
             Tensor of shape (N, d_model, *) containing adapted features
         """
-        if writer_emb is None:
+        if writer_code is None and self.generate_code:
             # Transform features to create writer embedding.
             # Average across spatial dimensions.
             # h_feat = features.size(2)
             # feat_v = F.max_pool2d(feat, kernel_size=(h_feat, 1), stride=1, padding=0)
             # feat_v = feat_v.squeeze(2)  # bsz * C * W
             feats_lstm = features.flatten(2, -1).permute(0, 2, 1).contiguous()
-            writer_emb = self.emb_transform(feats_lstm)[0][:, -1, :]
-        return self.adaptation_transform(features, writer_emb)
+            writer_code = self.emb_transform(feats_lstm)[0][:, -1, :]
+        return self.adaptation_transform(features, writer_code)
 
 
 class BaseModelAdaptation(nn.Module):
