@@ -186,8 +186,8 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
                         preds = logits.argmax(-1)
 
                     # Calculate metrics.
-                    self.base_model_with_adaptation.model.cer_metric(preds, query_tgts)
-                    self.base_model_with_adaptation.model.wer_metric(preds, query_tgts)
+                    self.base_model_with_adaptation.model.cer_metric(preds, tgt)
+                    self.base_model_with_adaptation.model.wer_metric(preds, tgt)
                     outer_loss += query_loss * img.size(0)
                 outer_loss /= query_imgs.size(0)
 
