@@ -307,6 +307,8 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             model = LitWriterCodeAdaptiveModel.load_from_checkpoint(
                 checkpoint_path,
                 strict=False,
+                cer_metric=base_model.model.cer_metric,
+                wer_metric=base_model.model.wer_metric,
                 feature_size=feature_size,
                 base_model=base_model.model,
                 base_model_arch=base_model_arch,
