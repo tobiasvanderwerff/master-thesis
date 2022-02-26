@@ -196,7 +196,13 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         writer_batches = split_batch_for_adaptation(
             batch, self.ways, self.shots, limit_num_samples_per_task=self.val_batch_size
         )
+
         for adapt_imgs, adapt_tgts, query_imgs, query_tgts in writer_batches:
+            if self.code_size == 0:
+                # If the writer code is of size 0 (i.e. not used), use the
+                # adaptation batch as the only input.
+                query_imgs, query_tgts = adapt_imgs, adapt_tgts
+
             # TODO: see if this can be processed in a single batch (multiple writers)
             torch.set_grad_enabled(True)
             _, preds, query_loss = self(
