@@ -35,10 +35,6 @@ def main(args):
 
     seed_everything(args.seed)
 
-    assert (
-        args.val_batch_size >= args.shots * 2
-    ), "For K-shot adaptation, validation batch size should be at least 2K."
-
     # Initalize logging/cache directories.
     log_dir = args.log_dir
     if log_dir is None:
@@ -159,13 +155,14 @@ def main(args):
             save_weights_only=True,
         ),
     ]
-    callbacks = learner.add_model_specific_callbacks(
-        callbacks,
-        shots=args.shots,
-        ways=args.ways,
-        label_encoder=ds_train.label_enc,
-        is_train=not (args.validate or args.test),
-    )
+    # TODO: fix callbacks
+    # callbacks = learner.add_model_specific_callbacks(
+    #     callbacks,
+    #     shots=args.shots,
+    #     ways=args.ways,
+    #     label_encoder=ds_train.label_enc,
+    #     is_train=not (args.validate or args.test),
+    # )
     if args.early_stopping_patience != -1:
         callbacks.append(
             EarlyStopping(

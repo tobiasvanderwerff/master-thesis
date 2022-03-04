@@ -20,6 +20,7 @@ from thesis.util import (
     split_batch_for_adaptation,
     set_dropout_layers_train,
     set_batchnorm_layers_train,
+    chunk_batch,
 )
 
 
@@ -47,7 +48,7 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
         adaptation_num_hidden: int,
         ways: int = 8,
         shots: int = 16,
-        val_batch_size: int = 64,
+        max_val_batch_size: int = 64,
         use_batch_stats_for_batchnorm: bool = False,
         use_dropout: bool = False,
         num_inner_steps: int = 1,
@@ -60,7 +61,7 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
         self.adaptation_num_hidden = adaptation_num_hidden
         self.ways = ways
         self.shots = shots
-        self.val_batch_size = val_batch_size
+        self.max_val_batch_size = max_val_batch_size
         self.use_batch_stats_for_batchnorm = use_batch_stats_for_batchnorm
         self.use_dropout = use_dropout
         self.num_inner_steps = num_inner_steps
@@ -122,24 +123,22 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
     def meta_learn(
         self, batch: Tuple[Tensor, Tensor, Tensor], mode: TrainMode = TrainMode.TRAIN
     ) -> Tuple[Tensor, float, Optional[Dict[int, List]]]:
-        outer_loss = 0.0
+        outer_loss, n_query_images = 0.0, 0
         inner_losses = []
         imgs, target, writer_ids = batch
 
         assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
 
-        # TODO: for validation, cover the full set of images for each writer in the
-        #  batch (rather than limiting it to val_batch_size). Do this by chunking the
-        #  writer-specific data into batches. For even more stable results: use
-        #  multiple adaptation/validatin splits for a single writer and take the
-        #  average performance (e.g. repeated 10 times in MetaHTR paper).
-
-        # TODO: change val_batch_size to max_batch_size
+        # TODO: consider, for even more stable results: use multiple
+        #  adaptation/validatin splits for a single writer and take the average
+        #  performance (e.g. repeated 10 times in MetaHTR paper).
 
         # Split the batch into N different writers, for K-shot adaptation.
         tasks = split_batch_for_adaptation(batch, self.ways, self.shots)
 
         for support_imgs, support_tgts, query_imgs, query_tgts in tasks:
+            n_query_images += query_imgs.size(0)
+
             # Calling `model.clone()` allows updating the module while still allowing
             # computation of derivatives of the new modules' parameters w.r.t. the
             # original parameters.
@@ -171,9 +170,11 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
                 (query_loss / self.ways).backward()
                 outer_loss += query_loss
             else:  # val/test
-                n_chunks = math.ceil(query_imgs.size(0) / self.val_batch_size)
-                query_img_chunks = torch.chunk(query_imgs, n_chunks)
-                query_tgt_chunks = torch.chunk(query_tgts, n_chunks)
+                # The set of writer examples may be too large too fit into a single
+                # batch. Therefore, chunk the data and process each chunk individually.
+                query_img_chunks, query_tgt_chunks = chunk_batch(
+                    query_imgs, query_tgts, self.max_val_batch_size
+                )
 
                 for img, tgt in zip(query_img_chunks, query_tgt_chunks):
                     with torch.inference_mode():
@@ -189,9 +190,8 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
                     self.base_model_with_adaptation.model.cer_metric(preds, tgt)
                     self.base_model_with_adaptation.model.wer_metric(preds, tgt)
                     outer_loss += query_loss * img.size(0)
-                outer_loss /= query_imgs.size(0)
 
-        outer_loss /= self.ways
+        outer_loss /= n_query_images
         inner_loss_avg = np.mean(inner_losses)
 
         return outer_loss, inner_loss_avg, None
@@ -238,6 +238,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         learning_rate_emb: float,
         ways: int = 8,
         shots: int = 8,
+        max_val_batch_size: int = 64,
         embedding_type: WriterEmbeddingType = WriterEmbeddingType.LEARNED,
         adaptation_opt_steps: int = 1,
         use_adam_for_adaptation: bool = False,
@@ -255,6 +256,7 @@ class WriterCodeAdaptiveModel(nn.Module):
                 initial embedding during val/test
             ways (int): ways
             shots (int): shots
+            max_val_batch_size (int): maximum val batch size
             embedding_type (WriterEmbeddingType): type of writer embedding used
             adaptation_opt_steps (int): number of optimization steps during adaptation
             use_adam_for_adaptation (bool): whether to use Adam during adaptation
@@ -268,6 +270,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         self.learning_rate_emb = learning_rate_emb
         self.ways = ways
         self.shots = shots
+        self.max_val_batch_size = max_val_batch_size
         self.embedding_type = embedding_type
         self.adaptation_opt_steps = adaptation_opt_steps
         self.use_adam_for_adaptation = use_adam_for_adaptation
@@ -378,18 +381,32 @@ class WriterCodeAdaptiveModel(nn.Module):
             # adaptation batch as the only input.
             inference_imgs, inference_tgts = adapt_imgs, adapt_tgts
 
+        # The set of writer examples may be too large too fit into a single
+        # batch. Therefore, chunk the data and process each chunk individually.
+        # TODO: this does not work if inference_tgts=None
+        inf_img_chunks, inf_tgt_chunks = chunk_batch(
+            inference_imgs, inference_tgts, self.max_val_batch_size
+        )
+
         # Run inference using the writer code.
+        inference_loss = 0.0
+        all_logits = []
         intermediate_transform = partial(
             self.feature_transform, writer_code=writer_code
         )
-        with torch.inference_mode():
-            logits, loss = self.base_model_with_adaptation(
-                inference_imgs,
-                inference_tgts,
-                intermediate_transform=intermediate_transform,
-                teacher_forcing=False,
-            )
-        return logits, loss
+        for img, tgt in zip(inf_img_chunks, inf_tgt_chunks):
+            with torch.inference_mode():
+                logits, loss = self.base_model_with_adaptation(
+                    img,
+                    tgt,
+                    intermediate_transform=intermediate_transform,
+                    teacher_forcing=False,
+                )
+            all_logits.append(logits)
+            inference_loss += loss * img.size(0)
+        inference_loss /= inference_imgs.size(0)
+        logits = torch.cat(all_logits, 0)
+        return logits, inference_loss
 
     def new_writer_code(
         self, adaptation_imgs: Tensor, adaptation_targets: Tensor

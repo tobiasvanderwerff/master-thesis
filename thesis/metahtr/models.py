@@ -1,4 +1,5 @@
 from functools import partial
+import math
 from typing import Optional, Dict, Tuple, List, Callable, Any
 from collections import defaultdict
 
@@ -9,6 +10,7 @@ from thesis.util import (
     split_batch_for_adaptation,
     set_batchnorm_layers_train,
     set_dropout_layers_train,
+    chunk_batch,
 )
 
 from htr.models.sar.sar import ShowAttendRead
@@ -30,7 +32,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
         shots: int = 16,
         inner_lr: float = 0.001,
         instance_weights_fn: Optional[Callable] = None,
-        val_batch_size: int = 64,
+        max_val_batch_size: int = 128,
         use_batch_stats_for_batchnorm: bool = False,
         use_dropout: bool = False,
         num_inner_steps: int = 1,
@@ -69,7 +71,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
         self.shots = shots
         self.inner_lr = inner_lr
         self.instance_weights_fn = instance_weights_fn
-        self.val_batch_size = val_batch_size
+        self.max_val_batch_size = max_val_batch_size
         self.use_batch_stats_for_batchnorm = use_batch_stats_for_batchnorm
         self.use_dropout = use_dropout
         self.num_inner_steps = num_inner_steps
@@ -138,7 +140,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
     def meta_learn(
         self, batch: Tuple[Tensor, Tensor, Tensor], mode: TrainMode = TrainMode.TRAIN
     ) -> Tuple[Tensor, float, Optional[Dict[int, List]]]:
-        outer_loss = 0.0
+        outer_loss, n_query_images = 0.0, 0
         inner_losses = []
         char_to_inst_weights = defaultdict(list)
 
@@ -146,18 +148,12 @@ class MAMLHTR(nn.Module, MAMLLearner):
 
         assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
 
-        # TODO: for validation, cover the full set of images for each writer in the
-        #  batch (rather than limiting it to val_batch_size). Do this by chunking the
-        #  writer-specific data into batches. For even more stable results: use
-        #  multiple adaptation/validatin splits for a single writer and take the
-        #  average performance (e.g. repeated 10 times in MetaHTR paper).
-
         # Split the batch into N different writers, for K-shot adaptation.
-        tasks = split_batch_for_adaptation(
-            batch, self.ways, self.shots, limit_num_samples_per_task=self.val_batch_size
-        )
+        tasks = split_batch_for_adaptation(batch, self.ways, self.shots)
 
         for support_imgs, support_tgts, query_imgs, query_tgts in tasks:
+            n_query_images += query_imgs.size(0)
+
             # Calling `model.clone()` allows updating the module while still allowing
             # computation of derivatives of the new modules' parameters w.r.t. the
             # original parameters.
@@ -192,16 +188,23 @@ class MAMLHTR(nn.Module, MAMLLearner):
                 # `manual_backward` means that mixed precision cannot be used.
                 (query_loss / self.ways).backward()
             else:  # val/test
-                with torch.inference_mode():
-                    _, preds, query_loss = learner(query_imgs, query_tgts)
+                # The set of writer examples may be too large too fit into a single
+                # batch. Therefore, chunk the data and process each chunk individually.
+                query_img_chunks, query_tgt_chunks = chunk_batch(
+                    query_imgs, query_tgts, self.max_val_batch_size
+                )
 
-                # Calculate metrics.
-                self.gbml.module.cer_metric(preds, query_tgts)
-                self.gbml.module.wer_metric(preds, query_tgts)
-            outer_loss += query_loss
+                for img, tgt in zip(query_img_chunks, query_tgt_chunks):
+                    with torch.inference_mode():
+                        _, preds, query_loss = learner(img, tgt)
+
+                    # Calculate metrics.
+                    self.gbml.module.cer_metric(preds, tgt)
+                    self.gbml.module.wer_metric(preds, tgt)
+                    outer_loss += query_loss * img.size(0)
             loss_fn.reduction = reduction
 
-        outer_loss /= self.ways
+        outer_loss /= n_query_images
         inner_loss_avg = np.mean(inner_losses)
 
         return outer_loss, inner_loss_avg, char_to_inst_weights

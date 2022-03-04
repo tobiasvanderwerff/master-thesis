@@ -1,6 +1,7 @@
 from copy import copy
 from enum import Enum
 from functools import partial
+import math
 from pathlib import Path
 import shutil
 from typing import Optional, Tuple, List, Sequence, Any, Union, Dict
@@ -240,6 +241,15 @@ def freeze(model: nn.Module):
 def get_parameter_names(checkpoint_path: Union[str, Path]):
     ckpt = torch.load(checkpoint_path, map_location=lambda storage, loc: storage)
     return [wn for wn in ckpt["state_dict"].keys()]
+
+
+def chunk_batch(
+    imgs: Tensor, targets: Tensor, max_batch_size: int
+) -> Tuple[Sequence[Tensor], Sequence[Tensor]]:
+    n_chunks = math.ceil(imgs.size(0) / max_batch_size)
+    query_img_chunks = torch.chunk(imgs, n_chunks)
+    query_tgt_chunks = torch.chunk(targets, n_chunks)
+    return query_img_chunks, query_tgt_chunks
 
 
 def split_batch_for_adaptation(

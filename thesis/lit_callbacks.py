@@ -264,7 +264,7 @@ class LogWorstPredictionsCallback(Callback):
                 [imgs, targets, writer_ids],
                 self.ways,
                 self.shots,
-                limit_num_samples_per_task=pl_module.val_batch_size,
+                # limit_num_samples_per_task=pl_module.max_val_batch_size,
             )
             for adapt_imgs, adapt_tgts, query_imgs, query_tgts in writer_batches:
                 args = [t.to(device) for t in [adapt_imgs, adapt_tgts, query_imgs]]

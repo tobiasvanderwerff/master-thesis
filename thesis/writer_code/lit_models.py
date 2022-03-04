@@ -15,6 +15,7 @@ from thesis.util import (
     split_batch_for_adaptation,
     PREDICTIONS_TO_LOG,
     TrainMode,
+    chunk_batch,
 )
 
 from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
@@ -86,6 +87,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         weight_decay: float = 0.0001,
         adaptation_opt_steps: int = 1,
         use_adam_for_adaptation: bool = False,
+        max_val_batch_size: int = 128,
         prms_to_log: Optional[Dict[str, Union[str, float, int]]] = None,
         **kwargs,
     ):
@@ -98,6 +100,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             num_writers (int): number of writers in the training set
             writer_emb_type (Union[WriterEmbeddingType, str]): type of writer embedding
                 used
+            max_val_batch_size (int): maximum val batch size
         """
         super().__init__(**kwargs)
 
@@ -118,6 +121,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         self.weight_decay = weight_decay
         self.adaptation_opt_steps = adaptation_opt_steps
         self.use_adam_for_adaptation = use_adam_for_adaptation
+        self.max_val_batch_size = max_val_batch_size
 
         self.ignore_index = base_model.pad_tkn_idx
         self.automatic_optimization = False
@@ -132,6 +136,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             embedding_type=writer_emb_type,
             adaptation_opt_steps=adaptation_opt_steps,
             use_adam_for_adaptation=use_adam_for_adaptation,
+            max_val_batch_size=max_val_batch_size,
         )
 
         self.save_hyperparameters(
@@ -193,9 +198,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         - Teacher forcing is not used.
         """
         loss, n_samples = 0, 0
-        writer_batches = split_batch_for_adaptation(
-            batch, self.ways, self.shots, limit_num_samples_per_task=self.val_batch_size
-        )
+        writer_batches = split_batch_for_adaptation(batch, self.ways, self.shots)
 
         for adapt_imgs, adapt_tgts, query_imgs, query_tgts in writer_batches:
             if self.code_size == 0:
@@ -203,7 +206,6 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
                 # adaptation batch as the only input.
                 query_imgs, query_tgts = adapt_imgs, adapt_tgts
 
-            # TODO: see if this can be processed in a single batch (multiple writers)
             torch.set_grad_enabled(True)
             _, preds, query_loss = self(
                 adapt_imgs, adapt_tgts, query_imgs, query_tgts, mode=TrainMode.VAL

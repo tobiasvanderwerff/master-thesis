@@ -41,7 +41,7 @@ class LitBaseAdaptive(pl.LightningModule):
         taskset_test: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
         learning_rate: float = 0.0001,
         weight_decay: float = 0.0,
-        val_batch_size: int = 64,
+        max_val_batch_size: int = 128,
         grad_clip: Optional[float] = None,
         num_workers: int = 0,
         max_epochs: Optional[int] = None,
@@ -61,7 +61,7 @@ class LitBaseAdaptive(pl.LightningModule):
                 learn2learn test taskset
             learning_rate (float): learning rate
             weight_decay (float): weight decay
-            val_batch_size (int): val batch size
+            max_val_batch_size (int): maximum val batch size
             grad_clip (int): maximum L2-norm of gradients before clipping occurs
             num_workers (int): how many sub-processes to use for data loading
             max_epochs (Optional[int]): number of epochs the model will be trained.
@@ -83,7 +83,7 @@ class LitBaseAdaptive(pl.LightningModule):
         self.taskset_test = taskset_test
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
-        self.val_batch_size = val_batch_size
+        self.max_val_batch_size = max_val_batch_size
         self.grad_clip = grad_clip
         self.num_workers = num_workers
         self.max_epochs = max_epochs
@@ -91,7 +91,6 @@ class LitBaseAdaptive(pl.LightningModule):
 
         self.save_hyperparameters(
             "learning_rate",
-            "val_batch_size",
             "grad_clip",
             "max_epochs",
             "use_cosine_lr_scheduler",
@@ -160,10 +159,12 @@ class LitBaseAdaptive(pl.LightningModule):
         parser.add_argument("--learning_rate", type=float, default=0.0001)
         parser.add_argument("--weight_decay", type=float, default=0.0)
         parser.add_argument(
-            "--val_batch_size",
+            "--max_val_batch_size",
             type=int,
-            default=64,
-            help="Number of samples per writer per batch for val/test",
+            default=128,
+            help="Maximum batch size for validation. If the number of samples for a "
+            "writer exceeds this value, the data is split into chunks "
+            "of size `max_val_batch_size`.",
         )
         parser.add_argument(
             "--grad_clip", type=float, default=None, help="Max gradient norm."
