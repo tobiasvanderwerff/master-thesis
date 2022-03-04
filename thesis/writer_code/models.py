@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 import learn2learn as l2l
 from torch import Tensor
 
@@ -405,7 +406,11 @@ class WriterCodeAdaptiveModel(nn.Module):
             all_logits.append(logits)
             inference_loss += loss * img.size(0)
         inference_loss /= inference_imgs.size(0)
-        logits = torch.cat(all_logits, 0)
+        max_seq_len = max(t.size(1) for t in all_logits)
+        logits = torch.cat(
+            [F.pad(t, (0, 0, 0, max_seq_len - t.size(1))) for t in all_logits], 0
+        )
+        # TODO: is it okay to pad logits with zeros?
         return logits, inference_loss
 
     def new_writer_code(
