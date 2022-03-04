@@ -430,7 +430,7 @@ class WriterCodeAdaptiveModel(nn.Module):
 
         for _ in range(self.adaptation_opt_steps):
             intermediate_transform = partial(
-                self.feature_transform, writer_emb=writer_code
+                self.feature_transform, writer_code=writer_code
             )
             _, loss = self.base_model_with_adaptation(
                 adaptation_imgs,
