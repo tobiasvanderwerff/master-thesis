@@ -155,14 +155,14 @@ def main(args):
             save_weights_only=True,
         ),
     ]
-    # TODO: fix callbacks
-    # callbacks = learner.add_model_specific_callbacks(
-    #     callbacks,
-    #     shots=args.shots,
-    #     ways=args.ways,
-    #     label_encoder=ds_train.label_enc,
-    #     is_train=not (args.validate or args.test),
-    # )
+    # TODO: fix worst prediction logging callback to work with chunks.
+    callbacks = learner.add_model_specific_callbacks(
+        callbacks,
+        shots=args.shots,
+        ways=args.ways,
+        label_encoder=ds_train.label_enc,
+        is_train=not (args.validate or args.test),
+    )
     if args.early_stopping_patience != -1:
         callbacks.append(
             EarlyStopping(
