@@ -33,7 +33,7 @@ class MAMLHTRCheckpointIO(TorchCheckpointIO):
         state_dict = checkpoint["state_dict"]
         for new in state_dict.keys():
             for old in self.base_model_params:
-                if new.endswith(old):
+                if new.endswith(old) or new.endswith(".".join(old.split(".")[1:])):
                     new_to_old[new] = old
                     break
         assert len(new_to_old) == len(self.base_model_params)
