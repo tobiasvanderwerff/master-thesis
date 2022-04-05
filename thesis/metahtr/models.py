@@ -187,6 +187,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
                 # Using the torch `backward()` function rather than PLs
                 # `manual_backward` means that mixed precision cannot be used.
                 (query_loss / self.ways).backward()
+                outer_loss += query_loss
             else:  # val/test
                 # The set of writer examples may be too large too fit into a single
                 # batch. Therefore, chunk the data and process each chunk individually.

@@ -399,6 +399,7 @@ class LitMAMLLearner(LitBaseAdaptive):
         parser.add_argument("--shots", type=int, default=16)
         parser.add_argument("--ways", type=int, default=8)
         parser.add_argument("--num_inner_steps", type=int, default=1)
+        parser.add_argument("--inner_lr", type=float, default=0.001)
         parser.add_argument(
             "--use_batch_stats_for_batchnorm",
             action="store_true",

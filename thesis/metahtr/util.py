@@ -2,7 +2,7 @@ import torch.nn as nn
 import learn2learn as l2l
 
 
-AVAILABLE_MODELS = ["LitMetaHTR", "LitMetaHTR", "LitWriterCodeAdaptiveModelMAML"]
+AVAILABLE_MODELS = ["LitMAMLLearner", "LitMetaHTR", "LitWriterCodeAdaptiveModelMAML"]
 
 
 class LayerWiseLRTransform:
