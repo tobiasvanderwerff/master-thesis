@@ -101,7 +101,7 @@ class LitMetaHTR(LitMAMLLearner):
     def add_model_specific_args(parent_parser):
         parser = parent_parser.add_argument_group("MetaHTR")
         parser.add_argument("--inst_mlp_hidden_size", type=int, default=8)
-        parser.add_argument("--initial_inner_lr", type=float, default=0.001)
+        parser.add_argument("--initial_inner_lr", type=float, default=0.0001)
         parser.add_argument(
             "--use_instance_weights",
             action="store_true",
