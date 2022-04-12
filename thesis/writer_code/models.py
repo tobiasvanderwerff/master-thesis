@@ -159,7 +159,7 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
                 self.adaptation, writer_code=learner.module.writer_code
             )
             if mode is TrainMode.TRAIN:
-                set_dropout_layers_train(self, self.use_dropout)
+                set_dropout_layers_train(learner, self.use_dropout)
                 _, query_loss = self.base_model_with_adaptation(
                     query_imgs,
                     query_tgts,
@@ -204,8 +204,8 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
         adaptation_targets: Tensor,
     ) -> Tuple[Any, float, Optional[Tensor]]:
         """Takes a single gradient step on a batch of data."""
-        set_dropout_layers_train(self, False)  # disable dropout
-        set_batchnorm_layers_train(self, self.use_batch_stats_for_batchnorm)
+        set_dropout_layers_train(learner, False)  # disable dropout
+        set_batchnorm_layers_train(learner, self.use_batch_stats_for_batchnorm)
 
         intermediate_transform = partial(
             self.adaptation, writer_code=learner.module.writer_code

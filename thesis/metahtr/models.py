@@ -179,7 +179,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
             reduction = loss_fn.reduction
             loss_fn.reduction = "mean"
             if mode is TrainMode.TRAIN:
-                set_dropout_layers_train(self, self.use_dropout)
+                set_dropout_layers_train(learner, self.use_dropout)
                 with torch.backends.cudnn.flags(enabled=self.use_cudnn):
                     _, query_loss = learner.module.forward_teacher_forcing(
                         query_imgs, query_tgts
@@ -220,8 +220,8 @@ class MAMLHTR(nn.Module, MAMLLearner):
         Takes a single gradient step on a batch of data.
         """
         learner.train()
-        set_dropout_layers_train(self, False)  # disable dropout
-        set_batchnorm_layers_train(self, self.use_batch_stats_for_batchnorm)
+        set_dropout_layers_train(learner, False)  # disable dropout
+        set_batchnorm_layers_train(learner, self.use_batch_stats_for_batchnorm)
 
         with torch.backends.cudnn.flags(enabled=self.use_cudnn):
             _, support_loss_unreduced = learner.module.forward_teacher_forcing(
