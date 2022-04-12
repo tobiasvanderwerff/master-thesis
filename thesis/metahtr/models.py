@@ -95,9 +95,6 @@ class MAMLHTR(nn.Module, MAMLLearner):
             )
 
         self.ignore_index = self.gbml.module.pad_tkn_idx
-        # Disabling CuDNN is necessary for RNNs due to limitations in the CuDNN API
-        # for double backward passes.
-        self.use_cudnn = not isinstance(base_model, ShowAttendRead)
         self.char_to_avg_inst_weight = None
 
     def forward(
@@ -180,10 +177,9 @@ class MAMLHTR(nn.Module, MAMLLearner):
             loss_fn.reduction = "mean"
             if mode is TrainMode.TRAIN:
                 set_dropout_layers_train(learner, self.use_dropout)
-                with torch.backends.cudnn.flags(enabled=self.use_cudnn):
-                    _, query_loss = learner.module.forward_teacher_forcing(
-                        query_imgs, query_tgts
-                    )
+                _, query_loss = learner.module.forward_teacher_forcing(
+                    query_imgs, query_tgts
+                )
                 # Using the torch `backward()` function rather than PLs
                 # `manual_backward` means that mixed precision cannot be used.
                 (query_loss / self.ways).backward()
@@ -223,10 +219,9 @@ class MAMLHTR(nn.Module, MAMLLearner):
         set_dropout_layers_train(learner, False)  # disable dropout
         set_batchnorm_layers_train(learner, self.use_batch_stats_for_batchnorm)
 
-        with torch.backends.cudnn.flags(enabled=self.use_cudnn):
-            _, support_loss_unreduced = learner.module.forward_teacher_forcing(
-                adaptation_imgs, adaptation_targets
-            )
+        _, support_loss_unreduced = learner.module.forward_teacher_forcing(
+            adaptation_imgs, adaptation_targets
+        )
 
         ignore_mask = adaptation_targets == self.ignore_index
         instance_weights = None

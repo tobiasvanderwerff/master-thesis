@@ -23,6 +23,7 @@ from thesis.util import (
 from htr.data import IAMDataset
 from htr.util import LitProgressBar
 
+import torch
 from pytorch_lightning import seed_everything, Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, ModelSummary
 from pytorch_lightning.plugins import DDPPlugin
@@ -32,6 +33,11 @@ def main(args):
 
     print(f"Main model used: {str(args.main_model_arch)}")
     print(f"Base model used: {str(args.base_model_arch).upper()}")
+
+    if args.base_model_arch == "sar":
+        # Disable CuDDN if using LSTM base model (SAR). This is neseccary because CuDNN
+        # does not support calculating second derivatives for RNNs.
+        torch.backends.cudnn.enabled = False
 
     seed_everything(args.seed)
 
