@@ -207,7 +207,15 @@ class LitMAMLLearner(LitBaseAdaptive):
         self.use_instance_weights = False
         self.char_to_avg_inst_weight = None
 
-        self.save_hyperparameters("use_instance_weights")
+        self.save_hyperparameters(
+            "ways",
+            "shots",
+            "inner_lr",
+            "use_instance_weights",
+            "use_batch_stats_for_batchnorm",
+            "use_dropout",
+            "num_inner_steps",
+        )
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
