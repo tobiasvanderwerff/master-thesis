@@ -100,23 +100,23 @@ def main(args):
     # Initialize learn2learn tasksets.
     shots, ways = args.shots, args.ways
     taskset_train = prepare_l2l_taskset(
-        ds_train,
-        ways,
-        cache_dir,
-        cache_dir / f"train_l2l_bookkeeping_shots={shots}.pkl",
+        dataset=ds_train,
+        ways=ways,
+        bookkeeping_path=cache_dir / f"train_l2l_bookkeeping_shots={shots}.pkl",
         shots=train_min_bsz,
+        is_train=True,
     )
     taskset_val = prepare_l2l_taskset(
-        ds_val,
-        ways,
-        cache_dir,
-        cache_dir / f"val_l2l_bookkeeping_shots={shots}.pkl",
+        dataset=ds_val,
+        ways=ways,
+        bookkeeping_path=cache_dir / f"val_l2l_bookkeeping_shots={shots}.pkl",
+        is_train=False,
     )
     taskset_test = prepare_l2l_taskset(
-        ds_test,
-        ways,
-        cache_dir,
-        cache_dir / f"test_l2l_bookkeeping_shots={shots}.pkl",
+        dataset=ds_test,
+        ways=ways,
+        bookkeeping_path=cache_dir / f"test_l2l_bookkeeping_shots={shots}.pkl",
+        is_train=False,
     )
 
     # Define model arguments.

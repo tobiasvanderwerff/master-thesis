@@ -154,9 +154,9 @@ def prepare_iam_splits(dataset: IAMDataset, aachen_splits_path: Union[str, Path]
 def prepare_l2l_taskset(
     dataset: IAMDataset,
     ways: int,
-    cache_dir: Union[str, Path],
     bookkeeping_path: Union[str, Path],
     shots: Optional[int] = None,
+    is_train: bool = True,
 ):
     eos_tkn_idx, sos_tkn_idx, pad_tkn_idx = dataset.label_enc.transform(
         [EOS_TOKEN, SOS_TOKEN, PAD_TOKEN]
@@ -195,11 +195,18 @@ def prepare_l2l_taskset(
         task_collate=collate_fn,
     )
 
+    #
+    sample_per_epoch = int(len(dataset.writer_ids) / ways)
+    if not is_train:
+        # In order to reduce the effect of random sampling during val/test, increase
+        # the number of batches per epoch tenfold.
+        sample_per_epoch *= 10
+
     # Wrap the task datasets into a simple class that sets a length for the dataset
     # (other than 1, which is the default if setting num_tasks=-1).
     # This is necessary because the dataset length is used by Pytorch dataloaders to
     # determine how many batches are in the dataset per epoch.
-    return PtTaskDataset(taskset, epoch_length=int(len(dataset.writer_ids) / ways))
+    return PtTaskDataset(taskset, epoch_length=sample_per_epoch)
 
 
 class PtTaskDataset(Dataset):
