@@ -89,14 +89,9 @@ class LitBaseAdaptive(pl.LightningModule):
         self.max_epochs = max_epochs
         self.use_cosine_lr_scheduler = use_cosine_lr_scheduler
 
-        self.save_hyperparameters(
-            "learning_rate",
-            "grad_clip",
-            "max_epochs",
-            "use_cosine_lr_scheduler",
-        )
+        self.hparams_to_log = dict()
         if prms_to_log is not None:
-            self.save_hyperparameters(prms_to_log)
+            self.hparams_to_log.update(prms_to_log)
 
     def train_dataloader(self):
         # Since we are using a l2l TaskDataset which already batches the data,
@@ -187,6 +182,7 @@ class LitMAMLLearner(LitBaseAdaptive):
         cer_metric: CharacterErrorRate,
         wer_metric: WordErrorRate,
         base_model: Optional[nn.Module] = None,
+        save_hparams: bool = True,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -207,15 +203,21 @@ class LitMAMLLearner(LitBaseAdaptive):
         self.use_instance_weights = False
         self.char_to_avg_inst_weight = None
 
-        self.save_hyperparameters(
-            "ways",
-            "shots",
-            "inner_lr",
-            "use_instance_weights",
-            "use_batch_stats_for_batchnorm",
-            "use_dropout",
-            "num_inner_steps",
-        )
+        if save_hparams:
+            self.save_hyperparameters(self.hparams_to_log)
+            self.save_hyperparameters(
+                "ways",
+                "shots",
+                "inner_lr",
+                "use_instance_weights",
+                "use_batch_stats_for_batchnorm",
+                "use_dropout",
+                "num_inner_steps",
+                "learning_rate",
+                "grad_clip",
+                "max_epochs",
+                "use_cosine_lr_scheduler",
+            )
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)

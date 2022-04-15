@@ -66,7 +66,7 @@ def main(args):
         "train",
         label_enc=label_enc,
         return_writer_id=True,
-        return_writer_id_as_idx=True,  # TODO: this was False for MetaHTR. Is it okay?
+        return_writer_id_as_idx=True,
         only_lowercase=only_lowercase,
     )
 
@@ -132,6 +132,8 @@ def main(args):
         taskset_test=taskset_test,
         # allow_nograd=args.freeze_batchnorm_gamma,
         prms_to_log={
+            "main_model_arch": args.main_model_arch,
+            "base_model_arch": args.base_model_arch,
             "seed": args.seed,
             "model_path": args.trained_model_path,
             "early_stopping_patience": args.early_stopping_patience,

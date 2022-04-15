@@ -26,7 +26,7 @@ class LitMetaHTR(LitMAMLLearner):
         use_instance_weights: bool = True,
         **kwargs,
     ):
-        super().__init__(**kwargs)
+        super().__init__(**kwargs, save_hparams=False)
 
         self.num_clf_weights = num_clf_weights
         self.inst_mlp_hidden_size = inst_mlp_hidden_size
@@ -43,8 +43,22 @@ class LitMetaHTR(LitMAMLLearner):
         )
 
         self.save_hyperparameters(
-            "inst_mlp_hidden_size", "initial_inner_lr", "use_instance_weights"
+            "inst_mlp_hidden_size",
+            "initial_inner_lr",
+            "use_instance_weights",
+            "ways",
+            "shots",
+            "inner_lr",
+            "use_instance_weights",
+            "use_batch_stats_for_batchnorm",
+            "use_dropout",
+            "num_inner_steps",
+            "learning_rate",
+            "grad_clip",
+            "max_epochs",
+            "use_cosine_lr_scheduler",
         )
+        self.save_hyperparameters(self.hparams_to_log)
 
     def training_epoch_end(self, epoch_outputs):
         sch = self.lr_schedulers()

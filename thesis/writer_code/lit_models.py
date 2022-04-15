@@ -38,6 +38,7 @@ class LitWriterCodeAdaptiveModelMAML(LitMAMLLearner):
             code_size=code_size,
             **kwargs,
         )
+        self.save_hyperparameters(self.hparams_to_log)
         self.save_hyperparameters("code_size")
 
     def add_model_specific_callbacks(
@@ -88,7 +89,6 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         adaptation_opt_steps: int = 1,
         use_adam_for_adaptation: bool = False,
         max_val_batch_size: int = 128,
-        prms_to_log: Optional[Dict[str, Union[str, float, int]]] = None,
         **kwargs,
     ):
         """
@@ -139,6 +139,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             max_val_batch_size=max_val_batch_size,
         )
 
+        self.save_hyperparameters(self.hparams_to_log)
         self.save_hyperparameters(
             "writer_emb_type",
             "code_size",
@@ -146,8 +147,6 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             "ways",
             "shots",
         )
-        if prms_to_log is not None:
-            self.save_hyperparameters(prms_to_log)
 
     def forward(
         self,
