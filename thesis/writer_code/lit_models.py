@@ -151,14 +151,18 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             max_val_batch_size=max_val_batch_size,
         )
 
-        self.save_hyperparameters(self.hparams_to_log)
         self.save_hyperparameters(
             "writer_emb_type",
             "code_size",
             "adaptation_num_hidden",
             "ways",
             "shots",
+            "learning_rate_emb",
+            "weight_decay",
+            "adaptation_opt_steps",
+            "use_adam_for_adaptation",
         )
+        self.save_hyperparameters(self.hparams_to_log)
 
     def forward(
         self,
