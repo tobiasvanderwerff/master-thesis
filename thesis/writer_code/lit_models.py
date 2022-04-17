@@ -38,8 +38,8 @@ class LitWriterCodeAdaptiveModelMAML(LitMAMLLearner):
             code_size=code_size,
             **kwargs,
         )
-        self.save_hyperparameters(self.hparams_to_log)
         self.save_hyperparameters("code_size")
+        self.save_hyperparameters(self.hparams_to_log)
 
     def add_model_specific_callbacks(
         self, callbacks: List[Callback], label_encoder: LabelEncoder, **kwargs

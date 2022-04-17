@@ -204,7 +204,6 @@ class LitMAMLLearner(LitBaseAdaptive):
         self.char_to_avg_inst_weight = None
 
         if save_hparams:
-            self.save_hyperparameters(self.hparams_to_log)
             self.save_hyperparameters(
                 "ways",
                 "shots",
@@ -218,6 +217,7 @@ class LitMAMLLearner(LitBaseAdaptive):
                 "max_epochs",
                 "use_cosine_lr_scheduler",
             )
+            self.save_hyperparameters(self.hparams_to_log)
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
