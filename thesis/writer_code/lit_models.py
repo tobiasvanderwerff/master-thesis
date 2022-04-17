@@ -93,13 +93,25 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
     ):
         """
         Args:
-            TODO
-            base_model (nn.Module): base model
+            base_model (nn.Module): pre-trained HTR model, frozen during adaptation
+            cer_metric (CharacterErrorRate): cer metric module
+            wer_metric (WordErrorRate): wer metric module
             feature_size (int): size of the feature vectors to adapt, e.g. the output
                 feature vectors of a CNN
             num_writers (int): number of writers in the training set
+            code_size (int): size of the writer embeddings. If code_size=0, no code
+                will be used.
             writer_emb_type (Union[WriterEmbeddingType, str]): type of writer embedding
                 used
+            adaptation_opt_steps (int): number of optimization steps to perform for
+                training a new writer code during val/test.
+            ways (int): ways
+            shots (int): shots
+            learning_rate_emb (float): learning rate used for fast adaptation of an
+                initial embedding during val/test
+            weight_decay (float): weight decay
+            use_adam_for_adaptation (bool): whether to use Adam during adaptation
+                (otherwise plain SGD is used)
             max_val_batch_size (int): maximum val batch size
         """
         super().__init__(**kwargs)

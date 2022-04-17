@@ -130,10 +130,6 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
 
         assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
 
-        # TODO: consider, for even more stable results: use multiple
-        #  adaptation/validatin splits for a single writer and take the average
-        #  performance (e.g. repeated 10 times in MetaHTR paper).
-
         # Split the batch into N different writers, for K-shot adaptation.
         tasks = split_batch_for_adaptation(batch, self.ways, self.shots)
 
