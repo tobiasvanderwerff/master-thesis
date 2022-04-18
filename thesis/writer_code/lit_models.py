@@ -16,6 +16,7 @@ from thesis.util import (
     PREDICTIONS_TO_LOG,
     TrainMode,
     chunk_batch,
+    set_batchnorm_layers_train,
 )
 
 from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
@@ -182,6 +183,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         )
 
     def training_step(self, batch, batch_idx):
+        set_batchnorm_layers_train(self.model, False)  # freeze batchnorm stats
         imgs, target, writer_ids = batch
         _, _, loss = self.model(imgs, target, writer_ids, mode=TrainMode.TRAIN)
         self.opt_step(loss)
@@ -228,8 +230,8 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             torch.set_grad_enabled(False)
 
             # Log metrics.
-            cer_metric = self.model.base_model_with_adaptation.model.cer_metric
-            wer_metric = self.model.base_model_with_adaptation.model.wer_metric
+            cer_metric = self.model.model.cer_metric
+            wer_metric = self.model.model.wer_metric
             cer_metric(preds, query_tgts)
             wer_metric(preds, query_tgts)
             self.log("char_error_rate", cer_metric, prog_bar=False)

@@ -272,82 +272,97 @@ class WriterCodeAdaptiveModel(nn.Module):
         self.adaptation_opt_steps = adaptation_opt_steps
         self.use_adam_for_adaptation = use_adam_for_adaptation
 
-        self.emb_transform = None
-        self.writer_embs = None
         if self.embedding_type == WriterEmbeddingType.LEARNED and code_size > 0:
             self.writer_embs = nn.Embedding(num_writers, code_size)
-        if self.embedding_type == WriterEmbeddingType.TRANSFORMED:
-            # self.emb_transform = nn.Linear(d_model, code_size)
-            self.emb_transform = nn.LSTM(
-                # These settings were chosen ad-hoc.
-                input_size=d_model,
-                hidden_size=code_size,
-                num_layers=2,
-                batch_first=True,
-                dropout=0.1,
-                bidirectional=False,
-            )
-        self.feature_transform = FeatureTransform(
-            AdaptationMLP(d_model, code_size, adaptation_num_hidden),
-            self.emb_transform,
-            generate_code=(embedding_type == WriterEmbeddingType.TRANSFORMED),
-        )
-        self.base_model_with_adaptation = BaseModelAdaptation(base_model)
 
-        assert base_model.loss_fn.reduction == "mean"
+        if isinstance(base_model, FullPageHTREncoderDecoder):
+            self.arch = "fphtr"
+        elif isinstance(base_model, ShowAttendRead):
+            self.arch = "sar"
+        else:
+            raise ValueError(f"Unrecognized model class: {base_model.__class__}")
 
         freeze(base_model)  # make sure the base model weights are frozen
         # Finetune the linear layer in the base model directly following the adaptation
         # model.
         base_model.encoder.linear.requires_grad_(True)
 
+        resnet_new = WriterAdaptiveResnet(base_model.encoder, code_size)
+        if self.arch == "fphtr":
+            base_model.encoder = resnet_new
+        else:  # SAR
+            base_model.resnet_encoder = resnet_new
+        self.model = base_model
+
+        num_hidden = 128
+        self.writer_code_mlp = nn.Sequential(
+            nn.Linear(code_size, num_hidden),
+            nn.ReLU(inplace=True),
+            # BatchNorm1dPermute(num_hidden),
+            nn.Linear(num_hidden, num_hidden),
+            nn.ReLU(inplace=True),
+            # BatchNorm1dPermute(num_hidden),
+            nn.Linear(num_hidden, code_size),
+        )
+
+        assert base_model.loss_fn.reduction == "mean"
+
     def forward(
         self, *args, mode: TrainMode = TrainMode.TRAIN, **kwargs
     ) -> Tuple[Tensor, Tensor, Tensor]:
-        if self.embedding_type == WriterEmbeddingType.LEARNED:
-            if mode == TrainMode.TRAIN:
-                # Use a pre-trained embedding.
-                logits, loss = self.forward_existing_code(*args, **kwargs)
-            else:  # initialize and train a new writer embedding
-                logits, loss = self.forward_new_code(*args, **kwargs)
-        elif self.embedding_type == WriterEmbeddingType.TRANSFORMED:
-            logits, loss = self.forward_transform(*args, **kwargs)
-        else:
-            raise ValueError(f"Unrecognized emb type: {mode}")
+        if mode == TrainMode.TRAIN:
+            # Use a pre-trained code.
+            logits, loss = self.forward_existing_code(*args, **kwargs)
+        else:  # initialize and train a new writer code
+            logits, loss = self.forward_new_code(*args, **kwargs)
         sampled_ids = logits.argmax(-1)
         return logits, sampled_ids, loss
 
-    def forward_transform(
-        self, imgs: Tensor, target: Tensor, *args, **kwargs
+    def model_forward(
+        self,
+        imgs: Tensor,
+        target: Optional[Tensor],
+        writer_code: Tensor,
+        teacher_forcing: bool = True,
     ) -> Tuple[Tensor, Tensor]:
-        """
-        Create a writer code by passing the average CNN feature vector through a MLP.
-        """
-        logits, loss = self.base_model_with_adaptation(
-            imgs,
-            target,
-            intermediate_transform=self.feature_transform,
-            teacher_forcing=True,
-        )
+        if writer_code.shape[0] != imgs.shape[0]:
+            writer_code = writer_code.expand(imgs.shape[0], -1)  # (N, code_size)
+        writer_code = self.writer_code_mlp(writer_code)
+        if self.arch == "fphtr":
+            features = self.model.encoder(imgs, writer_code)
+            if teacher_forcing:
+                logits = self.model.decoder.decode_teacher_forcing(features, target)
+            else:
+                logits, _ = self.model.decoder(features)
+        else:  # SAR
+            features = self.model.resnet_encoder(imgs, writer_code)
+            h_holistic = self.model.lstm_encoder(features)
+            if teacher_forcing:
+                logits = self.model.lstm_decoder.forward_teacher_forcing(
+                    features, h_holistic, target
+                )
+            else:
+                logits, _ = self.model.lstm_decoder(features, h_holistic)
+        loss = None
+        if target is not None:
+            loss = self.model.loss_fn(
+                logits[:, : target.size(1), :].transpose(1, 2),
+                target[:, : logits.size(1)],
+            )
         return logits, loss
 
     def forward_existing_code(
         self, imgs: Tensor, target: Tensor, writer_ids: Tensor, *args, **kwargs
     ) -> Tuple[Tensor, Tensor]:
         """Perform adaptation using an existing writer code."""
-        # Load the writer code.
         writer_code = None
         if self.code_size > 0:
             writer_code = self.writer_embs(writer_ids)  # (N, code_size)
 
-        # Run inference using the writer code.
-        intermediate_transform = partial(
-            self.feature_transform, writer_code=writer_code
-        )
-        logits, loss = self.base_model_with_adaptation(
+        logits, loss = self.model_forward(
             imgs,
             target,
-            intermediate_transform=intermediate_transform,
+            writer_code,
             teacher_forcing=True,
         )
         return logits, loss
@@ -388,15 +403,12 @@ class WriterCodeAdaptiveModel(nn.Module):
         # Run inference using the writer code.
         inference_loss = 0.0
         all_logits = []
-        intermediate_transform = partial(
-            self.feature_transform, writer_code=writer_code
-        )
         for img, tgt in zip(inf_img_chunks, inf_tgt_chunks):
             with torch.inference_mode():
-                logits, loss = self.base_model_with_adaptation(
+                logits, loss = self.model_forward(
                     img,
                     tgt,
-                    intermediate_transform=intermediate_transform,
+                    writer_code,
                     teacher_forcing=False,
                 )
             all_logits.append(logits)
@@ -430,13 +442,10 @@ class WriterCodeAdaptiveModel(nn.Module):
             optimizer = optim.SGD(iter([writer_code]), lr=self.learning_rate_emb)
 
         for _ in range(self.adaptation_opt_steps):
-            intermediate_transform = partial(
-                self.feature_transform, writer_code=writer_code
-            )
-            _, loss = self.base_model_with_adaptation(
+            _, loss = self.model_forward(
                 adaptation_imgs,
                 adaptation_targets,
-                intermediate_transform=intermediate_transform,
+                writer_code,
                 teacher_forcing=False,
             )
 
@@ -623,3 +632,103 @@ class BatchNorm1dPermute(nn.Module):
         x = self.bn(x)
         x = x.movedim(1, -1)  # (N, *, k)
         return x
+
+
+class BatchNorm2dAdaptive(nn.Module):
+    """
+    A batchnorm layer whose affine transform is replaced by a affine transform based
+    on a writer code input.
+
+    The affine parameters (weight and bias) are obtained by feeding a writer
+    code through a linear mapping producing 2 * C outputs, where C is the number of
+    output channels.
+
+    """
+
+    # A conv2d layer augmented with a adaptation linear layer, which takes as input a
+    # writer code and outputs a bias, added to the conv2d result.
+
+    def __init__(self, batchnorm_layer: nn.BatchNorm2d, writer_code_size: int):
+        super().__init__()
+        self.bn = batchnorm_layer
+        self.writer_code_size = writer_code_size
+        self.writer_code = None
+        self.adapt = nn.Linear(writer_code_size, 2 * batchnorm_layer.num_features)
+
+        # Reset affine parameters to identify function.
+        with torch.no_grad():
+            self.bn.weight.fill_(1)
+            self.bn.bias.fill_(0)
+        self.bn.weight.requires_grad = False
+        self.bn.bias.requires_grad = False
+
+    # def forward(self, x: torch.Tensor, writer_code: torch.Tensor):
+    def forward(self, x: torch.Tensor):
+        """
+        Forward using writer code. The writer code is not passed as an argument,
+        but is expected to be externally set under the `writer_code` attribute.
+
+        Args:
+            x (Tensor of shape (N, n_channels, h, w))
+        """
+        assert self.writer_code is not None, "Writer code not initialized."
+        assert self.writer_code.ndim == 2 and self.writer_code.shape[0] == x.shape[0]
+
+        x = self.bn(x)
+        weight_and_bias = self.adapt(self.writer_code)  # shape: (N, 2 * n_channels)
+
+        n_channels = self.bn.num_features
+        weight = weight_and_bias[:, :n_channels]
+        bias = weight_and_bias[:, n_channels:]
+        weight = weight.unsqueeze(-1).unsqueeze(-1).expand_as(x)
+        bias = bias.unsqueeze(-1).unsqueeze(-1).expand_as(x)
+
+        return weight * x + bias
+
+    @staticmethod
+    def replace_bn_adaptive(module: nn.Module, writer_code_size: int):
+        """
+        Replace all nn.BatchNorm2d layers in a module with BatchNorm2dAdaptive layers.
+
+        Returns:
+            list of all newly added BatchNorm2dAdaptive modules
+        """
+        new_mods = []
+        if isinstance(module, BatchNorm2dAdaptive):
+            return new_mods
+        for attr_str in dir(module):
+            attr = getattr(module, attr_str)
+            if type(attr) == nn.BatchNorm2d:
+                new_bn = BatchNorm2dAdaptive(attr, writer_code_size)
+                setattr(module, attr_str, new_bn)
+                new_mods.append(new_bn)
+
+        for child_module in module.children():
+            new_mods.extend(
+                BatchNorm2dAdaptive.replace_bn_adaptive(child_module, writer_code_size)
+            )
+        return new_mods
+
+
+class WriterAdaptiveResnet(nn.Module):
+    """
+    A Resnet where all batch normalization layers are replaced with writer-code
+    adaptive layers. Concretely, this means the learned affine parameters of the
+    batchnorm layers are replaced with parameters produced by a writer code
+    transformation.
+    """
+
+    def __init__(self, resnet: nn.Module, writer_code_size: int):
+        super().__init__()
+        self.resnet = resnet
+        # Replace batchnorm layers with adaptive ones.
+        self.bn_layers = BatchNorm2dAdaptive.replace_bn_adaptive(
+            self.resnet, writer_code_size
+        )
+
+    def forward(self, imgs: Tensor, writer_code: torch.Tensor) -> torch.Tensor:
+        # Set `writer_code` attribute for all BatchNorm2dAdaptive layers
+        for l in self.bn_layers:
+            l.writer_code = writer_code
+        out = self.resnet(imgs)
+        return out
