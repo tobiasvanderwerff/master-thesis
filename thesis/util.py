@@ -351,3 +351,12 @@ def set_dropout_layers_train(model: nn.Module, training: bool = True):
     for m in model.modules():
         if isinstance(m, nn.Dropout):
             m.training = training
+
+
+def reset_all_weights(module: nn.Module):
+    if hasattr(module, "reset_parameters"):
+        module.reset_parameters()
+    elif hasattr(module, "_reset_parameters"):
+        module._reset_parameters()
+    for m in module.children():
+        reset_all_weights(m)
