@@ -282,7 +282,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         else:
             raise ValueError(f"Unrecognized model class: {base_model.__class__}")
 
-        freeze(base_model)  # make sure the base model weights are frozen
+        # freeze(base_model)  # make sure the base model weights are frozen
         # Finetune the linear layer in the base model directly following the adaptation
         # model.
         base_model.encoder.linear.requires_grad_(True)
@@ -290,8 +290,11 @@ class WriterCodeAdaptiveModel(nn.Module):
         resnet_new = WriterAdaptiveResnet(base_model.encoder, code_size)
         if self.arch == "fphtr":
             base_model.encoder = resnet_new
+            freeze(base_model.decoder)
         else:  # SAR
             base_model.resnet_encoder = resnet_new
+            freeze(base_model.lstm_encoder)
+            freeze(base_model.lstm_decoder)
         self.model = base_model
 
         num_hidden = 128
@@ -327,7 +330,7 @@ class WriterCodeAdaptiveModel(nn.Module):
     ) -> Tuple[Tensor, Tensor]:
         if writer_code.shape[0] != imgs.shape[0]:
             writer_code = writer_code.expand(imgs.shape[0], -1)  # (N, code_size)
-        writer_code = self.writer_code_mlp(writer_code)
+        # writer_code = self.writer_code_mlp(writer_code)
         if self.arch == "fphtr":
             features = self.model.encoder(imgs, writer_code)
             if teacher_forcing:
@@ -636,33 +639,17 @@ class BatchNorm1dPermute(nn.Module):
 
 class BatchNorm2dAdaptive(nn.Module):
     """
-    A batchnorm layer whose affine transform is replaced by a affine transform based
-    on a writer code input.
-
-    The affine parameters (weight and bias) are obtained by feeding a writer
-    code through a linear mapping producing 2 * C outputs, where C is the number of
-    output channels.
-
+    Batchnorm layer with additional bias based on writer code, added before the batch
+    normalizatoin.
     """
-
-    # A conv2d layer augmented with a adaptation linear layer, which takes as input a
-    # writer code and outputs a bias, added to the conv2d result.
 
     def __init__(self, batchnorm_layer: nn.BatchNorm2d, writer_code_size: int):
         super().__init__()
         self.bn = batchnorm_layer
         self.writer_code_size = writer_code_size
         self.writer_code = None
-        self.adapt = nn.Linear(writer_code_size, 2 * batchnorm_layer.num_features)
+        self.adapt = nn.Linear(writer_code_size, batchnorm_layer.num_features)
 
-        # Reset affine parameters to identify function.
-        with torch.no_grad():
-            self.bn.weight.fill_(1)
-            self.bn.bias.fill_(0)
-        self.bn.weight.requires_grad = False
-        self.bn.bias.requires_grad = False
-
-    # def forward(self, x: torch.Tensor, writer_code: torch.Tensor):
     def forward(self, x: torch.Tensor):
         """
         Forward using writer code. The writer code is not passed as an argument,
@@ -674,16 +661,11 @@ class BatchNorm2dAdaptive(nn.Module):
         assert self.writer_code is not None, "Writer code not initialized."
         assert self.writer_code.ndim == 2 and self.writer_code.shape[0] == x.shape[0]
 
-        x = self.bn(x)
-        weight_and_bias = self.adapt(self.writer_code)  # shape: (N, 2 * n_channels)
-
+        bias = self.adapt(self.writer_code)  # shape: (N, n_channels)
         n_channels = self.bn.num_features
-        weight = weight_and_bias[:, :n_channels]
-        bias = weight_and_bias[:, n_channels:]
-        weight = weight.unsqueeze(-1).unsqueeze(-1).expand_as(x)
         bias = bias.unsqueeze(-1).unsqueeze(-1).expand_as(x)
 
-        return weight * x + bias
+        return self.bn(x + bias)
 
     @staticmethod
     def replace_bn_adaptive(module: nn.Module, writer_code_size: int):
