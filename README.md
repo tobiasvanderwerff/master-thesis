@@ -14,7 +14,10 @@ transformation. The layer output is then of the following form:
 where M is the regular convolution layer output, and Q is the channel-wise bias
 vector derived from the writer code. Note that f is a activation function (ReLU).
 
-
+The most promising setup I tried thus far is obtained by freezing the decoder weights,
+and jointly training/finetuning the new layers and ResNet layers. The batchnorm stats
+were not frozen in this run. However, this setup did not seem to outperform the base
+model.
 
 # Master thesis
 
