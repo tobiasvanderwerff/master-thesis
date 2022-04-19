@@ -1,3 +1,21 @@
+# wang2020
+
+Implementation of CNN adaptation method used in "Writer-Aware CNN for Parsimonious
+HMM-Based Offline Handwritten Chinese Text Recognition" by Wang et al. (2020). It is
+encapsulated in this image:
+
+![](/home/tobias/Dropbox/master_AI/thesis/code/img/wang2020.png)
+
+Basically the writer code is converted to a channel-wise bias vector by a linear
+transformation. The layer output is then of the following form:
+
+![](/home/tobias/Dropbox/master_AI/thesis/code/img/adaptive_output.png)
+
+where M is the regular convolution layer output, and Q is the channel-wise bias
+vector derived from the writer code. Note that f is a activation function (ReLU).
+
+
+
 # Master thesis
 
 ## How to install
