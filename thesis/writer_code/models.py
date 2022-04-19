@@ -667,6 +667,7 @@ class ConditionalBatchNorm2d(nn.Module):
         assert self.writer_code.ndim == 2 and self.writer_code.shape[0] == x.shape[0]
 
         bsz, n_channels = x.shape[:2]
+        self.weight, self.bias = self.weight.to(x.device), self.bias.to(x.device)
 
         x = self.bn(x)
 
