@@ -176,6 +176,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         mode: TrainMode = TrainMode.TRAIN,
     ) -> Tuple[Tensor, Tensor, Tensor]:
         self.eval()
+        set_batchnorm_layers_train(self.model, True)  # enable batch statistics
         return self.model(
             adaptation_imgs,
             adaptation_targets,
@@ -185,7 +186,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         )
 
     def training_step(self, batch, batch_idx):
-        set_batchnorm_layers_train(self.model, False)  # freeze batchnorm stats
+        # set_batchnorm_layers_train(self.model, False)  # freeze batchnorm stats
         imgs, target, writer_ids = batch
         _, _, loss = self.model(imgs, target, writer_ids, mode=TrainMode.TRAIN)
         self.opt_step(loss)
