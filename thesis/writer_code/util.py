@@ -1,5 +1,8 @@
 from enum import Enum
+from pathlib import Path
+from typing import Dict
 
+import numpy as np
 
 AVAILABLE_MODELS = ["LitWriterCodeAdaptiveModel"]
 
@@ -25,3 +28,29 @@ class WriterEmbeddingType(Enum):
             return WriterEmbeddingType.TRANSFORMED
         else:
             raise ValueError(f"{s} is not a valid embedding method.")
+
+
+def load_hinge_codes(root_path: Path) -> Dict[str, np.array]:
+    """Load hinge features per writer.
+
+    Returns:
+        dictionary mapping writer identity to writer code
+    """
+    hinge_path = root_path / "hinge-feature-extraction/hinge-features"
+    doc_info = (root_path / "iam_form_to_writerid.txt").read_text()
+    docid_to_writerid = {
+        line.split()[0]: line.split()[1] for line in doc_info.splitlines()
+    }
+
+    writer_to_code = dict()
+    for pth in hinge_path.iterdir():
+        line = pth.read_text()
+        features = line.split()[1:]
+        code = np.array([float(ft) for ft in features])
+        writer = docid_to_writerid[pth.stem]
+        # Note that in IAM, one writer can correspond to several docs, i.e. one
+        # writer may have hinge features for several docs. For simplicity,
+        # we simply overwrite the writer code in case it already exists.
+        writer_to_code.update({writer: code})
+
+    return writer_to_code

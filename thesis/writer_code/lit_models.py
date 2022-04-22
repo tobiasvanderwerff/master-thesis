@@ -1,6 +1,7 @@
 from typing import Optional, Dict, Union, Tuple, Any, List
 from pathlib import Path
 
+import numpy as np
 from pytorch_lightning import Callback
 
 from htr.metrics import CharacterErrorRate, WordErrorRate
@@ -75,6 +76,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
     def __init__(
         self,
         base_model: nn.Module,
+        writer_codes: Dict[str, np.array],
         cer_metric: CharacterErrorRate,
         wer_metric: WordErrorRate,
         feature_size: int,
@@ -140,6 +142,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
 
         self.model = WriterCodeAdaptiveModel(
             base_model=base_model,
+            writer_codes=writer_codes,
             d_model=feature_size,
             code_size=code_size,
             adaptation_num_hidden=adaptation_num_hidden,

@@ -28,6 +28,8 @@ from pytorch_lightning import seed_everything, Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, ModelSummary
 from pytorch_lightning.plugins import DDPPlugin
 
+from thesis.writer_code.util import load_hinge_codes
+
 
 def main(args):
 
@@ -119,6 +121,8 @@ def main(args):
         is_train=False,
     )
 
+    writer_codes = load_hinge_codes(Path(__file__).resolve().parent.parent)
+
     # Define model arguments.
     args_ = dict(
         checkpoint_path=args.trained_model_path,
@@ -126,6 +130,7 @@ def main(args):
         label_encoder=ds_train.label_enc,
         load_meta_weights=True,
         model_params_to_log={"only_lowercase": only_lowercase},
+        writer_codes=writer_codes,
         num_writers=len(ds_train.writer_ids),
         taskset_train=taskset_train,
         taskset_val=taskset_val,

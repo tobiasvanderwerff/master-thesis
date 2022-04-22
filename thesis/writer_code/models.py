@@ -228,6 +228,7 @@ class WriterCodeAdaptiveModel(nn.Module):
     def __init__(
         self,
         base_model: nn.Module,
+        writer_codes: Dict[str, np.array],
         d_model: int,
         code_size: int,
         adaptation_num_hidden: int,
@@ -243,6 +244,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         """
         Args:
             base_model (nn.Module): pre-trained HTR model, frozen during adaptation
+            writer_codes (Dict[str, np.array)): dictionary mapping writer identity to writer code
             d_model (int): size of the feature vectors produced by the feature
                 extractor (e.g. CNN).
             code_size (int): size of the writer embeddings. If code_size=0, no code
@@ -260,6 +262,7 @@ class WriterCodeAdaptiveModel(nn.Module):
                 (otherwise plain SGD is used)
         """
         super().__init__()
+        self.writer_codes = writer_codes
         self.d_model = d_model
         self.code_size = code_size
         self.adaptation_num_hidden = adaptation_num_hidden
@@ -273,9 +276,6 @@ class WriterCodeAdaptiveModel(nn.Module):
         self.use_adam_for_adaptation = use_adam_for_adaptation
 
         self.emb_transform = None
-        self.writer_embs = None
-        if self.embedding_type == WriterEmbeddingType.LEARNED and code_size > 0:
-            self.writer_embs = nn.Embedding(num_writers, code_size)
         if self.embedding_type == WriterEmbeddingType.TRANSFORMED:
             # self.emb_transform = nn.Linear(d_model, code_size)
             self.emb_transform = nn.LSTM(
@@ -310,8 +310,6 @@ class WriterCodeAdaptiveModel(nn.Module):
                 logits, loss = self.forward_existing_code(*args, **kwargs)
             else:  # initialize and train a new writer embedding
                 logits, loss = self.forward_new_code(*args, **kwargs)
-        elif self.embedding_type == WriterEmbeddingType.TRANSFORMED:
-            logits, loss = self.forward_transform(*args, **kwargs)
         else:
             raise ValueError(f"Unrecognized emb type: {mode}")
         sampled_ids = logits.argmax(-1)
@@ -338,7 +336,10 @@ class WriterCodeAdaptiveModel(nn.Module):
         # Load the writer code.
         writer_code = None
         if self.code_size > 0:
-            writer_code = self.writer_embs(writer_ids)  # (N, code_size)
+            writer_code = torch.from_numpy(
+                np.stack([self.writer_codes[writer] for writer in writer_ids], 0)
+            )
+            # writer_code: (N, code_size)
 
         # Run inference using the writer code.
         intermediate_transform = partial(
