@@ -123,6 +123,9 @@ def main(args):
     )
 
     writer_codes = load_hinge_codes(Path(__file__).resolve().parent.parent)
+    writer_codes = {
+        ds.writer_id_to_idx[wid]: code for wid, code in writer_codes.items()
+    }
 
     # Define model arguments.
     args_ = dict(
@@ -173,13 +176,13 @@ def main(args):
         ),
     ]
     # TODO: fix worst prediction logging callback to work with chunks.
-    callbacks = learner.add_model_specific_callbacks(
-        callbacks,
-        shots=args.shots,
-        ways=args.ways,
-        label_encoder=ds_train.label_enc,
-        is_train=not (args.validate or args.test),
-    )
+    # callbacks = learner.add_model_specific_callbacks(
+    #     callbacks,
+    #     shots=args.shots,
+    #     ways=args.ways,
+    #     label_encoder=ds_train.label_enc,
+    #     is_train=not (args.validate or args.test),
+    # )
     if args.early_stopping_patience != -1:
         callbacks.append(
             EarlyStopping(

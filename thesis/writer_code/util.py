@@ -30,7 +30,7 @@ class WriterEmbeddingType(Enum):
             raise ValueError(f"{s} is not a valid embedding method.")
 
 
-def load_hinge_codes(root_path: Path) -> Dict[str, np.array]:
+def load_hinge_codes(root_path: Path, normalize: bool = True) -> Dict[str, np.array]:
     """Load hinge features per writer.
 
     Returns:
@@ -46,11 +46,19 @@ def load_hinge_codes(root_path: Path) -> Dict[str, np.array]:
     for pth in hinge_path.iterdir():
         line = pth.read_text()
         features = line.split()[1:]
-        code = np.array([float(ft) for ft in features])
-        writer = docid_to_writerid[pth.stem]
+        code = np.array([float(ft) for ft in features], dtype=np.float32)
+        writer = int(docid_to_writerid[pth.stem])
         # Note that in IAM, one writer can correspond to several docs, i.e. one
         # writer may have hinge features for several docs. For simplicity,
         # we simply overwrite the writer code in case it already exists.
         writer_to_code.update({writer: code})
+
+    if normalize:
+        # Normalize Hinge features to have 0 mean and stddev 1.
+        all_features = np.concatenate(list(writer_to_code.values()))
+        mean, std = all_features.mean(), all_features.std()
+        writer_to_code = {
+            writer: (code - mean) / std for writer, code in writer_to_code.items()
+        }
 
     return writer_to_code

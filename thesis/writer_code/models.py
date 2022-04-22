@@ -296,14 +296,8 @@ class WriterCodeAdaptiveModel(nn.Module):
 
         assert base_model.loss_fn.reduction == "mean"
 
-    def forward(
-        self, *args, mode: TrainMode = TrainMode.TRAIN, **kwargs
-    ) -> Tuple[Tensor, Tensor, Tensor]:
-        if mode == TrainMode.TRAIN:
-            # Use a pre-trained code.
-            logits, loss = self.forward_existing_code(*args, **kwargs)
-        else:  # initialize and train a new writer code
-            logits, loss = self.forward_new_code(*args, **kwargs)
+    def forward(self, *args, **kwargs) -> Tuple[Tensor, Tensor, Tensor]:
+        logits, loss = self.forward_existing_code(*args, **kwargs)
         sampled_ids = logits.argmax(-1)
         return logits, sampled_ids, loss
 
@@ -340,21 +334,26 @@ class WriterCodeAdaptiveModel(nn.Module):
         return logits, loss
 
     def forward_existing_code(
-        self, imgs: Tensor, target: Tensor, writer_ids: Tensor, *args, **kwargs
+        self,
+        imgs: Tensor,
+        target: Tensor,
+        writer_ids: Tensor,
+        mode: TrainMode = TrainMode.TRAIN,
     ) -> Tuple[Tensor, Tensor]:
         """Perform adaptation using an existing writer code."""
         writer_code = None
         if self.code_size > 0:
             writer_code = torch.from_numpy(
-                np.stack([self.writer_codes[writer] for writer in writer_ids], 0)
-            )
+                np.stack([self.writer_codes[writer.item()] for writer in writer_ids], 0)
+            ).to(imgs.device)
             # writer_code: (N, code_size)
 
+        teacher_forcing = True if mode == TrainMode.TRAIN else False
         logits, loss = self.model_forward(
             imgs,
             target,
             writer_code,
-            teacher_forcing=True,
+            teacher_forcing=teacher_forcing,
         )
         return logits, loss
 

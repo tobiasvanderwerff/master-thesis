@@ -211,42 +211,19 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         return self.val_or_test_step(batch, mode=TrainMode.TEST)
 
     def val_or_test_step(self, batch, mode=TrainMode.VAL):
-        """
-        Val/test step. The difference with a train step:
+        imgs, target, writer_ids = batch
+        _, preds, loss = self.model(imgs, target, writer_ids, mode=mode)
+        self.log("train_loss", loss, sync_dist=True, prog_bar=True)
 
-        - A new writer code is created based on a small batch of data, named the
-          "adaptation batch". This is necessary because the writers in the val/test
-          set do not overlap with those in the train set, thus necessitating new
-          writer codes.
-        - Teacher forcing is not used.
-        """
-        loss, n_samples = 0, 0
-        writer_batches = split_batch_for_adaptation(batch, self.ways, self.shots)
-
-        for adapt_imgs, adapt_tgts, query_imgs, query_tgts in writer_batches:
-            if self.code_size == 0:
-                # If the writer code is of size 0 (i.e. not used), use the
-                # adaptation batch as the only input.
-                query_imgs, query_tgts = adapt_imgs, adapt_tgts
-
-            torch.set_grad_enabled(True)
-            _, preds, query_loss = self(
-                adapt_imgs, adapt_tgts, query_imgs, query_tgts, mode=TrainMode.VAL
-            )
-            torch.set_grad_enabled(False)
-
-            # Log metrics.
-            cer_metric = self.model.model.cer_metric
-            wer_metric = self.model.model.wer_metric
-            cer_metric(preds, query_tgts)
-            wer_metric(preds, query_tgts)
-            self.log("char_error_rate", cer_metric, prog_bar=False)
-            self.log("word_error_rate", wer_metric, prog_bar=True)
-
-            loss += query_loss * query_imgs.size(0)
-            n_samples += query_imgs.size(0)
-        loss /= n_samples
+        # Log metrics.
+        cer_metric = self.model.model.cer_metric
+        wer_metric = self.model.model.wer_metric
+        cer_metric(preds, target)
+        wer_metric(preds, target)
+        self.log("char_error_rate", cer_metric, prog_bar=False)
+        self.log("word_error_rate", wer_metric, prog_bar=True)
         self.log(f"{mode.name.lower()}_loss", loss, sync_dist=True, prog_bar=True)
+
         return loss
 
     def configure_optimizers(self):
@@ -395,7 +372,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         parser.add_argument(
             "--code_size",
             type=int,
-            default=64,
+            default=465,  # this is the number of features produced by Hinge
             help="Size of the writer embeddings for adaptation.",
         )
         parser.add_argument(

@@ -6,7 +6,8 @@ follows:
 for each writer do
     get line images for a single form
     concatenate the lines into a single image
-    extract Hinge features for the image, which acts as the writer code
+    extract Hinge features for the image
+    normalize the Hinge features, which act as the writer code
 end for
 ```
 
