@@ -151,4 +151,6 @@ lightning_logs
 lightning_logs_lines_forms
 *.out
 logs
-*.sh
+
+hinge-feature-extraction/hinge-features
+hinge-feature-extraction/beyondOCR_hingeV13B31

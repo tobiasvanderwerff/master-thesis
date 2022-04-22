@@ -1,3 +1,35 @@
+# hinge-code
+Using traditional Hinge features as writer code. Right now the procedure goes as
+follows:
+
+```
+for each writer do
+    get line images for a single form
+    concatenate the lines into a single image
+    extract Hinge features for the image, which acts as the writer code
+end for
+```
+
+## Example of how to extract features
+```shell
+# Note: make sure there is about 4GB of space free in the temporary directory. The pgm
+# file format takes up a lot of space. Also make sure the Hinge binary (called
+# `beyondOCR_hingeV13B31`) is in the `hinge-feature-extraction` folder.
+
+cd hinge-feature-extraction
+tempdir="$(pwd)/tmp"  # make a temporary directory for storing images
+mkdir -p $tempdir/{img,img-concat}
+cp -r ~/datasets/IAM/lines/*/* $tempdir/img  # copy all line images per form
+
+# These two commands can take some time to run. If you want to use a different feature
+# (e.g. QuadHinge), specify this inside the `extract-hinge-features.sh` script.
+python concat_lines --img_dir $tempdir/img --out_dir $tempdir/img-concat  # concatenate lines
+ ./extract-hinge-features.sh $tempdir/img-concat  # extract features
+
+# Remove the temporary directory
+rm -r $tempdir
+```
+
 # Master thesis
 
 ## How to install
