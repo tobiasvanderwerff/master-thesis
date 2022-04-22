@@ -1,3 +1,4 @@
+import itertools
 from typing import Optional, Dict, Union, Tuple, Any, List
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from thesis.util import (
     PREDICTIONS_TO_LOG,
     TrainMode,
     chunk_batch,
+    set_batchnorm_layers_train,
 )
 
 from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
@@ -26,6 +28,7 @@ from htr.util import LabelEncoder
 
 import torch
 import torch.nn as nn
+import torch.optim as optim
 from torch import Tensor
 
 from thesis.writer_code.util import WriterEmbeddingType
@@ -176,6 +179,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         mode: TrainMode = TrainMode.TRAIN,
     ) -> Tuple[Tensor, Tensor, Tensor]:
         self.eval()
+        set_batchnorm_layers_train(self.model, True)  # enable batch statistics
         return self.model(
             adaptation_imgs,
             adaptation_targets,
@@ -185,6 +189,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         )
 
     def training_step(self, batch, batch_idx):
+        # set_batchnorm_layers_train(self.model, False)  # freeze batchnorm stats
         imgs, target, writer_ids = batch
         _, _, loss = self.model(imgs, target, writer_ids, mode=TrainMode.TRAIN)
         self.opt_step(loss)
@@ -231,8 +236,8 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             torch.set_grad_enabled(False)
 
             # Log metrics.
-            cer_metric = self.model.base_model_with_adaptation.model.cer_metric
-            wer_metric = self.model.base_model_with_adaptation.model.wer_metric
+            cer_metric = self.model.model.cer_metric
+            wer_metric = self.model.model.wer_metric
             cer_metric(preds, query_tgts)
             wer_metric(preds, query_tgts)
             self.log("char_error_rate", cer_metric, prog_bar=False)
@@ -243,6 +248,35 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         loss /= n_samples
         self.log(f"{mode.name.lower()}_loss", loss, sync_dist=True, prog_bar=True)
         return loss
+
+    def configure_optimizers(self):
+        # bn_layers = self.model.model.encoder.bn_layers
+        # bn_layers_names = set(wn for m in bn_layers for wn, _ in m.named_parameters())
+        # encoder_params = self.model.model.encoder.named_parameters()
+        # param_group_1 = iter(w for wn, w in encoder_params if not any(wn.endswith(bnn) for bnn in bn_layers_names))
+        # param_group_2 = itertools.chain(self.model.writer_code_mlp.parameters(),
+        #                                 self.model.writer_embs.parameters(),
+        #                                 *(m.parameters() for m in bn_layers))
+        # param_groups = [
+        #     {"params": param_group_1, "lr": 3e-6},
+        #     {"params": param_group_2}
+        # ]
+        # optimizer = optim.AdamW(
+        #     param_groups, lr=self.learning_rate, weight_decay=self.weight_decay
+        # )
+        optimizer = optim.AdamW(
+            self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
+        )
+        if self.use_cosine_lr_scheduler:
+            max_epochs = self.max_epochs or 20
+            lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=max_epochs,
+                eta_min=1e-06,  # final learning rate
+                verbose=True,
+            )
+            return [optimizer], [lr_scheduler]
+        return optimizer
 
     def add_model_specific_callbacks(
         self,

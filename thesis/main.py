@@ -18,6 +18,7 @@ from thesis.util import (
     prepare_l2l_taskset,
     main_lit_models,
     get_parameter_names,
+    reset_all_weights,
 )
 
 from htr.data import IAMDataset
@@ -149,6 +150,9 @@ def main(args):
     # Initialize with a trained base model.
     cls = main_lit_models()[args.main_model_arch]
     learner = cls.init_with_base_model_from_checkpoint(**args_)
+
+    # print("Resetting all weights.")
+    # reset_all_weights(learner)
 
     plugins = None
     if isinstance(
