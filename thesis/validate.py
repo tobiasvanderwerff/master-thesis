@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pytorch_lightning.core.saving import load_hparams_from_yaml
 
-from thesis.lit_models import LitBaseAdaptive
+from thesis.lit_models import LitBaseEpisodic
 from thesis.util import (
     filter_df_by_freq,
     get_label_encoder,

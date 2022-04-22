@@ -29,8 +29,8 @@ from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
 
-class LitBaseAdaptive(pl.LightningModule):
-    """Base class for conditionally adaptive modules."""
+class LitBaseEpisodic(pl.LightningModule):
+    """Base class for models trained using episodic learning."""
 
     def __init__(
         self,
@@ -174,7 +174,98 @@ class LitBaseAdaptive(pl.LightningModule):
         return parser
 
 
-class LitMAMLLearner(LitBaseAdaptive):
+class LitBaseNonEpisodic(pl.LightningModule):
+    """
+    Base class for models trained without episodic learning (i.e. regular neural
+    network training).
+    """
+
+    def __init__(
+        self,
+        base_model_arch: str,
+        main_model_arch: str,
+        ds_train: Optional[Dataset] = None,
+        ds_val: Optional[Dataset] = None,
+        ds_test: Optional[Dataset] = None,
+        learning_rate: float = 0.0001,
+        weight_decay: float = 0.0,
+        num_workers: int = 0,
+        max_epochs: Optional[int] = None,
+        use_cosine_lr_scheduler: bool = False,
+        prms_to_log: Optional[Dict[str, Union[str, float, int]]] = None,
+        **kwargs,
+    ):
+        """
+        Args:
+            base_model_arch (str): base model architecture descriptor
+            main_model_arch (str): main model architecture descriptor
+            ds_train (Dataset): train dataset
+            ds_val (Dataset): val dataset
+            ds_test (Dataset): test dataset
+            learning_rate (float): learning rate
+            weight_decay (float): weight decay
+            num_workers (int): how many sub-processes to use for data loading
+            max_epochs (Optional[int]): number of epochs the model will be trained.
+                This is only used if `use_cosine_lr_scheduler` is set to True.
+            use_cosine_lr_scheduler (bool): whether to use a cosine annealing
+                scheduler to decay the learning rate from its initial value.
+        """
+        super().__init__()
+
+        assert not (use_cosine_lr_scheduler and max_epochs is None), (
+            "When using cosine learning rate scheduler, specify `max_epochs` to "
+            "configure the learning rate decay properly."
+        )
+
+        self.base_model_arch = base_model_arch
+        self.main_model_arch = main_model_arch
+        self.ds_train = ds_train
+        self.ds_val = ds_val
+        self.ds_test = ds_test
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.num_workers = num_workers
+        self.max_epochs = max_epochs
+        self.use_cosine_lr_scheduler = use_cosine_lr_scheduler
+
+        self.hparams_to_log = dict()
+        if prms_to_log is not None:
+            self.hparams_to_log.update(prms_to_log)
+
+    def configure_optimizers(self):
+        optimizer = optim.AdamW(
+            self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
+        )
+        if self.use_cosine_lr_scheduler:
+            max_epochs = self.max_epochs or 20
+            lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=max_epochs,
+                eta_min=1e-06,  # final learning rate
+                verbose=True,
+            )
+            return [optimizer], [lr_scheduler]
+        return optimizer
+
+    def add_model_specific_callbacks(self, callbacks: List[Callback], *args, **kwargs):
+        return callbacks
+
+    @staticmethod
+    def add_model_specific_args(parser):
+        parser.add_argument("--learning_rate", type=float, default=0.0001)
+        parser.add_argument("--weight_decay", type=float, default=0.0)
+        parser.add_argument("--batch_size", type=int, default=64)
+        parser.add_argument("--num_workers", type=int, default=0)
+        parser.add_argument(
+            "--use_cosine_lr_scheduler",
+            action="store_true",
+            default=False,
+            help="Use a cosine annealing scheduler to decay the learning rate.",
+        )
+        return parser
+
+
+class LitMAMLLearner(LitBaseEpisodic):
     model: MAMLLearner
 
     def __init__(

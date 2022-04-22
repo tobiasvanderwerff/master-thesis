@@ -197,10 +197,6 @@ def prepare_l2l_taskset(
 
     #
     sample_per_epoch = int(len(dataset.writer_ids) / ways)
-    if not is_train:
-        # In order to reduce the effect of random sampling during val/test, increase
-        # the number of batches per epoch tenfold.
-        sample_per_epoch *= 10
 
     # Wrap the task datasets into a simple class that sets a length for the dataset
     # (other than 1, which is the default if setting num_tasks=-1).

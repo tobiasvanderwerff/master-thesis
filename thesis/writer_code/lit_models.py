@@ -4,14 +4,16 @@ from pathlib import Path
 
 import numpy as np
 from pytorch_lightning import Callback
+from torch.utils.data import DataLoader, Subset
 
 from htr.metrics import CharacterErrorRate, WordErrorRate
 from thesis.lit_callbacks import LogLearnableInnerLoopLearningRates
-from thesis.lit_models import LitMAMLLearner, LitBaseAdaptive
+from thesis.lit_models import LitMAMLLearner, LitBaseEpisodic, LitBaseNonEpisodic
 from thesis.writer_code.lit_callbacks import LogWorstPredictions, LogModelPredictions
 from thesis.writer_code.models import (
     WriterCodeAdaptiveModel,
     WriterCodeAdaptiveModelMAML,
+    WriterCodeAdaptiveModelNonEpisodic,
 )
 from thesis.util import (
     split_batch_for_adaptation,
@@ -75,7 +77,7 @@ class LitWriterCodeAdaptiveModelMAML(LitMAMLLearner):
         return parent_parser
 
 
-class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
+class LitWriterCodeAdaptiveModel(LitBaseNonEpisodic):
     def __init__(
         self,
         base_model: nn.Module,
@@ -189,7 +191,7 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         )
 
     def training_step(self, batch, batch_idx):
-        # set_batchnorm_layers_train(self.model, False)  # freeze batchnorm stats
+        set_batchnorm_layers_train(self.model, False)  # freeze batchnorm stats
         imgs, target, writer_ids = batch
         _, _, loss = self.model(imgs, target, writer_ids, mode=TrainMode.TRAIN)
         self.opt_step(loss)
@@ -213,7 +215,6 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
     def val_or_test_step(self, batch, mode=TrainMode.VAL):
         imgs, target, writer_ids = batch
         _, preds, loss = self.model(imgs, target, writer_ids, mode=mode)
-        self.log("train_loss", loss, sync_dist=True, prog_bar=True)
 
         # Log metrics.
         cer_metric = self.model.model.cer_metric
@@ -406,5 +407,164 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
             action="store_true",
             default=False,
             help="Use Adam during val/test for training new writer codes.",
+        )
+        return parent_parser
+
+
+class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
+    def __init__(
+        self,
+        base_model: nn.Module,
+        writer_codes: Dict[str, np.array],
+        cer_metric: CharacterErrorRate,
+        wer_metric: WordErrorRate,
+        code_size: int = 64,
+        adaptation_num_hidden: int = 128,
+        adaptation_method: str = "conditional-batchnorm",
+        **kwargs,
+    ):
+        """
+        Args:
+            base_model (nn.Module): pre-trained HTR model, frozen during adaptation
+            cer_metric (CharacterErrorRate): cer metric module
+            wer_metric (WordErrorRate): wer metric module
+            code_size (int): size of the writer embeddings. If code_size=0, no code
+                will be used.
+            adaptation_num_hidden (int): hidden size for adaptation MLP
+            adaptation_method (str): how the writer code should be inserted into the
+                model
+        """
+        super().__init__(**kwargs)
+
+        assert isinstance(base_model, (FullPageHTREncoderDecoder, ShowAttendRead))
+
+        self.cer_metric = cer_metric
+        self.wer_metric = wer_metric
+        self.code_size = code_size
+        self.adaptation_num_hidden = adaptation_num_hidden
+        self.adaptation_method = adaptation_method
+
+        self.ignore_index = base_model.pad_tkn_idx
+
+        self.model = WriterCodeAdaptiveModelNonEpisodic(
+            base_model=base_model,
+            writer_codes=writer_codes,
+            code_size=code_size,
+            adaptation_num_hidden=adaptation_num_hidden,
+            adaptation_method=adaptation_method,
+        )
+
+        self.save_hyperparameters(
+            "code_size",
+            "adaptation_num_hidden",
+            "adaptation_method",
+        )
+        self.save_hyperparameters(self.hparams_to_log)
+
+    def forward(self, imgs, target, writer_ids, mode) -> Tuple[Tensor, Tensor, Tensor]:
+        return self.model(imgs, target, writer_ids, mode=mode)
+
+    def training_step(self, batch, batch_idx):
+        set_batchnorm_layers_train(self.model, False)  # freeze batchnorm stats
+        imgs, target, writer_ids = batch
+        _, _, loss = self.model(imgs, target, writer_ids, mode=TrainMode.TRAIN)
+        self.log("train_loss", loss, sync_dist=True, prog_bar=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        return self.val_or_test_step(batch, mode=TrainMode.VAL)
+
+    def test_step(self, batch, batch_idx):
+        return self.val_or_test_step(batch, mode=TrainMode.TEST)
+
+    def val_or_test_step(self, batch, mode=TrainMode.VAL):
+        imgs, target, writer_ids = batch
+        _, preds, loss = self.model(imgs, target, writer_ids, mode=mode)
+
+        # Log metrics.
+        cer_metric = self.model.model.cer_metric
+        wer_metric = self.model.model.wer_metric
+        cer_metric(preds, target)
+        wer_metric(preds, target)
+        self.log("char_error_rate", cer_metric, prog_bar=False)
+        self.log("word_error_rate", wer_metric, prog_bar=True)
+        self.log(f"{mode.name.lower()}_loss", loss, sync_dist=True, prog_bar=True)
+
+        return loss
+
+    def add_model_specific_callbacks(
+        self,
+        callbacks: List[Callback],
+        label_encoder: LabelEncoder,
+        is_train: bool,
+    ) -> List[Callback]:
+        # TODO: add LogModelPredictions and LogWorstPredictions callbacks.
+        return callbacks
+
+    @staticmethod
+    def init_with_base_model_from_checkpoint(
+        base_model_arch: str,
+        main_model_arch: str,
+        checkpoint_path: Union[str, Path],
+        model_hparams_file: Union[str, Path],
+        label_encoder: LabelEncoder,
+        model_params_to_log: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ):
+        assert base_model_arch in ["fphtr", "sar"], "Invalid base model architecture."
+        assert main_model_arch in ["WriterCodeAdaptiveModelNonEpisodic"]
+
+        # Initialize base model.
+        if base_model_arch == "fphtr":
+            # Load FPHTR model.
+            base_model = LitFullPageHTREncoderDecoder.load_from_checkpoint(
+                checkpoint_path,
+                hparams_file=str(model_hparams_file),
+                strict=False,
+                label_encoder=label_encoder,
+                params_to_log=model_params_to_log,
+            )
+        else:  # SAR
+            base_model = LitShowAttendRead.load_from_checkpoint(
+                checkpoint_path,
+                hparams_file=str(model_hparams_file),
+                strict=False,
+                label_encoder=label_encoder,
+                params_to_log=model_params_to_log,
+            )
+
+        # Initialize meta-model.
+        model = LitWriterCodeAdaptiveModelNonEpisodic.load_from_checkpoint(
+            checkpoint_path,
+            strict=False,
+            cer_metric=base_model.model.cer_metric,
+            wer_metric=base_model.model.wer_metric,
+            base_model=base_model.model,
+            base_model_arch=base_model_arch,
+            main_model_arch=main_model_arch,
+            **kwargs,
+        )
+        return model
+
+    @staticmethod
+    def add_model_specific_args(parent_parser):
+        parser = parent_parser.add_argument_group("LitWriterCodeAdaptiveModel")
+        parser.add_argument(
+            "--code_size",
+            type=int,
+            default=465,  # this is the number of features produced by Hinge
+            help="Size of the writer embeddings for adaptation.",
+        )
+        parser.add_argument(
+            "--adaptation_num_hidden",
+            type=int,
+            default=128,
+            help="Number of features for the hidden layers of the MLP used for adaptation",
+        )
+        parser.add_argument(
+            "--adaptation_method",
+            type=str,
+            default="conditional-batchnorm",
+            help="adaptation_method(str): how the writer code should be inserted into the model",
         )
         return parent_parser

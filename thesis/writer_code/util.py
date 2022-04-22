@@ -4,7 +4,10 @@ from typing import Dict
 
 import numpy as np
 
-AVAILABLE_MODELS = ["LitWriterCodeAdaptiveModel"]
+AVAILABLE_MODELS = [
+    "LitWriterCodeAdaptiveModel",
+    "LitWriterCodeAdaptiveModelNonEpisodic",
+]
 
 
 class WriterEmbeddingType(Enum):

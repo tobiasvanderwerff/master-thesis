@@ -1,6 +1,7 @@
 # hinge-code
-Using traditional Hinge features as writer code. Right now the procedure goes as
-follows:
+Using traditional Hinge features as writer code. This does not require episodice
+training, since the writer codes are ready in advance and don't require
+gradient-based training. Right now the procedure goes as follows:
 
 ```
 for each writer do
