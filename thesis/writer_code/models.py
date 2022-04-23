@@ -798,14 +798,23 @@ class ConditionalBatchNorm2d(nn.Module):
         new_mods = []
         if isinstance(module, ConditionalBatchNorm2d):
             return new_mods
-        for attr_str in dir(module):
-            attr = getattr(module, attr_str)
-            if type(attr) == nn.BatchNorm2d:
-                new_bn = ConditionalBatchNorm2d(
-                    attr, writer_code_size, adaptation_num_hidden
-                )
-                setattr(module, attr_str, new_bn)
-                new_mods.append(new_bn)
+        if isinstance(module, nn.Sequential):
+            for i, m in enumerate(module):
+                if type(m) == nn.BatchNorm2d:
+                    new_bn = ConditionalBatchNorm2d(
+                        m, writer_code_size, adaptation_num_hidden
+                    )
+                    module[i] = new_bn
+                    new_mods.append(new_bn)
+        else:
+            for attr_str in dir(module):
+                attr = getattr(module, attr_str)
+                if type(attr) == nn.BatchNorm2d:
+                    new_bn = ConditionalBatchNorm2d(
+                        attr, writer_code_size, adaptation_num_hidden
+                    )
+                    setattr(module, attr_str, new_bn)
+                    new_mods.append(new_bn)
 
         for child_module in module.children():
             new_mods.extend(
