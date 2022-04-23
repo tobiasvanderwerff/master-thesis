@@ -7,7 +7,7 @@ binarize=1  # boolean, either 0 or 1
 sfx=".png"
 
 # imgpath="./img"
-outpath="./hinge-features"
+outpath="./$feature"
 # ***********************************
 
 imgpath=$1

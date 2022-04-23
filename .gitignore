@@ -155,3 +155,9 @@ tmp
 
 hinge-feature-extraction/hinge-features
 hinge-feature-extraction/beyondOCR_hingeV13B31
+hinge-feature-extraction/hinge
+hinge-feature-extraction/quadhinge
+hinge-feature-extraction/cohinge
+hinge-feature-extraction/triplechaincode-hinge
+hinge-feature-extraction/cochaincode-hinge
+hinge-feature-extraction/delta-hinge
