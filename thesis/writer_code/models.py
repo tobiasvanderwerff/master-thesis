@@ -526,6 +526,7 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
             else:
                 logits, _ = self.model.decoder(features)
         else:  # SAR
+            imgs = imgs.unsqueeze(1)
             features = self.model.resnet_encoder(imgs, writer_code)
             h_holistic = self.model.lstm_encoder(features)
             if teacher_forcing:
