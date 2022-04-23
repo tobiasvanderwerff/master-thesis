@@ -459,6 +459,7 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
         base_model: nn.Module,
         writer_codes: Dict[str, np.array],
         code_size: int,
+        code_name: str,
         adaptation_num_hidden: int,
         adaptation_method: str = "conditional-batchnorm",
     ):
@@ -468,6 +469,7 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
             writer_codes (Dict[str, np.array)): dictionary mapping writer identity to writer code
             code_size (int): size of the writer embeddings. If code_size=0, no code
                 will be used.
+            code_name (str): type of code to use, e.g. Hinge
             adaptation_num_hidden (int): hidden size for adaptation MLP
             adaptation_method (str): how the writer code should be inserted into the
                 model
@@ -475,6 +477,7 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
         super().__init__()
         self.writer_codes = writer_codes
         self.code_size = code_size
+        self.code_name = code_name
         self.adaptation_num_hidden = adaptation_num_hidden
 
         assert adaptation_method in ["conditional-batchnorm", "single-adaptation"]

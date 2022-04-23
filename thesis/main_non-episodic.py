@@ -116,7 +116,9 @@ def main(args):
     print(f"val:\t{len(ds_val)}")
     print(f"test:\t{len(ds_test)}")
 
-    writer_codes = load_hinge_codes(Path(__file__).resolve().parent.parent)
+    writer_codes, code_size = load_hinge_codes(
+        Path(__file__).resolve().parent.parent, code_name=args.code_name
+    )
     writer_codes = {
         ds.writer_id_to_idx[wid]: code for wid, code in writer_codes.items()
     }
@@ -129,6 +131,7 @@ def main(args):
         load_meta_weights=True,
         model_params_to_log={"only_lowercase": only_lowercase},
         writer_codes=writer_codes,
+        code_size=code_size,
         prms_to_log={
             "main_model_arch": args.main_model_arch,
             "base_model_arch": args.base_model_arch,

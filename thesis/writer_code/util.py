@@ -1,12 +1,21 @@
 from enum import Enum
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Tuple
 
 import numpy as np
 
 AVAILABLE_MODELS = [
     "LitWriterCodeAdaptiveModel",
     "LitWriterCodeAdaptiveModelNonEpisodic",
+]
+
+CODE_TYPES = [
+    "hinge",
+    "quadhinge",
+    "cohinge",
+    "cochaincode-hinge",
+    "triplechaincode-hinge",
+    "delta-hinge",
 ]
 
 
@@ -33,13 +42,23 @@ class WriterEmbeddingType(Enum):
             raise ValueError(f"{s} is not a valid embedding method.")
 
 
-def load_hinge_codes(root_path: Path, normalize: bool = True) -> Dict[str, np.array]:
-    """Load hinge features per writer.
+def load_hinge_codes(
+    root_path: Path, code_name: str = "hinge", normalize: bool = True
+) -> Tuple[Dict[str, np.array], int]:
+    """Load hinge features per writer. Other variants of Hinge can also be loaded, e.g.  Quadhinge.
+
+    Args:
+        root_path (Path): root path
+        normalize (bool): whether to normalize the features
+        code_name (str): what type of features to use
 
     Returns:
-        dictionary mapping writer identity to writer code
+        - dictionary mapping writer identity to writer code
+        - code size
     """
-    hinge_path = root_path / "hinge-feature-extraction/hinge-features"
+    assert code_name in CODE_TYPES, f"{code_name} is not a valid feature name."
+
+    hinge_path = root_path / f"hinge-feature-extraction/{code_name}"
     doc_info = (root_path / "iam_form_to_writerid.txt").read_text()
     docid_to_writerid = {
         line.split()[0]: line.split()[1] for line in doc_info.splitlines()
@@ -57,11 +76,13 @@ def load_hinge_codes(root_path: Path, normalize: bool = True) -> Dict[str, np.ar
         writer_to_code.update({writer: code})
 
     if normalize:
-        # Normalize Hinge features to have 0 mean and stddev 1.
+        # Normalize features to have 0 mean and stddev 1.
         all_features = np.concatenate(list(writer_to_code.values()))
         mean, std = all_features.mean(), all_features.std()
         writer_to_code = {
             writer: (code - mean) / std for writer, code in writer_to_code.items()
         }
 
-    return writer_to_code
+    code_size = list(writer_to_code.values())[0].size
+
+    return writer_to_code, code_size

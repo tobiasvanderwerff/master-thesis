@@ -418,7 +418,8 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
         writer_codes: Dict[str, np.array],
         cer_metric: CharacterErrorRate,
         wer_metric: WordErrorRate,
-        code_size: int = 64,
+        code_size: int,
+        code_name: str = "hinge",
         adaptation_num_hidden: int = 128,
         adaptation_method: str = "conditional-batchnorm",
         **kwargs,
@@ -428,8 +429,8 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
             base_model (nn.Module): pre-trained HTR model, frozen during adaptation
             cer_metric (CharacterErrorRate): cer metric module
             wer_metric (WordErrorRate): wer metric module
-            code_size (int): size of the writer embeddings. If code_size=0, no code
-                will be used.
+            code_size (int): size of the writer codes
+            code_name (str): type of code to use
             adaptation_num_hidden (int): hidden size for adaptation MLP
             adaptation_method (str): how the writer code should be inserted into the
                 model
@@ -441,6 +442,7 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
         self.cer_metric = cer_metric
         self.wer_metric = wer_metric
         self.code_size = code_size
+        self.code_name = code_name
         self.adaptation_num_hidden = adaptation_num_hidden
         self.adaptation_method = adaptation_method
 
@@ -450,12 +452,14 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
             base_model=base_model,
             writer_codes=writer_codes,
             code_size=code_size,
+            code_name=code_name,
             adaptation_num_hidden=adaptation_num_hidden,
             adaptation_method=adaptation_method,
         )
 
         self.save_hyperparameters(
             "code_size",
+            "code_name",
             "adaptation_num_hidden",
             "adaptation_method",
         )
@@ -550,16 +554,24 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
     def add_model_specific_args(parent_parser):
         parser = parent_parser.add_argument_group("LitWriterCodeAdaptiveModel")
         parser.add_argument(
-            "--code_size",
-            type=int,
-            default=465,  # this is the number of features produced by Hinge
-            help="Size of the writer embeddings for adaptation.",
-        )
-        parser.add_argument(
             "--adaptation_num_hidden",
             type=int,
             default=128,
             help="Number of features for the hidden layers of the MLP used for adaptation",
+        )
+        parser.add_argument(
+            "--code_name",
+            type=str,
+            default="hinge",
+            choices=[
+                "hinge",
+                "quadhinge",
+                "cohinge",
+                "cochaincode-hinge",
+                "triplechaincode-hinge",
+                "delta-hinge",
+            ],
+            help="Type of code to use.",
         )
         parser.add_argument(
             "--adaptation_method",
