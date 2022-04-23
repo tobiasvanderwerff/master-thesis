@@ -493,9 +493,10 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
         # model.
         # base_model.encoder.linear.requires_grad_(True)
 
-        resnet_new = WriterAdaptiveResnet(
-            base_model.encoder, code_size, adaptation_num_hidden
+        resnet_old = (
+            base_model.encoder if self.arch == "fphtr" else base_model.resnet_encoder
         )
+        resnet_new = WriterAdaptiveResnet(resnet_old, code_size, adaptation_num_hidden)
         if self.arch == "fphtr":
             base_model.encoder = resnet_new
         else:  # SAR
