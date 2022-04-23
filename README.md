@@ -12,6 +12,15 @@ for each writer do
 end for
 ```
 
+## Currently implemented features
+* Hinge. Size: 465
+* Quadhinge. Size: 5184
+* Cohinge. Size: 10000
+* Cochaincode-hinge. Size: 64
+* Triplechaincode-hinge. Size: 512
+* Delta-hinge. Size: 780
+
+
 ## Example of how to extract features
 ```shell
 # Note: make sure there is about 4GB of space free in the temporary directory. The pgm
