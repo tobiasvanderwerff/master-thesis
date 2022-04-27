@@ -27,7 +27,7 @@ def plot_pca(codes: np.ndarray):
 
 def plot_tsne(codes: np.ndarray):
     tsne = TSNE(
-        n_components=2, perplexity=10, init="pca", learning_rate="auto", verbose=1
+        n_components=2, perplexity=25, init="pca", learning_rate="auto", verbose=1
     )
     # I am not sure how the perplexity parameter should be set here. Since the number
     # of codes is not that large (657), I set it to a lower value than what is
