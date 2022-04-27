@@ -48,7 +48,7 @@ def load_hinge_codes(
     """Load hinge features per writer. Other variants of Hinge can also be loaded, e.g.  Quadhinge.
 
     Args:
-        root_path (Path): root path
+        root_path (Path): thesis root path
         normalize (bool): whether to normalize the features
         code_name (str): what type of features to use
 
