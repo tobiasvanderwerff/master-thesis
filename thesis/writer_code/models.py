@@ -534,9 +534,7 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
         writer_code = self.cluster_embs(
             torch.tensor(
                 [self.writer_to_clusterid[writer.item()] for writer in writer_ids]
-            )
-        ).to(
-            imgs.device
+            ).to(imgs.device)
         )  # writer_code: (N, code_size)
 
         teacher_forcing = True if mode == TrainMode.TRAIN else False
