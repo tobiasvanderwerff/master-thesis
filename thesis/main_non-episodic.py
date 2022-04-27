@@ -4,6 +4,7 @@ import argparse
 from functools import partial
 from pathlib import Path
 
+import numpy as np
 from torch.utils.data import DataLoader
 
 from thesis.lit_models import LitBaseNonEpisodic
@@ -120,7 +121,10 @@ def main(args):
         Path(__file__).resolve().parent.parent, code_name=args.code_name
     )
     writer_codes = {
-        ds.writer_id_to_idx[wid]: code for wid, code in writer_codes.items()
+        ds.writer_id_to_idx[wid]: code
+        for wid, code in writer_codes.items()
+        # ds.writer_id_to_idx[wid]: np.zeros_like(code) for wid, code in writer_codes.items()  # fill with zero code
+        # ds.writer_id_to_idx[wid]: np.random.normal(0, 1, code.size).astype(code.dtype) for wid, code in writer_codes.items()  # fill with random numbers
     }
 
     # Define model arguments.
