@@ -422,6 +422,7 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
         code_name: str = "hinge",
         adaptation_num_hidden: int = 128,
         adaptation_method: str = "conditional-batchnorm",
+        num_clusters: int = 2,
         **kwargs,
     ):
         """
@@ -434,6 +435,7 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
             adaptation_num_hidden (int): hidden size for adaptation MLP
             adaptation_method (str): how the writer code should be inserted into the
                 model
+            num_clusters (int): K parameter when applying k-means clustering on writer codes
         """
         super().__init__(**kwargs)
 
@@ -445,6 +447,7 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
         self.code_name = code_name
         self.adaptation_num_hidden = adaptation_num_hidden
         self.adaptation_method = adaptation_method
+        self.num_clusters = num_clusters
 
         self.ignore_index = base_model.pad_tkn_idx
 
@@ -455,6 +458,7 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
             code_name=code_name,
             adaptation_num_hidden=adaptation_num_hidden,
             adaptation_method=adaptation_method,
+            num_clusters=num_clusters,
         )
 
         self.save_hyperparameters(
@@ -462,6 +466,7 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
             "code_name",
             "adaptation_num_hidden",
             "adaptation_method",
+            "num_clusters",
         )
         self.save_hyperparameters(self.hparams_to_log)
 
@@ -578,5 +583,11 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
             type=str,
             default="conditional-batchnorm",
             help="adaptation_method(str): how the writer code should be inserted into the model",
+        )
+        parser.add_argument(
+            "--num_clusters",
+            type=int,
+            default=5,
+            help="K parameter when applying k-means clustering on writer codes",
         )
         return parent_parser

@@ -4,6 +4,7 @@ import argparse
 from functools import partial
 from pathlib import Path
 
+from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader
 
 from thesis.lit_models import LitBaseNonEpisodic

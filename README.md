@@ -1,25 +1,6 @@
-# hinge-code
-Using traditional Hinge features as writer code. This does not require episodice
-training, since the writer codes are ready in advance and don't require
-gradient-based training. Right now the procedure goes as follows:
-
-```
-for each writer do
-    get line images for a single form
-    concatenate the lines into a single image
-    extract Hinge features for the image
-    normalize the Hinge features, which act as the writer code
-end for
-```
-
-## Currently implemented features
-* Hinge. Size: 465
-* Quadhinge. Size: 5184
-* Cohinge. Size: 10000
-* Cochaincode-hinge. Size: 64
-* Triplechaincode-hinge. Size: 512
-* Delta-hinge. Size: 780
-
+# hinge-code-knn
+Same idea as hinge-code branch, but now perform k-means clustering on Hinge codes to
+initialize k embeddings that are fed in as replacement of the writer codes.
 
 ## Example of how to extract features
 ```shell

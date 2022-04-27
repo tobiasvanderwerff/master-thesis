@@ -1,8 +1,10 @@
 from functools import partial
 import math
 from typing import Optional, Callable, Tuple, List, Dict, Any
+from collections import Counter
 
 import numpy as np
+from sklearn.cluster import KMeans
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -462,6 +464,7 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
         code_name: str,
         adaptation_num_hidden: int,
         adaptation_method: str = "conditional-batchnorm",
+        num_clusters: int = 2,
     ):
         """
         Args:
@@ -473,12 +476,14 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
             adaptation_num_hidden (int): hidden size for adaptation MLP
             adaptation_method (str): how the writer code should be inserted into the
                 model
+            num_clusters (int): K parameter when applying k-means clustering on writer codes
         """
         super().__init__()
         self.writer_codes = writer_codes
         self.code_size = code_size
         self.code_name = code_name
         self.adaptation_num_hidden = adaptation_num_hidden
+        self.num_clusters = num_clusters
 
         assert adaptation_method in ["conditional-batchnorm", "single-adaptation"]
         # TODO: implement option "single-adaptation", which refers to adaptation at a
@@ -496,10 +501,21 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
         # model.
         # base_model.encoder.linear.requires_grad_(True)
 
+        codes = np.stack(list(writer_codes.values()), 0)
+        clstr_labels = KMeans(n_clusters=num_clusters).fit_predict(codes)
+        self.writer_to_clusterid = {
+            wid: clstr_labels[i] for i, wid in enumerate(writer_codes.keys())
+        }
+
+        print(f"Cluster label distribution: {Counter(clstr_labels)}")
+
+        emb_size = 128  # TODO: make emb size an argument
+        self.cluster_embs = nn.Embedding(num_clusters, 128)
+
         resnet_old = (
             base_model.encoder if self.arch == "fphtr" else base_model.resnet_encoder
         )
-        resnet_new = WriterAdaptiveResnet(resnet_old, code_size, adaptation_num_hidden)
+        resnet_new = WriterAdaptiveResnet(resnet_old, emb_size, adaptation_num_hidden)
         if self.arch == "fphtr":
             base_model.encoder = resnet_new
         else:  # SAR
@@ -515,8 +531,10 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
         writer_ids: Tensor,
         mode: TrainMode = TrainMode.TRAIN,
     ) -> Tuple[Tensor, Tensor, Tensor]:
-        writer_code = torch.from_numpy(
-            np.stack([self.writer_codes[writer.item()] for writer in writer_ids], 0)
+        writer_code = self.cluster_embs(
+            torch.tensor(
+                [self.writer_to_clusterid[writer.item()] for writer in writer_ids]
+            )
         ).to(
             imgs.device
         )  # writer_code: (N, code_size)
