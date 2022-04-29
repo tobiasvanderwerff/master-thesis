@@ -37,6 +37,7 @@ def main(args):
 
     print(f"Main model used: {str(args.main_model_arch)}")
     print(f"Base model used: {str(args.base_model_arch).upper()}")
+    print(f"Adaptation method: {args.adaptation_method}")
 
     seed_everything(args.seed)
 

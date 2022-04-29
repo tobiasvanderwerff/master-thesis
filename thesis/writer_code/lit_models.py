@@ -33,7 +33,11 @@ import torch.nn as nn
 import torch.optim as optim
 from torch import Tensor
 
-from thesis.writer_code.util import WriterEmbeddingType
+from thesis.writer_code.util import (
+    WriterEmbeddingType,
+    AdaptationMethod,
+    ADAPTATION_METHODS,
+)
 
 
 class LitWriterCodeAdaptiveModelMAML(LitMAMLLearner):
@@ -415,30 +419,36 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
     def __init__(
         self,
         base_model: nn.Module,
+        d_model: int,
         writer_codes: Dict[str, np.array],
         cer_metric: CharacterErrorRate,
         wer_metric: WordErrorRate,
         code_size: int,
         code_name: str = "hinge",
         adaptation_num_hidden: int = 128,
-        adaptation_method: str = "conditional-batchnorm",
+        adaptation_method: Union[
+            AdaptationMethod, str
+        ] = AdaptationMethod.CONDITIONAL_BATCHNORM,
         **kwargs,
     ):
         """
         Args:
             base_model (nn.Module): pre-trained HTR model, frozen during adaptation
+            d_model (int): size of the feature vectors produced by the feature
+                extractor (e.g. CNN).
             cer_metric (CharacterErrorRate): cer metric module
             wer_metric (WordErrorRate): wer metric module
             code_size (int): size of the writer codes
             code_name (str): type of code to use
             adaptation_num_hidden (int): hidden size for adaptation MLP
-            adaptation_method (str): how the writer code should be inserted into the
-                model
+            adaptation_method (AdaptationMethod): how the writer code should be inserted
+                into the model
         """
         super().__init__(**kwargs)
 
         assert isinstance(base_model, (FullPageHTREncoderDecoder, ShowAttendRead))
 
+        self.d_model = d_model
         self.cer_metric = cer_metric
         self.wer_metric = wer_metric
         self.code_size = code_size
@@ -447,9 +457,12 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
         self.adaptation_method = adaptation_method
 
         self.ignore_index = base_model.pad_tkn_idx
+        self.cer_metric = base_model.cer_metric
+        self.wer_metric = base_model.wer_metric
 
         self.model = WriterCodeAdaptiveModelNonEpisodic(
             base_model=base_model,
+            d_model=d_model,
             writer_codes=writer_codes,
             code_size=code_size,
             code_name=code_name,
@@ -486,12 +499,10 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
         _, preds, loss = self.model(imgs, target, writer_ids, mode=mode)
 
         # Log metrics.
-        cer_metric = self.model.model.cer_metric
-        wer_metric = self.model.model.wer_metric
-        cer_metric(preds, target)
-        wer_metric(preds, target)
-        self.log("char_error_rate", cer_metric, prog_bar=False)
-        self.log("word_error_rate", wer_metric, prog_bar=True)
+        self.cer_metric(preds, target)
+        self.wer_metric(preds, target)
+        self.log("char_error_rate", self.cer_metric, prog_bar=False)
+        self.log("word_error_rate", self.wer_metric, prog_bar=True)
         self.log(f"{mode.name.lower()}_loss", loss, sync_dist=True, prog_bar=True)
 
         return loss
@@ -528,6 +539,7 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
                 label_encoder=label_encoder,
                 params_to_log=model_params_to_log,
             )
+            d_model = base_model.encoder.resnet_out_features
         else:  # SAR
             base_model = LitShowAttendRead.load_from_checkpoint(
                 checkpoint_path,
@@ -536,6 +548,7 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
                 label_encoder=label_encoder,
                 params_to_log=model_params_to_log,
             )
+            d_model = base_model.rnn_encoder.input_size
 
         # Initialize meta-model.
         model = LitWriterCodeAdaptiveModelNonEpisodic.load_from_checkpoint(
@@ -544,6 +557,7 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
             cer_metric=base_model.model.cer_metric,
             wer_metric=base_model.model.wer_metric,
             base_model=base_model.model,
+            d_model=d_model,
             base_model_arch=base_model_arch,
             main_model_arch=main_model_arch,
             **kwargs,
@@ -576,7 +590,8 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
         parser.add_argument(
             "--adaptation_method",
             type=str,
-            default="conditional-batchnorm",
+            default="conditional_batchnorm",
+            choices=ADAPTATION_METHODS,
             help="adaptation_method(str): how the writer code should be inserted into the model",
         )
         return parent_parser
