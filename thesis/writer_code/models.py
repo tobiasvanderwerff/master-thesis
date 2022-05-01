@@ -1,4 +1,5 @@
-from functools import partial
+from functools import partial, reduce
+import operator
 import math
 from typing import Optional, Callable, Tuple, List, Dict, Any, Union
 
@@ -511,11 +512,16 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
                 if self.arch == "fphtr"
                 else base_model.resnet_encoder
             )
-            resnet_new = WriterAdaptiveResnet(
+            resnet_new = WriterAdaptiveModel(
                 resnet_old, code_size, adaptation_num_hidden
             )
             if self.arch == "fphtr":
                 base_model.encoder = resnet_new
+                # Replace layernorm with conditional layernorm in Transformer.
+                decoder_new = WriterAdaptiveModel(
+                    base_model.decoder, code_size, adaptation_num_hidden
+                )
+                base_model.decoder = decoder_new
             else:  # SAR
                 base_model.resnet_encoder = resnet_new
             self.model = base_model
@@ -555,14 +561,18 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
             )
         else:
             if self.arch == "fphtr":
-                features = self.model.encoder(imgs, writer_code)
+                features = self.model.encoder(imgs, writer_code=writer_code)
                 if teacher_forcing:
-                    logits = self.model.decoder.decode_teacher_forcing(features, target)
+                    # Note: I am assuming here that self.model.decoder is an
+                    # instantitation of WriterAdaptiveModel.
+                    logits = self.model.decoder(
+                        features, target, writer_code=writer_code, teacher_forcing=True
+                    )
                 else:
-                    logits, _ = self.model.decoder(features)
+                    logits, _ = self.model.decoder(features, writer_code=writer_code)
             else:  # SAR
                 imgs = imgs.unsqueeze(1)
-                features = self.model.resnet_encoder(imgs, writer_code)
+                features = self.model.resnet_encoder(imgs, writer_code=writer_code)
                 h_holistic = self.model.lstm_encoder(features)
                 if teacher_forcing:
                     logits = self.model.lstm_decoder.forward_teacher_forcing(
@@ -861,29 +871,144 @@ class ConditionalBatchNorm2d(nn.Module):
         return new_mods
 
 
-class WriterAdaptiveResnet(nn.Module):
+class ConditionalLayerNorm(nn.Module):
     """
-    A Resnet where all batch normalization layers are replaced with writer-code
+    Conditional layer normalization. Predict deltas to the batchnorm affine
+    parameters by linear transform of a writer code.
+    """
+
+    def __init__(
+        self,
+        layernorm_layer: nn.LayerNorm,
+        writer_code_size: int,
+        adaptation_num_hidden: int = 128,
+    ):
+        super().__init__()
+        self.ln = layernorm_layer
+        self.writer_code_size = writer_code_size
+        self.writer_code = None
+        num_features = reduce(operator.mul, self.ln.normalized_shape)
+        self.adapt = nn.Sequential(  # 1-hidden-layer MLP
+            nn.Linear(writer_code_size, adaptation_num_hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(adaptation_num_hidden, 2 * num_features),
+        )
+
+        # Save affine parameters.
+        self.weight = self.ln.weight.detach().clone()
+        self.bias = self.ln.bias.detach().clone()
+
+        # Reset affine parameters to identify function.
+        with torch.no_grad():
+            self.ln.weight.fill_(1)
+            self.ln.bias.fill_(0)
+        self.ln.weight.requires_grad = False
+        self.ln.bias.requires_grad = False
+
+    def forward(self, x: torch.Tensor):
+        """
+        Forward using writer code. The writer code is not passed as an argument,
+        but is expected to be externally set under the `writer_code` attribute.
+
+        Args:
+            x (Tensor of shape (N, n_channels, h, w))
+        """
+        assert self.writer_code is not None, "Writer code not initialized."
+        assert self.writer_code.ndim == 2 and self.writer_code.shape[0] == x.shape[0]
+
+        bsz, _, n_channels = x.shape
+        self.weight, self.bias = self.weight.to(x.device), self.bias.to(x.device)
+
+        x = self.ln(x)
+
+        weight_and_bias = self.adapt(self.writer_code)  # shape: (N, 2 * n_channels)
+        weight_delta = weight_and_bias[:, :n_channels]
+        bias_delta = weight_and_bias[:, n_channels:]
+
+        weight = self.weight.unsqueeze(0).expand_as(weight_delta)
+        bias = self.bias.unsqueeze(0).expand_as(bias_delta)
+        weight = (weight + weight_delta).view(bsz, 1, n_channels).expand_as(x)
+        bias = (bias + bias_delta).view(bsz, 1, n_channels).expand_as(x)
+
+        return x * weight + bias
+
+    @staticmethod
+    def replace_ln_adaptive(
+        module: nn.Module, writer_code_size: int, adaptation_num_hidden: int
+    ):
+        """
+        Replace all nn.LayerNorm layers in a module with ConditionalLayerNorm layers.
+
+        Returns:
+            list of all newly added ConditionalLayerNorm modules
+        """
+        new_mods = []
+        if isinstance(module, ConditionalLayerNorm):
+            return new_mods
+        if isinstance(module, nn.Sequential):
+            for i, m in enumerate(module):
+                if type(m) == nn.LayerNorm:
+                    new_bn = ConditionalLayerNorm(
+                        m, writer_code_size, adaptation_num_hidden
+                    )
+                    module[i] = new_bn
+                    new_mods.append(new_bn)
+        else:
+            for attr_str in dir(module):
+                attr = getattr(module, attr_str)
+                if type(attr) == nn.LayerNorm:
+                    new_bn = ConditionalLayerNorm(
+                        attr, writer_code_size, adaptation_num_hidden
+                    )
+                    setattr(module, attr_str, new_bn)
+                    new_mods.append(new_bn)
+
+        for child_module in module.children():
+            new_mods.extend(
+                ConditionalLayerNorm.replace_ln_adaptive(
+                    child_module, writer_code_size, adaptation_num_hidden
+                )
+            )
+        return new_mods
+
+
+class WriterAdaptiveModel(nn.Module):
+    """
+    A Pytorch module where all batch normalization layers are replaced with writer-code
     adaptive layers. Concretely, this means the learned affine parameters of the
     batchnorm layers are replaced with parameters produced by a writer code
     transformation.
     """
 
     def __init__(
-        self, resnet: nn.Module, writer_code_size: int, adaptation_num_hidden: int
+        self, model: nn.Module, writer_code_size: int, adaptation_num_hidden: int
     ):
         super().__init__()
-        self.resnet = resnet
+        self.model = model
         # Replace batchnorm layers with adaptive ones.
-        self.bn_layers = ConditionalBatchNorm2d.replace_bn_adaptive(
-            self.resnet, writer_code_size, adaptation_num_hidden
+        self.norm_layers = []
+        self.norm_layers.extend(
+            ConditionalBatchNorm2d.replace_bn_adaptive(
+                self.model, writer_code_size, adaptation_num_hidden
+            )
+        )
+        self.norm_layers.extend(
+            ConditionalLayerNorm.replace_ln_adaptive(
+                self.model, writer_code_size, adaptation_num_hidden
+            )
         )
 
-    def forward(self, imgs: Tensor, writer_code: torch.Tensor) -> torch.Tensor:
-        # Set `writer_code` attribute for all ConditionalBatchNorm2d layers
-        for l in self.bn_layers:
+    def forward(
+        self, *args, writer_code: torch.Tensor, teacher_forcing: bool = False, **kwargs
+    ) -> torch.Tensor:
+        # Set `writer_code` attribute for all condititional norrmalization layers
+        for l in self.norm_layers:
             l.writer_code = writer_code
-        out = self.resnet(imgs)
-        for l in self.bn_layers:
+        if teacher_forcing:
+            # Ugly but works
+            out = self.model.decode_teacher_forcing(*args, **kwargs)
+        else:
+            out = self.model(*args, **kwargs)
+        for l in self.norm_layers:
             l.writer_code = None
         return out
