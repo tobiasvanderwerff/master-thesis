@@ -153,7 +153,8 @@ class MAMLHTR(nn.Module, MAMLLearner):
 
         imgs, target, writer_ids = batch
 
-        assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
+        if mode is TrainMode.TRAIN:
+            assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
 
         if mode is TrainMode.TRAIN:
             # Split the batch into N different writers, for K-shot adaptation.
