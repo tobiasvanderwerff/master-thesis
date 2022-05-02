@@ -12,10 +12,11 @@ from thesis.writer_code.models import (
     WriterCodeAdaptiveModelMAML,
 )
 from thesis.util import (
-    split_batch_for_adaptation,
+    train_split_batch_for_adaptation,
     PREDICTIONS_TO_LOG,
     TrainMode,
     chunk_batch,
+    test_split_batch_for_adaptation,
 )
 
 from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
@@ -213,7 +214,14 @@ class LitWriterCodeAdaptiveModel(LitBaseAdaptive):
         - Teacher forcing is not used.
         """
         loss, n_samples = 0, 0
-        writer_batches = split_batch_for_adaptation(batch, self.ways, self.shots)
+        writerid_to_splits = (
+            self.val_writerid_to_splits
+            if mode is TrainMode.VAL
+            else self.test_writerid_to_splits
+        )
+        writer_batches = test_split_batch_for_adaptation(
+            batch, self.shots, writerid_to_splits
+        )
 
         for adapt_imgs, adapt_tgts, query_imgs, query_tgts in writer_batches:
             if self.code_size == 0:

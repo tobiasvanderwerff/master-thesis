@@ -63,6 +63,7 @@ class LogWorstPredictionsMAML(LogWorstPredictionsCallback):
                 use_instance_weights=pl_module.use_instance_weights,
             )
         )
+        args.update(pl_module.hparams)
 
         cls = pl_module.__class__
         cls_name = cls.__name__

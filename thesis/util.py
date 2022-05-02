@@ -3,6 +3,7 @@ from enum import Enum
 from functools import partial
 import math
 from pathlib import Path
+import random
 import shutil
 from typing import Optional, Tuple, List, Sequence, Any, Union, Dict
 
@@ -19,6 +20,8 @@ import pandas as pd
 from pytorch_lightning import loggers as pl_loggers
 from torch.utils.data import Dataset
 from torch import Tensor
+
+from thesis.data import WriterDataset, PtTaskDataset
 
 PREDICTIONS_TO_LOG = {
     "word": 10,
@@ -151,12 +154,36 @@ def prepare_iam_splits(dataset: IAMDataset, aachen_splits_path: Union[str, Path]
     return ds_train, ds_val, ds_test
 
 
-def prepare_l2l_taskset(
+def prepare_writer_splits(dataset: WriterDataset):
+    # Initialize k-fold splits for validation and testing.
+    writerid_to_splits = dict()
+    for wid, img_idxs in dataset.writerid_to_img_idxs.items():
+        splits = []
+        idxs = list(range(len(img_idxs)))
+        for _ in range(10):  # create 10 random orderings
+            splits.append(random.sample(idxs, len(idxs)))
+        writerid_to_splits[wid] = splits
+    return writerid_to_splits
+
+
+def prepare_test_taskset(dataset: IAMDataset):
+    eos_tkn_idx, sos_tkn_idx, pad_tkn_idx = dataset.label_enc.transform(
+        [EOS_TOKEN, SOS_TOKEN, PAD_TOKEN]
+    )
+    collate_fn = partial(
+        IAMDataset.collate_fn,
+        pad_val=pad_tkn_idx,
+        eos_tkn_idx=eos_tkn_idx,
+        dataset_returns_writer_id=True,
+    )
+    return WriterDataset(dataset, collate_fn)
+
+
+def prepare_train_taskset(
     dataset: IAMDataset,
     ways: int,
     bookkeeping_path: Union[str, Path],
     shots: Optional[int] = None,
-    is_train: bool = True,
 ):
     eos_tkn_idx, sos_tkn_idx, pad_tkn_idx = dataset.label_enc.transform(
         [EOS_TOKEN, SOS_TOKEN, PAD_TOKEN]
@@ -167,7 +194,6 @@ def prepare_l2l_taskset(
         eos_tkn_idx=eos_tkn_idx,
         dataset_returns_writer_id=True,
     )
-
     # Setting the _bookkeeping_path attribute will make the MetaDataset instance
     # load its label-index mapping from a file, rather than creating it (which takes a
     # long time). If the path does not exists, the bookkeeping will be created and
@@ -181,12 +207,11 @@ def prepare_l2l_taskset(
     task_trnsf = [
         # Nways picks N random labels (writers in this case)
         l2l.data.transforms.NWays(dataset_meta, n=ways),
-        # Load the data.
-        l2l.data.transforms.LoadData(dataset_meta),
     ]
     if shots is not None:
         # Keep K samples for each present writer.
-        task_trnsf.insert(1, l2l.data.transforms.KShots(dataset_meta, k=shots))
+        task_trnsf.append(l2l.data.transforms.KShots(dataset_meta, k=shots))
+    task_trnsf.append(l2l.data.transforms.LoadData(dataset_meta))
 
     taskset = l2l.data.TaskDataset(
         dataset_meta,
@@ -195,31 +220,13 @@ def prepare_l2l_taskset(
         task_collate=collate_fn,
     )
 
-    #
     sample_per_epoch = int(len(dataset.writer_ids) / ways)
-    if not is_train:
-        # In order to reduce the effect of random sampling during val/test, increase
-        # the number of batches per epoch tenfold.
-        sample_per_epoch *= 10
 
     # Wrap the task datasets into a simple class that sets a length for the dataset
     # (other than 1, which is the default if setting num_tasks=-1).
     # This is necessary because the dataset length is used by Pytorch dataloaders to
     # determine how many batches are in the dataset per epoch.
     return PtTaskDataset(taskset, epoch_length=sample_per_epoch)
-
-
-class PtTaskDataset(Dataset):
-    def __init__(self, taskset: l2l.data.TaskDataset, epoch_length: int):
-        super().__init__()
-        self.taskset = taskset
-        self.epoch_length = epoch_length
-
-    def __getitem__(self, *args, **kwargs):
-        return self.taskset.sample()
-
-    def __len__(self):
-        return self.epoch_length
 
 
 def identity_collate_fn(x: Sequence[Any]):
@@ -259,7 +266,28 @@ def chunk_batch(
     return query_img_chunks, query_tgt_chunks
 
 
-def split_batch_for_adaptation(
+def test_split_batch_for_adaptation(
+    batch, shots: int, writerid_to_splits: Dict[int, List[List[int]]]
+):
+    # For validation/testing, an incoming batch consists of all the examples
+    # for a particular writer. We then use 10 different random support/query
+    # splits.
+    imgs, target, writer_ids = batch
+    writer_ids_uniq = writer_ids.unique().tolist()
+    assert len(writer_ids_uniq) == 1, "For val/test, supply only one writer per batch"
+
+    splits = writerid_to_splits[writer_ids_uniq[0]]
+    batches = []
+    for split in splits:
+        supp_idxs = split[:shots]
+        query_idxs = split[shots:]
+        supp_imgs, supp_tgts = imgs[supp_idxs], target[supp_idxs]
+        query_imgs, query_tgts = imgs[query_idxs], target[query_idxs]
+        batches.append((supp_imgs, supp_tgts, query_imgs, query_tgts))
+    return batches
+
+
+def train_split_batch_for_adaptation(
     batch, ways: int, shots: int, limit_num_samples_per_task: Optional[int] = None
 ) -> List[Tuple[Tensor, Tensor, Tensor, Tensor]]:
     """

@@ -18,10 +18,11 @@ from thesis.models import MAMLLearner
 from thesis.util import (
     freeze,
     TrainMode,
-    split_batch_for_adaptation,
+    train_split_batch_for_adaptation,
     set_dropout_layers_train,
     set_batchnorm_layers_train,
     chunk_batch,
+    test_split_batch_for_adaptation,
 )
 
 
@@ -130,8 +131,21 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
 
         assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
 
-        # Split the batch into N different writers, for K-shot adaptation.
-        tasks = split_batch_for_adaptation(batch, self.ways, self.shots)
+        if mode is TrainMode.TRAIN:
+            # Split the batch into N different writers, for K-shot adaptation.
+            tasks = train_split_batch_for_adaptation(batch, self.ways, self.shots)
+        else:
+            # For validation/testing, an incoming batch consists of all the examples
+            # for a particular writer. We then use 10 different random support/query
+            # splits.
+            writerid_to_splits = (
+                self.val_writerid_to_splits
+                if mode is TrainMode.VAL
+                else self.test_writerid_to_splits
+            )
+            tasks = test_split_batch_for_adaptation(
+                batch, self.shots, writerid_to_splits
+            )
 
         for support_imgs, support_tgts, query_imgs, query_tgts in tasks:
             n_query_images += query_imgs.size(0)

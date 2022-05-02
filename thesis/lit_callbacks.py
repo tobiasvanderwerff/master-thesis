@@ -18,7 +18,8 @@ from thesis.util import (
     TrainMode,
     decode_prediction,
     EOS_TOKEN,
-    split_batch_for_adaptation,
+    train_split_batch_for_adaptation,
+    test_split_batch_for_adaptation,
 )
 
 PREDICTIONS_TO_LOG = {
@@ -254,18 +255,20 @@ class LogWorstPredictionsCallback(Callback):
         torch.set_grad_enabled(True)
         for imgs, targets, writer_ids in dataloader:
 
-            # TODO: for validation, cover the full set of images for each writer in the
-            #  batch (rather than limiting it to val_batch_size). Do this by chunking the
-            #  writer-specific data into batches. For even more stable results: use
-            #  multiple adaptation/validatin splits for a single writer and take the
-            #  average performance (e.g. repeated 10 times in MetaHTR paper).
+            if mode is TrainMode.TRAIN:
+                writer_batches = train_split_batch_for_adaptation(
+                    [imgs, targets, writer_ids], self.ways, self.shots
+                )
+            else:
+                writerid_to_splits = (
+                    pl_module.val_writerid_to_splits
+                    if mode is TrainMode.VAL
+                    else pl_module.test_writerid_to_splits
+                )
+                writer_batches = test_split_batch_for_adaptation(
+                    [imgs, targets, writer_ids], self.shots, writerid_to_splits
+                )
 
-            writer_batches = split_batch_for_adaptation(
-                [imgs, targets, writer_ids],
-                self.ways,
-                self.shots,
-                # limit_num_samples_per_task=pl_module.max_val_batch_size,
-            )
             for adapt_imgs, adapt_tgts, query_imgs, query_tgts in writer_batches:
                 args = [t.to(device) for t in [adapt_imgs, adapt_tgts, query_imgs]]
                 _, preds, *_ = (

@@ -7,10 +7,11 @@ from thesis.metahtr.util import LayerWiseLRTransform
 from thesis.models import MAMLLearner
 from thesis.util import (
     TrainMode,
-    split_batch_for_adaptation,
+    train_split_batch_for_adaptation,
     set_batchnorm_layers_train,
     set_dropout_layers_train,
     chunk_batch,
+    test_split_batch_for_adaptation,
 )
 
 from htr.models.sar.sar import ShowAttendRead
@@ -27,6 +28,8 @@ class MAMLHTR(nn.Module, MAMLLearner):
     def __init__(
         self,
         base_model: nn.Module,
+        val_writerid_to_splits: Dict[int, List[List[int]]],
+        test_writerid_to_splits: Dict[int, List[List[int]]],
         transform: Optional[Callable] = None,
         ways: int = 8,
         shots: int = 16,
@@ -49,6 +52,11 @@ class MAMLHTR(nn.Module, MAMLLearner):
 
         Args:
             base_model (nn.Module): base model to apply MAML on
+            val_writerid_to_splits (Dict[int, List[List[int]]]): mapping from writer
+                identity to a list of a list of indices, defining random
+                support/query splits to be used during validation.
+            test_writerid_to_splits (Dict[int, List[List[int]]]): same as
+                val_writerid_to_splits, but for test loop.
             transform (Optional[Callable]): transform used to update the module. See
                 learn2learn docs for more details.
             ways (int): number of writers per batch
@@ -67,6 +75,8 @@ class MAMLHTR(nn.Module, MAMLLearner):
 
         assert num_inner_steps >= 1
 
+        self.val_writerid_to_splits = val_writerid_to_splits
+        self.test_writerid_to_splits = test_writerid_to_splits
         self.ways = ways
         self.shots = shots
         self.inner_lr = inner_lr
@@ -145,8 +155,21 @@ class MAMLHTR(nn.Module, MAMLLearner):
 
         assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
 
-        # Split the batch into N different writers, for K-shot adaptation.
-        tasks = split_batch_for_adaptation(batch, self.ways, self.shots)
+        if mode is TrainMode.TRAIN:
+            # Split the batch into N different writers, for K-shot adaptation.
+            tasks = train_split_batch_for_adaptation(batch, self.ways, self.shots)
+        else:
+            # For validation/testing, an incoming batch consists of all the examples
+            # for a particular writer. We then use 10 different random support/query
+            # splits.
+            writerid_to_splits = (
+                self.val_writerid_to_splits
+                if mode is TrainMode.VAL
+                else self.test_writerid_to_splits
+            )
+            tasks = test_split_batch_for_adaptation(
+                batch, self.shots, writerid_to_splits
+            )
 
         for support_imgs, support_tgts, query_imgs, query_tgts in tasks:
             n_query_images += query_imgs.size(0)

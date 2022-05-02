@@ -1,9 +1,11 @@
+import random
 from typing import Optional, Dict, Union, Tuple, Any, List
 from pathlib import Path
 
 from pytorch_lightning import Callback
 
 from htr.metrics import WordErrorRate, CharacterErrorRate
+from thesis.data import WriterDataset
 from thesis.metahtr.lit_callbacks import (
     LogModelPredictionsMAML,
     LogWorstPredictionsMAML,
@@ -15,6 +17,7 @@ from thesis.util import (
     identity_collate_fn,
     TrainMode,
     PREDICTIONS_TO_LOG,
+    prepare_writer_splits,
 )
 
 from htr.models.lit_models import LitShowAttendRead, LitFullPageHTREncoderDecoder
@@ -37,8 +40,8 @@ class LitBaseAdaptive(pl.LightningModule):
         base_model_arch: str,
         main_model_arch: str,
         taskset_train: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
-        taskset_val: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
-        taskset_test: Optional[Union[l2l.data.TaskDataset, Dataset]] = None,
+        taskset_val: Optional[WriterDataset] = None,
+        taskset_test: Optional[WriterDataset] = None,
         learning_rate: float = 0.0001,
         weight_decay: float = 0.0,
         max_val_batch_size: int = 128,
@@ -55,10 +58,8 @@ class LitBaseAdaptive(pl.LightningModule):
             main_model_arch (str): main model architecture descriptor
             taskset_train (Optional[Union[l2l.data.TaskDataset, Dataset]]):
                 learn2learn train taskset
-            taskset_val (Optional[Union[l2l.data.TaskDataset, Dataset]]):
-                learn2learn val taskset
-            taskset_test (Optional[Union[l2l.data.TaskDataset, Dataset]]):
-                learn2learn test taskset
+            taskset_val (Optional[WriterDataset]): val taskset
+            taskset_test (Optional[WriterDataset]): test taskset
             learning_rate (float): learning rate
             weight_decay (float): weight decay
             max_val_batch_size (int): maximum val batch size
@@ -88,6 +89,10 @@ class LitBaseAdaptive(pl.LightningModule):
         self.num_workers = num_workers
         self.max_epochs = max_epochs
         self.use_cosine_lr_scheduler = use_cosine_lr_scheduler
+
+        # Initialize k-fold splits for validation and testing.
+        self.val_writerid_to_splits = prepare_writer_splits(self.taskset_val)
+        self.test_writerid_to_splits = prepare_writer_splits(self.taskset_test)
 
         self.hparams_to_log = dict()
         if prms_to_log is not None:
@@ -196,6 +201,8 @@ class LitMAMLLearner(LitBaseAdaptive):
         if base_model is not None:
             self.model = MAMLHTR(
                 base_model=base_model,
+                val_writerid_to_splits=self.val_writerid_to_splits,
+                test_writerid_to_splits=self.test_writerid_to_splits,
                 **kwargs,
             )
 

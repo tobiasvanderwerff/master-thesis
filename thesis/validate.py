@@ -11,9 +11,10 @@ from thesis.util import (
     get_label_encoder,
     get_pl_tb_logger,
     prepare_iam_splits,
-    prepare_l2l_taskset,
+    prepare_train_taskset,
     main_lit_models,
     get_parameter_names,
+    prepare_test_taskset,
 )
 
 from htr.data import IAMDataset
@@ -74,18 +75,8 @@ def main(args):
     ds_test.set_transforms_for_split("test")
 
     # Initialize learn2learn tasksets.
-    taskset_val = prepare_l2l_taskset(
-        ds_val,
-        ways,
-        cache_dir,
-        cache_dir / f"val_l2l_bookkeeping_shots={shots}.pkl",
-    )
-    taskset_test = prepare_l2l_taskset(
-        ds_test,
-        ways,
-        cache_dir,
-        cache_dir / f"test_l2l_bookkeeping_shots={shots}.pkl",
-    )
+    taskset_val = prepare_test_taskset(ds_val)
+    taskset_test = prepare_test_taskset(ds_test)
 
     # Remove overlap with PL arguments.
     hparams.pop("max_epochs")

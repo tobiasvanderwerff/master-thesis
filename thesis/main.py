@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 
+from thesis.data import WriterDataset
 from thesis.lit_models import LitMAMLLearner, LitBaseAdaptive
 from thesis.metahtr.lit_models import LitMetaHTR
 from thesis.metahtr.lit_util import MAMLHTRCheckpointIO
@@ -15,9 +16,10 @@ from thesis.util import (
     get_pl_tb_logger,
     copy_hyperparameters_to_logging_dir,
     prepare_iam_splits,
-    prepare_l2l_taskset,
+    prepare_train_taskset,
     main_lit_models,
     get_parameter_names,
+    prepare_test_taskset,
 )
 
 from htr.data import IAMDataset
@@ -99,25 +101,14 @@ def main(args):
 
     # Initialize learn2learn tasksets.
     shots, ways = args.shots, args.ways
-    taskset_train = prepare_l2l_taskset(
+    taskset_train = prepare_train_taskset(
         dataset=ds_train,
         ways=ways,
         bookkeeping_path=cache_dir / f"train_l2l_bookkeeping_shots={shots}.pkl",
         shots=train_min_bsz,
-        is_train=True,
     )
-    taskset_val = prepare_l2l_taskset(
-        dataset=ds_val,
-        ways=ways,
-        bookkeeping_path=cache_dir / f"val_l2l_bookkeeping_shots={shots}.pkl",
-        is_train=False,
-    )
-    taskset_test = prepare_l2l_taskset(
-        dataset=ds_test,
-        ways=ways,
-        bookkeeping_path=cache_dir / f"test_l2l_bookkeeping_shots={shots}.pkl",
-        is_train=False,
-    )
+    taskset_val = prepare_test_taskset(ds_val)
+    taskset_test = prepare_test_taskset(ds_test)
 
     # Define model arguments.
     args_ = dict(
