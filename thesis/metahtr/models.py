@@ -272,12 +272,16 @@ class MetaHTR(MAMLHTR):
     def __init__(
         self,
         base_model: nn.Module,
+        val_writerid_to_splits: Dict[int, List[List[int]]],
+        test_writerid_to_splits: Dict[int, List[List[int]]],
         num_clf_weights: int,
         inst_mlp_hidden_size: int = 8,
         initial_inner_lr: float = 0.001,
         use_instance_weights: bool = True,
         **kwargs,
     ):
+        self.val_writerid_to_splits = val_writerid_to_splits
+        self.test_writerid_to_splits = test_writerid_to_splits
         self.num_clf_weights = num_clf_weights
         self.inst_mlp_hidden_size = inst_mlp_hidden_size
         self.initial_inner_lr = initial_inner_lr
@@ -304,6 +308,8 @@ class MetaHTR(MAMLHTR):
 
         super().__init__(
             base_model=base_model,
+            val_writerid_to_splits=val_writerid_to_splits,
+            test_writerid_to_splits=test_writerid_to_splits,
             transform=transform,
             instance_weights_fn=instance_weights_fn,
             **kwargs,

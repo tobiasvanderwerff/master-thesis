@@ -35,6 +35,8 @@ class LitMetaHTR(LitMAMLLearner):
 
         self.model = MetaHTR(
             base_model=base_model,
+            val_writerid_to_splits=self.val_writerid_to_splits,
+            test_writerid_to_splits=self.test_writerid_to_splits,
             num_clf_weights=num_clf_weights,
             inst_mlp_hidden_size=inst_mlp_hidden_size,
             initial_inner_lr=initial_inner_lr,
