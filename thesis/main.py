@@ -2,7 +2,7 @@ import argparse
 from pathlib import Path
 
 from thesis.data import WriterDataset
-from thesis.lit_models import LitMAMLLearner, LitBaseAdaptive
+from thesis.lit_models import LitMAMLLearner, LitBaseEpisodic
 from thesis.metahtr.lit_models import LitMetaHTR
 from thesis.metahtr.lit_util import MAMLHTRCheckpointIO
 from thesis.writer_code.lit_models import (
@@ -35,6 +35,7 @@ def main(args):
 
     print(f"Main model used: {str(args.main_model_arch)}")
     print(f"Base model used: {str(args.base_model_arch).upper()}")
+    print(f"Adaptation method: {args.adaptation_method}")
 
     if args.base_model_arch == "sar":
         # Disable CuDDN if using LSTM base model (SAR). This is neseccary because CuDNN
@@ -226,7 +227,7 @@ if __name__ == "__main__":
     # fmt: on
 
     parser = LitMAMLLearner.add_model_specific_args(parser)
-    parser = LitBaseAdaptive.add_model_specific_args(parser)
+    parser = LitBaseEpisodic.add_model_specific_args(parser)
     parser = LitMetaHTR.add_model_specific_args(parser)
     parser = LitWriterCodeAdaptiveModel.add_model_specific_args(parser)
     # parser = LitWriterCodeAdaptiveModelMAML.add_model_specific_args(parser)

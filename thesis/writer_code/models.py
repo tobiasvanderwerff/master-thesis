@@ -1,6 +1,6 @@
 from functools import partial
 import math
-from typing import Optional, Callable, Tuple, List, Dict, Any
+from typing import Optional, Callable, Tuple, List, Dict, Any, Union
 
 import numpy as np
 import torch
@@ -13,7 +13,7 @@ from torch import Tensor
 from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
 from htr.models.sar.sar import ShowAttendRead
 
-from thesis.writer_code.util import WriterEmbeddingType
+from thesis.writer_code.util import AdaptationMethod
 from thesis.models import MAMLLearner
 from thesis.util import (
     freeze,
@@ -236,8 +236,7 @@ class WriterCodeAdaptiveModelMAML(nn.Module, MAMLLearner):
 
 class WriterCodeAdaptiveModel(nn.Module):
     """
-    Implementation of speaker-adaptive model by Abdel-Hamid et al. (2013),
-    adapted to HTR models.
+    Use a writer code for adaptation.
     """
 
     def __init__(
@@ -251,7 +250,9 @@ class WriterCodeAdaptiveModel(nn.Module):
         ways: int = 8,
         shots: int = 8,
         max_val_batch_size: int = 64,
-        embedding_type: WriterEmbeddingType = WriterEmbeddingType.LEARNED,
+        adaptation_method: Union[
+            AdaptationMethod, str
+        ] = AdaptationMethod.CONDITIONAL_BATCHNORM,
         adaptation_opt_steps: int = 1,
         use_adam_for_adaptation: bool = False,
     ):
@@ -269,102 +270,102 @@ class WriterCodeAdaptiveModel(nn.Module):
             ways (int): ways
             shots (int): shots
             max_val_batch_size (int): maximum val batch size
-            embedding_type (WriterEmbeddingType): type of writer embedding used
+            adaptation_method (AdaptationMethod): how the writer code should be inserted into the model
             adaptation_opt_steps (int): number of optimization steps during adaptation
             use_adam_for_adaptation (bool): whether to use Adam during adaptation
                 (otherwise plain SGD is used)
         """
+
         super().__init__()
         self.d_model = d_model
         self.code_size = code_size
         self.adaptation_num_hidden = adaptation_num_hidden
+        self.adaptation_method = adaptation_method
         self.num_writers = num_writers
         self.learning_rate_emb = learning_rate_emb
         self.ways = ways
         self.shots = shots
         self.max_val_batch_size = max_val_batch_size
-        self.embedding_type = embedding_type
         self.adaptation_opt_steps = adaptation_opt_steps
         self.use_adam_for_adaptation = use_adam_for_adaptation
 
-        self.emb_transform = None
-        self.writer_embs = None
-        if self.embedding_type == WriterEmbeddingType.LEARNED and code_size > 0:
-            self.writer_embs = nn.Embedding(num_writers, code_size)
-        if self.embedding_type == WriterEmbeddingType.TRANSFORMED:
-            # self.emb_transform = nn.Linear(d_model, code_size)
-            self.emb_transform = nn.LSTM(
-                # These settings were chosen ad-hoc.
-                input_size=d_model,
-                hidden_size=code_size,
-                num_layers=2,
-                batch_first=True,
-                dropout=0.1,
-                bidirectional=False,
+        if isinstance(self.adaptation_method, str):
+            self.adaptation_method = AdaptationMethod.from_string(
+                self.adaptation_method
             )
-        self.feature_transform = FeatureTransform(
-            AdaptationMLP(d_model, code_size, adaptation_num_hidden),
-            self.emb_transform,
-            generate_code=(embedding_type == WriterEmbeddingType.TRANSFORMED),
-        )
-        self.base_model_with_adaptation = BaseModelAdaptation(base_model)
+
+        if isinstance(base_model, FullPageHTREncoderDecoder):
+            self.arch = "fphtr"
+        elif isinstance(base_model, ShowAttendRead):
+            self.arch = "sar"
+        else:
+            raise ValueError(f"Unrecognized model class: {base_model.__class__}")
 
         assert base_model.loss_fn.reduction == "mean"
+
+        self.writer_embs = None
+        if code_size > 0:
+            self.writer_embs = nn.Embedding(num_writers, code_size)
 
         freeze(base_model)  # make sure the base model weights are frozen
         # Finetune the linear layer in the base model directly following the adaptation
         # model.
-        base_model.encoder.linear.requires_grad_(True)
+        if self.adaptation_method is AdaptationMethod.CNN_OUTPUT:
+            base_model.encoder.linear.requires_grad_(True)
+
+        self.feature_transform = None
+        if self.adaptation_method is AdaptationMethod.CONDITIONAL_BATCHNORM:
+            resnet_old = (
+                base_model.encoder
+                if self.arch == "fphtr"
+                else base_model.resnet_encoder
+            )
+            resnet_new = WriterAdaptiveResnet(
+                resnet_old, code_size, adaptation_num_hidden
+            )
+            if self.arch == "fphtr":
+                base_model.encoder = resnet_new
+            else:  # SAR
+                base_model.resnet_encoder = resnet_new
+            self.model = base_model
+        elif self.adaptation_method is AdaptationMethod.CNN_OUTPUT:
+            self.feature_transform = FeatureTransform(
+                AdaptationMLP(d_model, code_size, adaptation_num_hidden),
+                generate_code=False,
+            )
+            base_model.encoder.linear.requires_grad_(True)
+            self.model = BaseModelAdaptation(base_model)
+        else:
+            raise ValueError(f"Incorrect adaptation method: {self.adaptation_method}")
 
     def forward(
         self, *args, mode: TrainMode = TrainMode.TRAIN, **kwargs
     ) -> Tuple[Tensor, Tensor, Tensor]:
-        if self.embedding_type == WriterEmbeddingType.LEARNED:
-            if mode == TrainMode.TRAIN:
-                # Use a pre-trained embedding.
-                logits, loss = self.forward_existing_code(*args, **kwargs)
-            else:  # initialize and train a new writer embedding
-                logits, loss = self.forward_new_code(*args, **kwargs)
-        elif self.embedding_type == WriterEmbeddingType.TRANSFORMED:
-            logits, loss = self.forward_transform(*args, **kwargs)
-        else:
-            raise ValueError(f"Unrecognized emb type: {mode}")
+        if mode == TrainMode.TRAIN:
+            # Use a pre-trained embedding.
+            logits, loss = self.forward_existing_code(*args, **kwargs, mode=mode)
+        else:  # initialize and train a new writer embedding
+            logits, loss = self.forward_new_code(*args, **kwargs)
         sampled_ids = logits.argmax(-1)
         return logits, sampled_ids, loss
 
-    def forward_transform(
-        self, imgs: Tensor, target: Tensor, *args, **kwargs
-    ) -> Tuple[Tensor, Tensor]:
-        """
-        Create a writer code by passing the average CNN feature vector through a MLP.
-        """
-        logits, loss = self.base_model_with_adaptation(
-            imgs,
-            target,
-            intermediate_transform=self.feature_transform,
-            teacher_forcing=True,
-        )
-        return logits, loss
-
     def forward_existing_code(
-        self, imgs: Tensor, target: Tensor, writer_ids: Tensor, *args, **kwargs
+        self,
+        imgs: Tensor,
+        target: Tensor,
+        writer_ids: Tensor,
+        mode: TrainMode = TrainMode.TRAIN,
+        *args,
+        **kwargs,
     ) -> Tuple[Tensor, Tensor]:
-        """Perform adaptation using an existing writer code."""
+        """Forward using an existing writer code."""
         # Load the writer code.
         writer_code = None
         if self.code_size > 0:
             writer_code = self.writer_embs(writer_ids)  # (N, code_size)
 
         # Run inference using the writer code.
-        intermediate_transform = partial(
-            self.feature_transform, writer_code=writer_code
-        )
-        logits, loss = self.base_model_with_adaptation(
-            imgs,
-            target,
-            intermediate_transform=intermediate_transform,
-            teacher_forcing=True,
-        )
+        logits, _, loss = self.model_forward(imgs, target, writer_code, mode=mode)
         return logits, loss
 
     def forward_new_code(
@@ -375,8 +376,8 @@ class WriterCodeAdaptiveModel(nn.Module):
         inference_tgts: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
         """
-        Create a writer code based on a set of adaptation images, and run
-        inference on another set.
+        Create a new writer code using adaptation examples, and run inference on
+        another set.
 
         Args:
             adapt_imgs (Tensor): images to do adaptation on
@@ -403,16 +404,10 @@ class WriterCodeAdaptiveModel(nn.Module):
         # Run inference using the writer code.
         inference_loss = 0.0
         all_logits = []
-        intermediate_transform = partial(
-            self.feature_transform, writer_code=writer_code
-        )
         for img, tgt in zip(inf_img_chunks, inf_tgt_chunks):
             with torch.inference_mode():
-                logits, loss = self.base_model_with_adaptation(
-                    img,
-                    tgt,
-                    intermediate_transform=intermediate_transform,
-                    teacher_forcing=False,
+                logits, _, loss = self.model_forward(
+                    img, tgt, writer_code.expand(img.shape[0], -1), mode=TrainMode.VAL
                 )
             all_logits.append(logits)
             inference_loss += loss * img.size(0)
@@ -431,8 +426,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         Create a new writer code (embedding) based on a batch of examples for a writer.
 
         The writer code is created by running one or multiple forward/backward
-        passes on a batch of adaptation data in order to train a new writer
-        embedding.
+        passes on a batch of adaptation data.
         """
         writer_code = torch.empty(1, self.code_size, device=adaptation_imgs.device)
         writer_code.normal_()  # mean 0, std 1
@@ -445,14 +439,11 @@ class WriterCodeAdaptiveModel(nn.Module):
             optimizer = optim.SGD(iter([writer_code]), lr=self.learning_rate_emb)
 
         for _ in range(self.adaptation_opt_steps):
-            intermediate_transform = partial(
-                self.feature_transform, writer_code=writer_code
-            )
-            _, loss = self.base_model_with_adaptation(
+            _, _, loss = self.model_forward(
                 adaptation_imgs,
                 adaptation_targets,
-                intermediate_transform=intermediate_transform,
-                teacher_forcing=False,
+                writer_code.expand(adaptation_imgs.shape[0], -1),
+                mode=TrainMode.TRAIN,
             )
 
             optimizer.zero_grad()
@@ -461,6 +452,51 @@ class WriterCodeAdaptiveModel(nn.Module):
         writer_code.detach_()
 
         return writer_code
+
+    def model_forward(
+        self,
+        imgs: Tensor,
+        target: Tensor,
+        writer_code: Tensor,
+        mode: TrainMode = TrainMode.TRAIN,
+    ) -> Tuple[Tensor, Tensor, Tensor]:
+        """Forward with writer code supplied as argument."""
+        teacher_forcing = True if mode == TrainMode.TRAIN else False
+        if self.adaptation_method is AdaptationMethod.CNN_OUTPUT:
+            intermediate_transform = partial(
+                self.feature_transform, writer_code=writer_code
+            )
+            logits, loss = self.model(
+                imgs,
+                target,
+                intermediate_transform=intermediate_transform,
+                teacher_forcing=teacher_forcing,
+            )
+        else:
+            if self.arch == "fphtr":
+                features = self.model.encoder(imgs, writer_code)
+                if teacher_forcing:
+                    logits = self.model.decoder.decode_teacher_forcing(features, target)
+                else:
+                    logits, _ = self.model.decoder(features)
+            else:  # SAR
+                imgs = imgs.unsqueeze(1)
+                features = self.model.resnet_encoder(imgs, writer_code)
+                h_holistic = self.model.lstm_encoder(features)
+                if teacher_forcing:
+                    logits = self.model.lstm_decoder.forward_teacher_forcing(
+                        features, h_holistic, target
+                    )
+                else:
+                    logits, _ = self.model.lstm_decoder(features, h_holistic)
+            loss = None
+            if target is not None:
+                loss = self.model.loss_fn(
+                    logits[:, : target.size(1), :].transpose(1, 2),
+                    target[:, : logits.size(1)],
+                )
+        sampled_ids = logits.argmax(-1)
+        return logits, sampled_ids, loss
 
 
 class AdaptationMLP(nn.Module):

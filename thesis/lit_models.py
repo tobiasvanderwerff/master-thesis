@@ -32,8 +32,8 @@ from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
 
-class LitBaseAdaptive(pl.LightningModule):
-    """Base class for conditionally adaptive modules."""
+class LitBaseEpisodic(pl.LightningModule):
+    """Base class for models trained using episodic learning."""
 
     def __init__(
         self,
@@ -179,7 +179,7 @@ class LitBaseAdaptive(pl.LightningModule):
         return parser
 
 
-class LitMAMLLearner(LitBaseAdaptive):
+class LitMAMLLearner(LitBaseEpisodic):
     model: MAMLLearner
 
     def __init__(
