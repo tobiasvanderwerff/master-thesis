@@ -638,3 +638,135 @@ class BatchNorm1dPermute(nn.Module):
         x = self.bn(x)
         x = x.movedim(1, -1)  # (N, *, k)
         return x
+
+
+class ConditionalBatchNorm2d(nn.Module):
+    """
+    Conditional batch normalization. Predict deltas to the batchnorm affine
+    parameters by linear transform of a writer code.
+
+    The affine delta parameters for the batchnorm weight and bias are obtained by
+    feeding a writer code through a linear mapping producing 2 * C outputs, where C
+    is the number of output channels.
+    """
+
+    def __init__(
+        self,
+        batchnorm_layer: nn.BatchNorm2d,
+        writer_code_size: int,
+        adaptation_num_hidden: int = 128,
+    ):
+        super().__init__()
+        self.bn = batchnorm_layer
+        self.writer_code_size = writer_code_size
+        self.writer_code = None
+        self.adapt = nn.Sequential(  # 1-hidden-layer MLP
+            nn.Linear(writer_code_size, adaptation_num_hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(adaptation_num_hidden, 2 * batchnorm_layer.num_features),
+        )
+
+        # Save batchnorm affine parameters.
+        self.weight = self.bn.weight.detach().clone()
+        self.bias = self.bn.bias.detach().clone()
+
+        # Reset affine parameters to identify function.
+        with torch.no_grad():
+            self.bn.weight.fill_(1)
+            self.bn.bias.fill_(0)
+        self.bn.weight.requires_grad = False
+        self.bn.bias.requires_grad = False
+
+    def forward(self, x: torch.Tensor):
+        """
+        Forward using writer code. The writer code is not passed as an argument,
+        but is expected to be externally set under the `writer_code` attribute.
+
+        Args:
+            x (Tensor of shape (N, n_channels, h, w))
+        """
+        assert self.writer_code is not None, "Writer code not initialized."
+        assert self.writer_code.ndim == 2 and self.writer_code.shape[0] == x.shape[0]
+
+        bsz, n_channels = x.shape[:2]
+        self.weight, self.bias = self.weight.to(x.device), self.bias.to(x.device)
+
+        x = self.bn(x)
+
+        weight_and_bias = self.adapt(self.writer_code)  # shape: (N, 2 * n_channels)
+        weight_delta = weight_and_bias[:, :n_channels]
+        bias_delta = weight_and_bias[:, n_channels:]
+
+        weight = self.weight.unsqueeze(0).expand_as(weight_delta)
+        bias = self.bias.unsqueeze(0).expand_as(bias_delta)
+        weight = (weight + weight_delta).view(bsz, n_channels, 1, 1).expand_as(x)
+        bias = (bias + bias_delta).view(bsz, n_channels, 1, 1).expand_as(x)
+
+        return x * weight + bias
+
+    @staticmethod
+    def replace_bn_adaptive(
+        module: nn.Module, writer_code_size: int, adaptation_num_hidden: int
+    ):
+        """
+        Replace all nn.BatchNorm2d layers in a module with ConditionalBatchNorm2d layers.
+
+        Returns:
+            list of all newly added ConditionalBatchNorm2d modules
+        """
+        new_mods = []
+        if isinstance(module, ConditionalBatchNorm2d):
+            return new_mods
+        if isinstance(module, nn.Sequential):
+            for i, m in enumerate(module):
+                if type(m) == nn.BatchNorm2d:
+                    new_bn = ConditionalBatchNorm2d(
+                        m, writer_code_size, adaptation_num_hidden
+                    )
+                    module[i] = new_bn
+                    new_mods.append(new_bn)
+        else:
+            for attr_str in dir(module):
+                attr = getattr(module, attr_str)
+                if type(attr) == nn.BatchNorm2d:
+                    new_bn = ConditionalBatchNorm2d(
+                        attr, writer_code_size, adaptation_num_hidden
+                    )
+                    setattr(module, attr_str, new_bn)
+                    new_mods.append(new_bn)
+
+        for child_module in module.children():
+            new_mods.extend(
+                ConditionalBatchNorm2d.replace_bn_adaptive(
+                    child_module, writer_code_size, adaptation_num_hidden
+                )
+            )
+        return new_mods
+
+
+class WriterAdaptiveResnet(nn.Module):
+    """
+    A Resnet where all batch normalization layers are replaced with writer-code
+    adaptive layers. Concretely, this means the learned affine parameters of the
+    batchnorm layers are replaced with parameters produced by a writer code
+    transformation.
+    """
+
+    def __init__(
+        self, resnet: nn.Module, writer_code_size: int, adaptation_num_hidden: int
+    ):
+        super().__init__()
+        self.resnet = resnet
+        # Replace batchnorm layers with adaptive ones.
+        self.bn_layers = ConditionalBatchNorm2d.replace_bn_adaptive(
+            self.resnet, writer_code_size, adaptation_num_hidden
+        )
+
+    def forward(self, imgs: Tensor, writer_code: torch.Tensor) -> torch.Tensor:
+        # Set `writer_code` attribute for all ConditionalBatchNorm2d layers
+        for l in self.bn_layers:
+            l.writer_code = writer_code
+        out = self.resnet(imgs)
+        for l in self.bn_layers:
+            l.writer_code = None
+        return out
