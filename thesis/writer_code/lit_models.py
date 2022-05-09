@@ -296,48 +296,45 @@ class LitWriterCodeAdaptiveModel(LitBaseEpisodic):
         label_encoder: LabelEncoder,
         is_train: bool,
     ) -> List[Callback]:
-        if self.adaptation_method is AdaptationMethod.CONDITIONAL_BATCHNORM:
-            # TODO: add LogModelPredictions and LogWorstPredictions callbacks.
-            return callbacks
-        else:
-            callbacks = super().add_model_specific_callbacks(
-                callbacks,
-                shots=shots,
-                ways=ways,
-                label_encoder=label_encoder,
-                is_train=is_train,
-            )
+        callbacks = super().add_model_specific_callbacks(
+            callbacks,
+            shots=shots,
+            ways=ways,
+            label_encoder=label_encoder,
+            is_train=is_train,
+        )
 
-            # Prepare fixed batches used for monitoring model predictions during training.
-            im, t, wrtrs = next(iter(self.train_dataloader()))
-            train_batch = (im[:shots], t[:shots], wrtrs[:shots])
-            im, t, wrtrs = next(iter(self.val_dataloader()))
-            val_batch = (
-                im[:shots],
-                t[:shots],
-                im[shots : shots + PREDICTIONS_TO_LOG["word"]],
-                t[shots : shots + PREDICTIONS_TO_LOG["word"]],
-            )
-            callbacks.extend(
-                [
-                    LogModelPredictions(
-                        label_encoder=label_encoder,
-                        val_batch=val_batch,
-                        train_batch=train_batch,
-                        predict_on_train_start=False,
-                    ),
-                    LogWorstPredictions(
-                        label_encoder=label_encoder,
-                        train_dataloader=self.train_dataloader(),
-                        val_dataloader=self.val_dataloader(),
-                        test_dataloader=self.test_dataloader(),
-                        shots=shots,
-                        ways=ways,
-                        training_skipped=not is_train,
-                    ),
-                ]
-            )
-            return callbacks
+        # Prepare fixed batches used for monitoring model predictions during training.
+        im, t, wrtrs = next(iter(self.train_dataloader()))
+        train_batch = (im[:shots], t[:shots], wrtrs[:shots])
+        im, t, wrtrs = next(iter(self.val_dataloader()))
+        val_batch = (
+            im[:shots],
+            t[:shots],
+            im[shots : shots + PREDICTIONS_TO_LOG["word"]],
+            t[shots : shots + PREDICTIONS_TO_LOG["word"]],
+        )
+        callbacks.extend(
+            [
+                LogModelPredictions(
+                    label_encoder=label_encoder,
+                    val_batch=val_batch,
+                    train_batch=train_batch,
+                    predict_on_train_start=False,
+                ),
+                # TODO: add LogWorstPredictions callback.
+                # LogWorstPredictions(
+                #     label_encoder=label_encoder,
+                #     train_dataloader=self.train_dataloader(),
+                #     val_dataloader=self.val_dataloader(),
+                #     test_dataloader=self.test_dataloader(),
+                #     shots=shots,
+                #     ways=ways,
+                #     training_skipped=not is_train,
+                # ),
+            ]
+        )
+        return callbacks
 
     @staticmethod
     def init_with_base_model_from_checkpoint(
