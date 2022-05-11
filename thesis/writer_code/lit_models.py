@@ -165,6 +165,7 @@ class LitWriterCodeAdaptiveModel(LitBaseEpisodic):
             "adaptation_num_hidden",
             "ways",
             "shots",
+            "num_writers",
             "learning_rate_emb",
             "weight_decay",
             "adaptation_opt_steps",

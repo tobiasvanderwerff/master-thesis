@@ -20,6 +20,7 @@ from thesis.util import (
     main_lit_models,
     get_parameter_names,
     prepare_test_taskset,
+    load_best_pl_checkpoint,
 )
 
 from htr.data import IAMDataset
@@ -193,6 +194,10 @@ def main(args):
     else:  # train a model
         trainer.fit(learner)
 
+    if args.test_on_fit_end:
+        load_best_pl_checkpoint(trainer, learner, ds_train.label_enc)
+        trainer.test(learner)
+
 
 if __name__ == "__main__":
     # fmt: off
@@ -219,6 +224,8 @@ if __name__ == "__main__":
                         help="Whether to use image augmentations during training. For "
                              "MAML this does not seem to be too beneficial so far.")
     parser.add_argument("--save_all_checkpoints", action="store_true", default=False)
+    parser.add_argument("--test_on_fit_end", action="store_true", default=False,
+                        help="Run test on the best model checkpoint after training.")
     parser.add_argument("--use_cpu", action="store_true", default=False)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--experiment_name", type=str, default=None,
