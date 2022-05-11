@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-from thesis.lit_models import LitMAMLLearner, LitBaseAdaptive
+from thesis.lit_models import LitMAMLLearner
 from thesis.metahtr.lit_models import LitMetaHTR
 from thesis.metahtr.lit_util import MAMLHTRCheckpointIO
 from thesis.writer_code.lit_models import (

@@ -449,6 +449,7 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
         assert isinstance(base_model, (FullPageHTREncoderDecoder, ShowAttendRead))
 
         self.d_model = d_model
+        self.writer_codes = writer_codes
         self.cer_metric = cer_metric
         self.wer_metric = wer_metric
         self.code_size = code_size
