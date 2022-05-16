@@ -12,6 +12,7 @@ from thesis.util import (
     set_dropout_layers_train,
     chunk_batch,
     test_split_batch_for_adaptation,
+    freeze,
 )
 
 from htr.models.sar.sar import ShowAttendRead
@@ -22,6 +23,8 @@ import numpy as np
 import learn2learn as l2l
 from torch import Tensor
 from torch.autograd import grad
+
+from thesis.writer_code.models import AdaptationMLP
 
 
 class MAMLHTR(nn.Module, MAMLLearner):
@@ -87,13 +90,24 @@ class MAMLHTR(nn.Module, MAMLLearner):
         self.num_inner_steps = num_inner_steps
         self.allow_nograd = allow_nograd
 
+        # Add some extra layers at the encoder output.
+        old_linear = base_model.encoder.linear  # NOTE: right now only works for FPHTR
+        d_model = old_linear.out_channels
+        new_linear = nn.Sequential(
+            old_linear, AdaptationMLP(d_model, code_size=0, num_hidden=d_model)
+        )
+        base_model.encoder.linear = new_linear
+
+        # Freeze the decoder since we expect it needs little adaptation.
+        freeze(base_model.decoder)
+
         if transform is not None:
             self.gbml = l2l.algorithms.GBML(
                 base_model,
                 transform=transform,
                 first_order=False,
                 allow_unused=True,
-                allow_nograd=allow_nograd,
+                allow_nograd=True,
             )
         else:
             self.gbml = l2l.algorithms.MAML(
@@ -101,7 +115,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
                 lr=inner_lr,
                 first_order=False,
                 allow_unused=True,
-                allow_nograd=allow_nograd,
+                allow_nograd=True,
             )
 
         self.ignore_index = self.gbml.module.pad_tkn_idx

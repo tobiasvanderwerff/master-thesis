@@ -139,10 +139,10 @@ def main(args):
     learner = cls.init_with_base_model_from_checkpoint(**args_)
 
     plugins = None
-    if isinstance(
-        learner, (LitMAMLLearner, LitMetaHTR, LitWriterCodeAdaptiveModelMAML)
-    ):
-        plugins = [MAMLHTRCheckpointIO(base_model_params)]
+    # if isinstance(
+    #     learner, (LitMAMLLearner, LitMetaHTR, LitWriterCodeAdaptiveModelMAML)
+    # ):
+    #     plugins = [MAMLHTRCheckpointIO(base_model_params)]
 
     callbacks = [
         ModelSummary(max_depth=3),

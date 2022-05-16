@@ -323,15 +323,15 @@ class LitMAMLLearner(LitBaseEpisodic):
                     train_batch=train_batch,
                     predict_on_train_start=True,
                 ),
-                LogWorstPredictionsMAML(
-                    label_encoder=label_encoder,
-                    train_dataloader=self.train_dataloader(),
-                    val_dataloader=self.val_dataloader(),
-                    test_dataloader=self.test_dataloader(),
-                    shots=shots,
-                    ways=ways,
-                    training_skipped=not is_train,
-                ),
+                # LogWorstPredictionsMAML(
+                #     label_encoder=label_encoder,
+                #     train_dataloader=self.train_dataloader(),
+                #     val_dataloader=self.val_dataloader(),
+                #     test_dataloader=self.test_dataloader(),
+                #     shots=shots,
+                #     ways=ways,
+                #     training_skipped=not is_train,
+                # ),
             ]
         )
         return callbacks
