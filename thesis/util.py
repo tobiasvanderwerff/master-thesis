@@ -419,7 +419,7 @@ def get_bn_statistics(model: nn.Module, dataloader: DataLoader, device: str = "c
 
         with torch.inference_mode():
             _ = model.forward_teacher_forcing(imgs, target)
-        CNT += 1
+        # CNT += 1
         # if CNT == 20:
         #     break
         # # TODO: remove
