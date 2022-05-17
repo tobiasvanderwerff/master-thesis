@@ -22,6 +22,7 @@ from thesis.util import (
     set_dropout_layers_train,
     set_batchnorm_layers_train,
     chunk_batch,
+    collect_bn_layers,
 )
 
 
@@ -506,18 +507,18 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
 
         self.feature_transform = None
         if self.adaptation_method is AdaptationMethod.CONDITIONAL_BATCHNORM:
-            resnet_old = (
-                base_model.encoder
-                if self.arch == "fphtr"
-                else base_model.resnet_encoder
-            )
-            resnet_new = WriterAdaptiveResnet(
-                resnet_old, code_size, adaptation_num_hidden
-            )
-            if self.arch == "fphtr":
-                base_model.encoder = resnet_new
-            else:  # SAR
-                base_model.resnet_encoder = resnet_new
+            # resnet_old = (
+            #     base_model.encoder
+            #     if self.arch == "fphtr"
+            #     else base_model.resnet_encoder
+            # )
+            # resnet_new = WriterAdaptiveResnet(
+            #     resnet_old, code_size, adaptation_num_hidden
+            # )
+            # if self.arch == "fphtr":
+            #     base_model.encoder = resnet_new
+            # else:  # SAR
+            #     base_model.resnet_encoder = resnet_new
             self.model = base_model
         elif self.adaptation_method is AdaptationMethod.CNN_OUTPUT:
             self.feature_transform = FeatureTransform(
@@ -887,3 +888,190 @@ class WriterAdaptiveResnet(nn.Module):
         for l in self.bn_layers:
             l.writer_code = None
         return out
+
+
+class WriterAdaptiveResnet2(nn.Module):
+    """
+    A Resnet where all batch normalization layers are replaced with
+    adaptive batchnorm layers (CITE).
+    """
+
+    def __init__(
+        self,
+        resnet: nn.Module,
+        layer_stats_per_writer: Dict[int, Dict[int, Dict[int, Dict[str, float]]]],
+    ):
+        super().__init__()
+        self.resnet = resnet
+        self.layer_stats_per_writer = layer_stats_per_writer
+        # Replace batchnorm layers with adaptive ones.
+        self.bn_layers = AdaptiveBatchnorm2d.replace_bn_adaptive(
+            self.resnet, self.layer_stats_per_writer
+        )
+
+    def forward(self, imgs: Tensor, writer_ids: torch.Tensor) -> torch.Tensor:
+        # Set `writer_stats` attribute for all AdaptiveBatchnorm2d layers,
+        # which contains the layer mean and variance for each writer in the current
+        # batch.
+        for i, bn_layer in enumerate(self.bn_layers):
+            bn_layer.writer_ids = writer_ids
+            # stats = []
+            # for wid in writer_ids:
+            #     wid_key = wid.item()
+            #     mean = self.layer_stats_per_writer[wid_key][i]["mean"]
+            #     std = self.layer_stats_per_writer[wid_key][i]["std"]
+            #     stats.append([mean, std])
+            # bn_layer.writer_stats = torch.tensor(stats, device=imgs.device)
+        out = self.resnet(imgs)
+        for l in self.bn_layers:
+            l.writer_stats = None
+        return out
+
+
+class AdaptiveBatchnorm2d(nn.Module):
+    def __init__(self, stats_per_writer: Tensor, weight: Tensor, bias: Tensor):
+        super().__init__()
+        assert stats_per_writer.ndim == 3
+        self.register_buffer("stats_per_writer", stats_per_writer)  # (n_writers, C, 2)
+        self.register_parameter("weight", weight)  # shape: (C,)
+        self.register_parameter("bias", bias)  # shape: (C,)
+
+        self.writer_ids = None  # to be set externally
+        self.eps = 1e-5
+
+    def forward(self, x: Tensor):
+        assert x.ndim == 4, x.shape
+
+        bsz, n_channels, h, w = x.shape
+
+        # self.weight, self.bias = self.weight.to(x.device), self.bias.to(x.device)
+        # self.stats_per_writer = self.stats_per_writer.to(x.device)
+
+        stats = self.stats_per_writer[self.writer_ids]  # shape: (bsz, n_channels, 2)
+        sub = stats[:, :, 0].view(bsz, n_channels, 1, 1).expand_as(x)
+        div = torch.sqrt(
+            stats[:, :, 1].view(bsz, n_channels, 1, 1).expand_as(x) + self.eps
+        )
+        x = (x - sub) / div
+
+        weight = self.weight.view(1, n_channels, 1, 1).expand_as(x)
+        bias = self.bias.view(1, n_channels, 1, 1).expand_as(x)
+
+        return x * weight + bias
+
+    @staticmethod
+    def replace_bn_adaptive(module: nn.Module, stats_per_writer: Dict):
+        """
+        Replace all nn.BatchNorm2d layers in a module with AdaptiveBatchnorm2d layers.
+
+        Returns:
+            list of all newly added batchnorm modules
+        """
+
+        def dict2tensor(dct: Dict[int, Dict[int, Dict[str, float]]]):
+            res = []
+            for writer_id in dct.keys():
+                wrtr_stats = []
+                for chan, stats in dct[writer_id].items():
+                    wrtr_stats.append([stats["mean"], stats["var"]])
+                res.append(wrtr_stats)
+            return torch.tensor(res, dtype=torch.float32)
+
+        new_mods = []
+        if isinstance(module, AdaptiveBatchnorm2d):
+            return new_mods
+        if isinstance(module, nn.Sequential):
+            for i, m in enumerate(module):
+                if type(m) == nn.BatchNorm2d:
+                    stats_tns = dict2tensor(stats_per_writer[m.layer_idx])
+                    new_bn = AdaptiveBatchnorm2d(stats_tns, m.weight, m.bias)
+                    module[i] = new_bn
+                    new_mods.append(new_bn)
+        else:
+            for attr_str in dir(module):
+                attr = getattr(module, attr_str)
+                if type(attr) == nn.BatchNorm2d:
+                    stats_tns = dict2tensor(stats_per_writer[attr.layer_idx])
+                    new_bn = AdaptiveBatchnorm2d(stats_tns, attr.weight, attr.bias)
+                    setattr(module, attr_str, new_bn)
+                    new_mods.append(new_bn)
+
+        for child_module in module.children():
+            new_mods.extend(
+                AdaptiveBatchnorm2d.replace_bn_adaptive(child_module, stats_per_writer)
+            )
+        return new_mods
+
+
+class AdaptiveBatchnormModel(nn.Module):
+    def __init__(
+        self,
+        base_model: nn.Module,
+        layer_stats_per_writer: Dict[int, Dict[int, Dict[int, Dict[str, float]]]],
+        d_model: int,
+    ):
+        """
+        Args:
+            base_model (nn.Module): pre-trained HTR model, frozen during adaptation
+            layer_stats_per_writer: ...
+            d_model (int): size of the feature vectors produced by the feature
+                extractor (e.g. CNN).
+        """
+        super().__init__()
+        self.layer_stats_per_writer = layer_stats_per_writer
+        self.d_model = d_model
+
+        if isinstance(base_model, FullPageHTREncoderDecoder):
+            self.arch = "fphtr"
+        elif isinstance(base_model, ShowAttendRead):
+            self.arch = "sar"
+        else:
+            raise ValueError(f"Unrecognized model class: {base_model.__class__}")
+
+        assert base_model.loss_fn.reduction == "mean"
+
+        freeze(base_model)  # make sure the base model weights are frozen
+
+        self.feature_transform = None
+        resnet_old = (
+            base_model.encoder if self.arch == "fphtr" else base_model.resnet_encoder
+        )
+        resnet_new = WriterAdaptiveResnet2(resnet_old, self.layer_stats_per_writer)
+        if self.arch == "fphtr":
+            base_model.encoder = resnet_new
+        else:  # SAR
+            base_model.resnet_encoder = resnet_new
+        self.model = base_model
+
+    def forward(
+        self,
+        imgs: Tensor,
+        target: Tensor,
+        writer_ids: Tensor,
+        mode: TrainMode = TrainMode.TRAIN,
+    ) -> Tuple[Tensor, Tensor, Tensor]:
+        teacher_forcing = True if mode == TrainMode.TRAIN else False
+        if self.arch == "fphtr":
+            features = self.model.encoder(imgs, writer_ids)
+            if teacher_forcing:
+                logits = self.model.decoder.decode_teacher_forcing(features, target)
+            else:
+                logits, _ = self.model.decoder(features)
+        else:  # SAR
+            imgs = imgs.unsqueeze(1)
+            features = self.model.resnet_encoder(imgs, writer_ids)
+            h_holistic = self.model.lstm_encoder(features)
+            if teacher_forcing:
+                logits = self.model.lstm_decoder.forward_teacher_forcing(
+                    features, h_holistic, target
+                )
+            else:
+                logits, _ = self.model.lstm_decoder(features, h_holistic)
+        loss = None
+        if target is not None:
+            loss = self.model.loss_fn(
+                logits[:, : target.size(1), :].transpose(1, 2),
+                target[:, : logits.size(1)],
+            )
+        sampled_ids = logits.argmax(-1)
+        return logits, sampled_ids, loss

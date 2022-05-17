@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 import shutil
 from typing import Optional, Tuple, List, Sequence, Any, Union, Dict
+from collections import OrderedDict, defaultdict
 
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.core.saving import load_hparams_from_yaml
@@ -18,7 +19,7 @@ import torch.nn as nn
 import numpy as np
 import pandas as pd
 from pytorch_lightning import loggers as pl_loggers
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 from torch import Tensor
 
 PREDICTIONS_TO_LOG = {
@@ -395,3 +396,118 @@ def load_best_pl_checkpoint(
     cls = pl_module.__class__
     model = cls.init_with_base_model_from_checkpoint(**args)
     trainer.model = model
+
+
+def get_bn_statistics(model: nn.Module, dataloader: DataLoader, device: str = "cuda:0"):
+    # Collect statistics.
+    model = model.to(device)
+    tracker = BNStatisticTracker(model)
+    # CNT = 0
+    bn_layers = collect_bn_layers(model)
+    for data in dataloader:
+        imgs, target, writer_ids = data
+        imgs, target, writer_ids = (
+            imgs.to(device),
+            target.to(device),
+            writer_ids.to(device),
+        )
+
+        # Set the writer ids as a layer attribute (because it cannot be passed as an
+        # argument).
+        for i, bn_layer in enumerate(bn_layers):
+            bn_layer.writer_ids = writer_ids
+
+        with torch.inference_mode():
+            _ = model.forward_teacher_forcing(imgs, target)
+        # CNT +=1
+        # if CNT == 20:
+        #     break
+        # # TODO: remove
+    tracker.remove_hooks()
+
+    # Aggregate statistics.
+    layer_stats = tracker.activ_stats_per_writer
+    # layer_stats_unagg = tracker.activ_stats_per_writer
+    # layer_stats = defaultdict(dict)
+    for lname in layer_stats.keys():
+        for wid in layer_stats[lname].keys():
+            # if layer_stats[lname].get(wid) is None:
+            #     layer_stats[lname][wid] = dict()
+            for chan, lstats in layer_stats[lname][wid].items():
+                mean = np.mean(lstats["mean"])
+                var = np.mean(lstats["var"])
+                layer_stats[lname][wid][chan]["mean"] = mean
+                layer_stats[lname][wid][chan]["var"] = var
+    return layer_stats
+
+
+class BNStatisticTracker(nn.Module):
+    """
+    Collects activation statistics for each batchnorm layer in a model,
+    using forward hooks.
+    """
+
+    def __init__(self, model: nn.Module):
+        super().__init__()
+        self.model = model
+        self.activ_stats_per_writer = defaultdict(dict)
+        self.fhooks = []
+
+        cnt = 0
+        for m in self.model.modules():
+            if isinstance(m, nn.BatchNorm2d):
+                self.fhooks.append(m.register_forward_hook(self.forward_hook_bn(cnt)))
+                cnt += 1
+
+    def forward_hook_bn(self, layer_idx: int):
+        def hook(module: nn.BatchNorm2d, input: Any, output: Any):
+            inpt = input[0]
+            n_channels = inpt.shape[1]
+            writer_ids = module.writer_ids
+            # set the layer index as an attribute so that it can be referenced later.
+            module.layer_idx = layer_idx
+            for i, wid in enumerate(writer_ids):
+                ft_maps = inpt[i]
+                wid_key = wid.item()
+                if self.activ_stats_per_writer[layer_idx].get(wid_key) is None:
+                    self.activ_stats_per_writer[layer_idx][wid_key] = {
+                        chan: {"mean": [], "var": []} for chan in range(n_channels)
+                    }
+                # TODO: weight the mean and var by the amount of units, rather than
+                #  weighing each feature map equally.
+                for chan in range(n_channels):
+                    ft_map = ft_maps[chan]
+                    dct = self.activ_stats_per_writer[layer_idx][wid_key][chan]
+                    dct["mean"].append(ft_map.mean().item())
+                    dct["var"].append(ft_map.var().item())
+
+        return hook
+
+    def remove_hooks(self):
+        for hook in self.fhooks:
+            hook.remove()
+
+
+def collect_bn_layers(module: nn.Module):
+    """
+    Collect all instances of nn.BatchNorm2d in a module.
+    """
+    res = []
+    for m in module.modules():
+        if isinstance(m, nn.BatchNorm2d):
+            res.append(m)
+    # if isinstance(module, nn.BatchNorm2d):
+    #     return res
+    # if isinstance(module, nn.Sequential):
+    #     for i, m in enumerate(module):
+    #         if type(m) == nn.BatchNorm2d:
+    #             res.append(m)
+    # else:
+    #     for attr_str in dir(module):
+    #         attr = getattr(module, attr_str)
+    #         if type(attr) == nn.BatchNorm2d:
+    #             res.append(attr)
+    #
+    # for child_module in module.children():
+    #     res.extend(collect_bn_layers(child_module))
+    return res

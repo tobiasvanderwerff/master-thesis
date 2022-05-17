@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from torch.utils.data import DataLoader
 
-from thesis.lit_models import LitBaseNonEpisodic
+from thesis.lit_models import LitBaseNonEpisodic, LitAdaptiveBatchnormModel
 from thesis.writer_code.lit_models import (
     LitWriterCodeAdaptiveModelNonEpisodic,
 )
@@ -22,6 +22,7 @@ from thesis.util import (
     SOS_TOKEN,
     PAD_TOKEN,
     load_best_pl_checkpoint,
+    get_bn_statistics,
 )
 
 from htr.data import IAMDataset
@@ -84,11 +85,20 @@ def main(args):
     )
 
     # Set image transforms.
+    ds.set_transforms_for_split("test")
     ds_train.set_transforms_for_split(augmentations)
     ds_val.set_transforms_for_split("val")
     ds_test.set_transforms_for_split("test")
 
     # Initialize dataloaders.
+    dl = DataLoader(
+        ds,
+        batch_size=2 * args.batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
     dl_train = DataLoader(
         ds_train,
         batch_size=args.batch_size,
@@ -158,6 +168,36 @@ def main(args):
         )
     )
 
+    print("Calculating writer-specific activation statistics...")
+    device = "cpu" if args.use_cpu else "cuda:0"
+    layer_stats_per_writer = get_bn_statistics(learner.model.model, dl, device=device)
+    print("Done.")
+
+    base_model = learner.model.model
+    d_model = (
+        base_model.rnn_encoder.input_size
+        if args.base_model_arch == "sar"
+        else base_model.encoder.resnet_out_features
+    )
+    learner = LitAdaptiveBatchnormModel(
+        base_model=base_model,
+        layer_stats_per_writer=layer_stats_per_writer,
+        d_model=d_model,
+        cer_metric=base_model.cer_metric,
+        wer_metric=base_model.wer_metric,
+        **args_,
+    )
+
+    # Save batchnorm statistics for post-hoc analysis.
+    for layer_id in layer_stats_per_writer.keys():
+        stats = []
+        for wid, dct in layer_stats_per_writer[layer_id].items():
+            mean, var = dct["mean"], dct["var"]
+            stats.append([mean, var])
+        stats_np = np.array(stats)
+        with open(f"layer_{layer_id}_stats_per_writer.npy", "wb") as f:
+            np.save(f, stats_np)
+
     callbacks = [
         ModelSummary(max_depth=3),
         LitProgressBar(),
@@ -197,16 +237,16 @@ def main(args):
         callbacks=callbacks,
     )
 
-    if args.validate:  # validate a trained model
-        trainer.validate(learner, dl_val)
-    elif args.test:  # test a trained model
-        trainer.test(learner, dl_test)
-    else:  # train a model
-        trainer.fit(learner, dl_train, dl_val)
-
+    trainer.validate(learner, dl_val)
     if args.test_on_fit_end:
-        load_best_pl_checkpoint(trainer, learner, ds_train.label_enc)
         trainer.test(learner, dl_test)
+
+    # if args.validate:  # validate a trained model
+    #     trainer.validate(learner, dl_val)
+    # elif args.test:  # test a trained model
+    #     trainer.test(learner, dl_test)
+    # else:  # train a model
+    #     trainer.fit(learner, dl_train, dl_val)
 
 
 if __name__ == "__main__":
