@@ -419,7 +419,7 @@ def get_bn_statistics(model: nn.Module, dataloader: DataLoader, device: str = "c
 
         with torch.inference_mode():
             _ = model.forward_teacher_forcing(imgs, target)
-        # CNT +=1
+        CNT += 1
         # if CNT == 20:
         #     break
         # # TODO: remove
@@ -427,12 +427,8 @@ def get_bn_statistics(model: nn.Module, dataloader: DataLoader, device: str = "c
 
     # Aggregate statistics.
     layer_stats = tracker.activ_stats_per_writer
-    # layer_stats_unagg = tracker.activ_stats_per_writer
-    # layer_stats = defaultdict(dict)
     for lname in layer_stats.keys():
         for wid in layer_stats[lname].keys():
-            # if layer_stats[lname].get(wid) is None:
-            #     layer_stats[lname][wid] = dict()
             for chan, lstats in layer_stats[lname][wid].items():
                 mean = np.mean(lstats["mean"])
                 var = np.mean(lstats["var"])
