@@ -987,6 +987,8 @@ class AdaptiveBatchnorm2d(nn.Module):
         """
 
         def dict2tensor(dct: Dict[int, Dict[int, Dict[str, float]]]):
+            if isinstance(dct, Tensor):
+                return dct
             res = []
             for writer_id in dct.keys():
                 wrtr_stats = []

@@ -422,7 +422,7 @@ def get_bn_statistics(model: nn.Module, dataloader: DataLoader, device: str = "c
         # CNT += 1
         # if CNT == 20:
         #     break
-        # # TODO: remove
+        # TODO: remove
     tracker.remove_hooks()
 
     # Aggregate statistics.

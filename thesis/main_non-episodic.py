@@ -1,6 +1,7 @@
 """Non-episodic main script, which does not make use of the learn2learn lib."""
 
 import argparse
+from collections import defaultdict
 from functools import partial
 from pathlib import Path
 
@@ -168,10 +169,22 @@ def main(args):
         )
     )
 
-    print("Calculating writer-specific activation statistics...")
-    device = "cpu" if args.use_cpu else "cuda:0"
-    layer_stats_per_writer = get_bn_statistics(learner.model.model, dl, device=device)
-    print("Done.")
+    bn_stats_dir = Path("../bn_stats")
+    if bn_stats_dir.is_dir():
+        print("Loading batchnorm statistics from disk.")
+        layer_stats_per_writer = dict()
+        for layer_id in range(20):
+            stats = np.load(
+                str(bn_stats_dir / f"layer_{layer_id}_stats_per_writer.npy")
+            )  # (nwriters, C, 2)
+            layer_stats_per_writer[layer_id] = stats
+    else:
+        print("Calculating writer-specific activation statistics...")
+        device = "cpu" if args.use_cpu else "cuda:0"
+        layer_stats_per_writer = get_bn_statistics(
+            learner.model.model, dl, device=device
+        )
+        print("Done.")
 
     base_model = learner.model.model
     d_model = (
@@ -189,6 +202,7 @@ def main(args):
     )
 
     # Save batchnorm statistics for post-hoc analysis.
+    bn_stats_dir.mkdir(exist_ok=True)
     for layer_id in layer_stats_per_writer.keys():
         wrtr_stats = []
         for wid in layer_stats_per_writer[layer_id].keys():
@@ -197,7 +211,7 @@ def main(args):
                 channel_stats.append([stats["mean"], stats["var"]])
             wrtr_stats.append(channel_stats)
         wrtr_stats_np = np.array(wrtr_stats)
-        with open(f"layer_{layer_id}_stats_per_writer.npy", "wb") as f:
+        with open(bn_stats_dir / f"layer_{layer_id}_stats_per_writer.npy", "wb") as f:
             np.save(f, wrtr_stats_np)
 
     callbacks = [
