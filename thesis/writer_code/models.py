@@ -929,10 +929,28 @@ class WriterAdaptiveResnet2(nn.Module):
 
 
 class AdaptiveBatchnorm2d(nn.Module):
-    def __init__(self, stats_per_writer: Tensor, weight: Tensor, bias: Tensor):
+    def __init__(
+        self,
+        stats_per_writer: Tensor,
+        running_mean: Tensor,
+        running_var: Tensor,
+        weight: Tensor,
+        bias: Tensor,
+        old_stats_prcnt: float = 0.9,
+    ):
         super().__init__()
         assert stats_per_writer.ndim == 3
-        self.register_buffer("stats_per_writer", stats_per_writer)  # (n_writers, C, 2)
+        self.running_mean = running_mean  # shape: (C,)
+        self.running_var = running_var  # shape: (C,)
+        self.old_stats_prcnt = old_stats_prcnt
+
+        old_stats = torch.stack([self.running_mean, self.running_var], 1)  # (C, 2)
+        old_stats = old_stats.unsqueeze(0).expand_as(stats_per_writer)
+        weighted_stats = (
+            old_stats_prcnt * old_stats + (1 - old_stats_prcnt) * stats_per_writer
+        )
+
+        self.register_buffer("stats_per_writer", weighted_stats)  # (n_writers, C, 2)
         self.register_parameter("weight", weight)  # shape: (C,)
         self.register_parameter("bias", bias)  # shape: (C,)
 
@@ -984,7 +1002,9 @@ class AdaptiveBatchnorm2d(nn.Module):
             for i, m in enumerate(module):
                 if type(m) == nn.BatchNorm2d:
                     stats_tns = dict2tensor(stats_per_writer[m.layer_idx])
-                    new_bn = AdaptiveBatchnorm2d(stats_tns, m.weight, m.bias)
+                    new_bn = AdaptiveBatchnorm2d(
+                        stats_tns, m.running_mean, m.running_var, m.weight, m.bias
+                    )
                     module[i] = new_bn
                     new_mods.append(new_bn)
         else:
@@ -992,7 +1012,13 @@ class AdaptiveBatchnorm2d(nn.Module):
                 attr = getattr(module, attr_str)
                 if type(attr) == nn.BatchNorm2d:
                     stats_tns = dict2tensor(stats_per_writer[attr.layer_idx])
-                    new_bn = AdaptiveBatchnorm2d(stats_tns, attr.weight, attr.bias)
+                    new_bn = AdaptiveBatchnorm2d(
+                        stats_tns,
+                        attr.running_mean,
+                        attr.running_var,
+                        attr.weight,
+                        attr.bias,
+                    )
                     setattr(module, attr_str, new_bn)
                     new_mods.append(new_bn)
 
