@@ -412,12 +412,14 @@ def get_bn_statistics(
     """
     model = model.to(device)
     bn_layers = collect_bn_layers(model)
-    for m in bn_layers:
+    for i, m in enumerate(bn_layers):
         # Do not use a exponentially moving average but a cumulative average.
         m.momentum = None
         # Save old statistics.
         m.running_mean_old = m.running_mean.clone()
         m.running_var_old = m.running_var.clone()
+        # Set a global identifier for each layer.
+        m.layer_idx = i
 
     eos_tkn_idx, sos_tkn_idx, pad_tkn_idx = dataset.label_enc.transform(
         [EOS_TOKEN, SOS_TOKEN, PAD_TOKEN]
