@@ -1,7 +1,9 @@
-# ada-bn
-Adaptive batch normalization, as proposed in:
-
-Li, Yanghao, et al. "Revisiting batch normalization for practical domain adaptation." arXiv preprint arXiv:1603.04779 (2016).
+# ada-bn-stats
+Conditional batch normalization where the input codes are derived from layer
+statistics (mean and variance) per channel. Concretely, the L2-distance is
+measured between the overall mean and variance for a particular layer and the
+writer-specific mean and variance. E.g., for a batchnorm layer with 64 input
+channels, the input vector to conditional batchnorm would be 64*2-dimensional.
 
 # Master thesis
 

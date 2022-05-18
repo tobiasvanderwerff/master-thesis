@@ -433,8 +433,8 @@ def get_bn_statistics(
 
     # Go through all writer-specific samples and collect statistics using the native
     # nn.Batchnorm2d functionality for doing so.
-    writer_stats = []
-    for writer_id in dataset.data["writer_id"].unique():
+    writer_stats = dict()
+    for idx, writer_id in enumerate(dataset.data["writer_id"].unique()):
         # print(f"Writer {writer_id}.")
 
         # Reset running stats for all batchnorm layers.
@@ -464,9 +464,9 @@ def get_bn_statistics(
                 _ = model.forward_teacher_forcing(imgs, target)
 
         # Collect results from batchnorm layers.
-        writer_stats.append(
-            [torch.stack([l.running_mean, l.running_var], 1) for l in bn_layers]
-        )
+        writer_stats[writer_id] = [
+            torch.stack([l.running_mean, l.running_var], 1) for l in bn_layers
+        ]
 
     return writer_stats
 

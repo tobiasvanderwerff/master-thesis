@@ -1,5 +1,6 @@
 """Non-episodic main script, which does not make use of the learn2learn lib."""
 
+import pickle
 import argparse
 from collections import defaultdict
 from functools import partial
@@ -25,6 +26,7 @@ from thesis.util import (
     PAD_TOKEN,
     load_best_pl_checkpoint,
     get_bn_statistics,
+    collect_bn_layers,
 )
 
 from htr.data import IAMDataset
@@ -34,7 +36,7 @@ from pytorch_lightning import seed_everything, Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, ModelSummary
 from pytorch_lightning.plugins import DDPPlugin
 
-from thesis.writer_code.util import load_hinge_codes
+from thesis.writer_code.util import load_hinge_codes, AdaptationMethod
 
 
 def main(args):
@@ -68,7 +70,7 @@ def main(args):
         "train",
         label_enc=label_enc,
         return_writer_id=True,
-        return_writer_id_as_idx=True,
+        return_writer_id_as_idx=False,  # preserve global writer identifiers
         only_lowercase=only_lowercase,
     )
 
@@ -131,6 +133,8 @@ def main(args):
     print(f"val:\t{len(ds_val)}")
     print(f"test:\t{len(ds_test)}")
 
+    # These codes are not used, but it's a quick way to load the base model
+    # without the hassle of changing much of the code.
     writer_codes, code_size = load_hinge_codes(
         Path(__file__).resolve().parent.parent, code_name=args.code_name
     )
@@ -164,6 +168,7 @@ def main(args):
         **vars(args),
     )
     # Initialize with a trained base model.
+    args_.update({"adaptation_method": AdaptationMethod.NONE})
     learner = (
         LitWriterCodeAdaptiveModelNonEpisodic.init_with_base_model_from_checkpoint(
             **args_
@@ -171,65 +176,65 @@ def main(args):
     )
 
     num_bn_layers = 19
-    bn_stats_dir = Path("../bn_stats")
-    # if bn_stats_dir.is_dir():
-    #     print("Loading batchnorm statistics from disk.")
-    #     layer_stats_per_writer = dict()
-    #     for layer_id in range(num_bn_layers + 1):
-    #         stats = np.load(
-    #             str(bn_stats_dir / f"layer_{layer_id}_stats_per_writer.npy")
-    #         )  # (nwriters, C, 2)
-    #         layer_stats_per_writer[layer_id] = stats
-    # else:
     device = "cpu" if args.use_cpu else "cuda:0"
-    dataset = ds_test if args.test else ds_val
+    base_model = learner.model.model
 
-    print(
-        f"Calculating writer-specific activation statistics for {len(dataset.writer_ids)} writers."
-    )
-    writer_stats = get_bn_statistics(
-        learner.model.model,
-        dataset,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        device=device,
-    )
-    print("Done.")
+    writer_stats_pth = Path("writer_stats.pkl")
+    if writer_stats_pth.is_file():
+        print("Loading stats from disk.")
+        with open(writer_stats_pth, "rb") as f:
+            writer_stats = pickle.load(f)
+        bn_layers = collect_bn_layers(base_model)
+        for i, m in enumerate(bn_layers):
+            # Do not use a exponentially moving average but a cumulative
+            # average.
+            m.momentum = None
+            # Save old statistics.
+            m.running_mean_old = m.running_mean.clone()
+            m.running_var_old = m.running_var.clone()
+            # Set a global identifier for each layer.
+            m.layer_idx = i
+    else:
+        print(
+            f"Calculating writer-specific activation statistics for {len(ds.writer_ids)} writers."
+        )
+        writer_stats = get_bn_statistics(
+            base_model,
+            ds,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            device=device,
+        )
+        print("Done.")
+        with open(writer_stats_pth, "wb") as f:
+            pickle.dump(writer_stats, f)
+        print("Stats saved.")
 
     # Make the primary key for the statistics the layer index.
     layer_stats_per_writer = dict()
     for i in range(num_bn_layers + 1):
-        layer_stats_per_writer[i] = torch.stack(
-            [wstats[i] for wstats in writer_stats], 0
-        )
+        layer_stats_per_writer[i] = {
+            wid: wstats[i] for wid, wstats in writer_stats.items()
+        }
 
-    base_model = learner.model.model
+    args_.update(
+        {
+            "adaptation_method": args.adaptation_method,
+            "writer_codes": layer_stats_per_writer,
+        }
+    )
     d_model = (
         base_model.rnn_encoder.input_size
         if args.base_model_arch == "sar"
         else base_model.encoder.resnet_out_features
     )
-    learner = LitAdaptiveBatchnormModel(
+    learner = LitWriterCodeAdaptiveModelNonEpisodic(
         base_model=base_model,
-        layer_stats_per_writer=layer_stats_per_writer,
         d_model=d_model,
         cer_metric=base_model.cer_metric,
         wer_metric=base_model.wer_metric,
         **args_,
     )
-
-    # Save batchnorm statistics.
-    # bn_stats_dir.mkdir(exist_ok=True)
-    # for layer_id in layer_stats_per_writer.keys():
-    #     wrtr_stats = []
-    #     for wid in layer_stats_per_writer[layer_id].keys():
-    #         channel_stats = []
-    #         for chan, stats in layer_stats_per_writer[layer_id][wid].items():
-    #             channel_stats.append([stats["mean"], stats["var"]])
-    #         wrtr_stats.append(channel_stats)
-    #     wrtr_stats_np = np.array(wrtr_stats)
-    #     with open(bn_stats_dir / f"layer_{layer_id}_stats_per_writer.npy", "wb") as f:
-    #         np.save(f, wrtr_stats_np)
 
     callbacks = [
         ModelSummary(max_depth=3),
@@ -270,16 +275,15 @@ def main(args):
         callbacks=callbacks,
     )
 
-    trainer.validate(learner, dl_val)
+    if args.validate:  # validate a trained model
+        trainer.validate(learner, dl_val)
+    elif args.test:  # test a trained model
+        trainer.test(learner, dl_test)
+    else:  # train a model
+        trainer.fit(learner, dl_train, dl_val)
+
     if args.test_on_fit_end:
         trainer.test(learner, dl_test)
-
-    # if args.validate:  # validate a trained model
-    #     trainer.validate(learner, dl_val)
-    # elif args.test:  # test a trained model
-    #     trainer.test(learner, dl_test)
-    # else:  # train a model
-    #     trainer.fit(learner, dl_train, dl_val)
 
 
 if __name__ == "__main__":

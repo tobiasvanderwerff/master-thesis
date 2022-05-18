@@ -24,6 +24,7 @@ ADAPTATION_METHODS = ["conditional_batchnorm", "cnn_output"]
 class AdaptationMethod(Enum):
     CONDITIONAL_BATCHNORM = 1
     CNN_OUTPUT = 2
+    NONE = 3
 
     @staticmethod
     def from_string(s: str):
@@ -32,6 +33,8 @@ class AdaptationMethod(Enum):
             return AdaptationMethod.CONDITIONAL_BATCHNORM
         elif s == "cnn_output":
             return AdaptationMethod.CNN_OUTPUT
+        elif s == "none":
+            return AdaptationMethod.NONE
         else:
             raise ValueError(f"{s} is not a valid adaptation method.")
 

@@ -507,18 +507,18 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
 
         self.feature_transform = None
         if self.adaptation_method is AdaptationMethod.CONDITIONAL_BATCHNORM:
-            # resnet_old = (
-            #     base_model.encoder
-            #     if self.arch == "fphtr"
-            #     else base_model.resnet_encoder
-            # )
-            # resnet_new = WriterAdaptiveResnet(
-            #     resnet_old, code_size, adaptation_num_hidden
-            # )
-            # if self.arch == "fphtr":
-            #     base_model.encoder = resnet_new
-            # else:  # SAR
-            #     base_model.resnet_encoder = resnet_new
+            resnet_old = (
+                base_model.encoder
+                if self.arch == "fphtr"
+                else base_model.resnet_encoder
+            )
+            resnet_new = WriterAdaptiveResnet(
+                resnet_old, writer_codes, adaptation_num_hidden
+            )
+            if self.arch == "fphtr":
+                base_model.encoder = resnet_new
+            else:  # SAR
+                base_model.resnet_encoder = resnet_new
             self.model = base_model
         elif self.adaptation_method is AdaptationMethod.CNN_OUTPUT:
             self.feature_transform = FeatureTransform(
@@ -527,6 +527,8 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
             )
             base_model.encoder.linear.requires_grad_(True)
             self.model = BaseModelAdaptation(base_model)
+        elif self.adaptation_method is AdaptationMethod.NONE:
+            self.model = base_model
         else:
             raise ValueError(f"Incorrect adaptation method: {self.adaptation_method}")
 
@@ -537,46 +539,29 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
         writer_ids: Tensor,
         mode: TrainMode = TrainMode.TRAIN,
     ) -> Tuple[Tensor, Tensor, Tensor]:
-        writer_code = torch.from_numpy(
-            np.stack([self.writer_codes[writer.item()] for writer in writer_ids], 0)
-        ).to(
-            imgs.device
-        )  # writer_code: (N, code_size)
-
         teacher_forcing = True if mode == TrainMode.TRAIN else False
-        if self.adaptation_method is AdaptationMethod.CNN_OUTPUT:
-            intermediate_transform = partial(
-                self.feature_transform, writer_code=writer_code
-            )
-            logits, loss = self.model(
-                imgs,
-                target,
-                intermediate_transform=intermediate_transform,
-                teacher_forcing=teacher_forcing,
-            )
-        else:
-            if self.arch == "fphtr":
-                features = self.model.encoder(imgs, writer_code)
-                if teacher_forcing:
-                    logits = self.model.decoder.decode_teacher_forcing(features, target)
-                else:
-                    logits, _ = self.model.decoder(features)
-            else:  # SAR
-                imgs = imgs.unsqueeze(1)
-                features = self.model.resnet_encoder(imgs, writer_code)
-                h_holistic = self.model.lstm_encoder(features)
-                if teacher_forcing:
-                    logits = self.model.lstm_decoder.forward_teacher_forcing(
-                        features, h_holistic, target
-                    )
-                else:
-                    logits, _ = self.model.lstm_decoder(features, h_holistic)
-            loss = None
-            if target is not None:
-                loss = self.model.loss_fn(
-                    logits[:, : target.size(1), :].transpose(1, 2),
-                    target[:, : logits.size(1)],
+        if self.arch == "fphtr":
+            features = self.model.encoder(imgs, writer_ids)
+            if teacher_forcing:
+                logits = self.model.decoder.decode_teacher_forcing(features, target)
+            else:
+                logits, _ = self.model.decoder(features)
+        else:  # SAR
+            imgs = imgs.unsqueeze(1)
+            features = self.model.resnet_encoder(imgs, writer_ids)
+            h_holistic = self.model.lstm_encoder(features)
+            if teacher_forcing:
+                logits = self.model.lstm_decoder.forward_teacher_forcing(
+                    features, h_holistic, target
                 )
+            else:
+                logits, _ = self.model.lstm_decoder(features, h_holistic)
+        loss = None
+        if target is not None:
+            loss = self.model.loss_fn(
+                logits[:, : target.size(1), :].transpose(1, 2),
+                target[:, : logits.size(1)],
+            )
         sampled_ids = logits.argmax(-1)
         return logits, sampled_ids, loss
 
@@ -771,13 +756,15 @@ class ConditionalBatchNorm2d(nn.Module):
     def __init__(
         self,
         batchnorm_layer: nn.BatchNorm2d,
+        stats_per_writer: Dict[int, Tensor],
         writer_code_size: int,
         adaptation_num_hidden: int = 128,
     ):
         super().__init__()
         self.bn = batchnorm_layer
+        self.stats_per_writer = stats_per_writer
         self.writer_code_size = writer_code_size
-        self.writer_code = None
+        self.writer_ids = None  # to be set externally
         self.adapt = nn.Sequential(  # 1-hidden-layer MLP
             nn.Linear(writer_code_size, adaptation_num_hidden),
             nn.ReLU(inplace=True),
@@ -788,6 +775,26 @@ class ConditionalBatchNorm2d(nn.Module):
         self.weight = self.bn.weight.detach().clone()
         self.bias = self.bn.bias.detach().clone()
 
+        device = self.weight.device
+        stats_cat = torch.stack(
+            [t.flatten() for t in self.stats_per_writer.values()], 0
+        )
+        self.stats_mean = stats_cat.mean(0).to(device)
+        self.stats_std = stats_cat.std(0).to(device)
+        self.stats_per_writer = {
+            wid: (stats.flatten().to(device) - self.stats_mean) / self.stats_std
+            for wid, stats in self.stats_per_writer.items()
+        }
+        self.old_stats = (
+            (
+                torch.cat([self.bn.running_mean_old, self.bn.running_var_old], 0)
+                - self.stats_mean
+            )
+            / self.stats_std
+        ).to(
+            device
+        )  # (C*2,)
+
         # Reset affine parameters to identify function.
         with torch.no_grad():
             self.bn.weight.fill_(1)
@@ -797,21 +804,36 @@ class ConditionalBatchNorm2d(nn.Module):
 
     def forward(self, x: torch.Tensor):
         """
-        Forward using writer code. The writer code is not passed as an argument,
-        but is expected to be externally set under the `writer_code` attribute.
+        Forward using writer code. The writer ids are not passed as an argument,
+        but are expected to be externally set under the `writer_ids` attribute.
 
         Args:
             x (Tensor of shape (N, n_channels, h, w))
         """
-        assert self.writer_code is not None, "Writer code not initialized."
-        assert self.writer_code.ndim == 2 and self.writer_code.shape[0] == x.shape[0]
+        assert self.writer_ids is not None, "Writer ids not set."
 
         bsz, n_channels = x.shape[:2]
-        self.weight, self.bias = self.weight.to(x.device), self.bias.to(x.device)
+        self.weight, self.bias, self.old_stats = (
+            self.weight.to(x.device),
+            self.bias.to(x.device),
+            self.old_stats.to(x.device),
+        )
+
+        writer_ids = self.writer_ids
+        writer_codes = torch.stack(
+            [self.stats_per_writer[wid.item()].flatten() for wid in writer_ids], 0
+        ).to(x.device)
+        # Take the difference between global and writer-specific stats as the writer
+        # code.
+        # TODO: optional alternative: try absolute difference, or concatentate old and
+        #  new stats, (or both?).
+        writer_codes = writer_codes - self.old_stats.unsqueeze(0).expand_as(
+            writer_codes
+        )
 
         x = self.bn(x)
 
-        weight_and_bias = self.adapt(self.writer_code)  # shape: (N, 2 * n_channels)
+        weight_and_bias = self.adapt(writer_codes)  # shape: (N, 2 * n_channels)
         weight_delta = weight_and_bias[:, :n_channels]
         bias_delta = weight_and_bias[:, n_channels:]
 
@@ -824,7 +846,9 @@ class ConditionalBatchNorm2d(nn.Module):
 
     @staticmethod
     def replace_bn_adaptive(
-        module: nn.Module, writer_code_size: int, adaptation_num_hidden: int
+        module: nn.Module,
+        stats_per_writer: Dict[int, Tensor],
+        adaptation_num_hidden: int,
     ):
         """
         Replace all nn.BatchNorm2d layers in a module with ConditionalBatchNorm2d layers.
@@ -838,8 +862,14 @@ class ConditionalBatchNorm2d(nn.Module):
         if isinstance(module, nn.Sequential):
             for i, m in enumerate(module):
                 if type(m) == nn.BatchNorm2d:
+                    stats = stats_per_writer[m.layer_idx]
+                    assert stats is not None
+                    writer_code_size = stats[0].numel()
                     new_bn = ConditionalBatchNorm2d(
-                        m, writer_code_size, adaptation_num_hidden
+                        m,
+                        stats,
+                        writer_code_size,
+                        adaptation_num_hidden,
                     )
                     module[i] = new_bn
                     new_mods.append(new_bn)
@@ -847,8 +877,14 @@ class ConditionalBatchNorm2d(nn.Module):
             for attr_str in dir(module):
                 attr = getattr(module, attr_str)
                 if type(attr) == nn.BatchNorm2d:
+                    stats = stats_per_writer[attr.layer_idx]
+                    assert stats is not None
+                    writer_code_size = stats[0].numel()
                     new_bn = ConditionalBatchNorm2d(
-                        attr, writer_code_size, adaptation_num_hidden
+                        attr,
+                        stats,
+                        writer_code_size,
+                        adaptation_num_hidden,
                     )
                     setattr(module, attr_str, new_bn)
                     new_mods.append(new_bn)
@@ -856,7 +892,7 @@ class ConditionalBatchNorm2d(nn.Module):
         for child_module in module.children():
             new_mods.extend(
                 ConditionalBatchNorm2d.replace_bn_adaptive(
-                    child_module, writer_code_size, adaptation_num_hidden
+                    child_module, stats_per_writer, adaptation_num_hidden
                 )
             )
         return new_mods
@@ -871,22 +907,21 @@ class WriterAdaptiveResnet(nn.Module):
     """
 
     def __init__(
-        self, resnet: nn.Module, writer_code_size: int, adaptation_num_hidden: int
+        self, resnet: nn.Module, stats_per_writer: Any, adaptation_num_hidden: int
     ):
         super().__init__()
         self.resnet = resnet
         # Replace batchnorm layers with adaptive ones.
         self.bn_layers = ConditionalBatchNorm2d.replace_bn_adaptive(
-            self.resnet, writer_code_size, adaptation_num_hidden
+            self.resnet, stats_per_writer, adaptation_num_hidden
         )
 
-    def forward(self, imgs: Tensor, writer_code: torch.Tensor) -> torch.Tensor:
-        # Set `writer_code` attribute for all ConditionalBatchNorm2d layers
-        for l in self.bn_layers:
-            l.writer_code = writer_code
+    def forward(self, imgs: Tensor, writer_ids: torch.Tensor) -> torch.Tensor:
+        for i, l in enumerate(self.bn_layers):
+            l.writer_ids = writer_ids
         out = self.resnet(imgs)
         for l in self.bn_layers:
-            l.writer_code = None
+            l.writer_ids = None
         return out
 
 
