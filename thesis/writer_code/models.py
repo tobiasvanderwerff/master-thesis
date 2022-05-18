@@ -899,7 +899,7 @@ class WriterAdaptiveResnet2(nn.Module):
     def __init__(
         self,
         resnet: nn.Module,
-        layer_stats_per_writer: Dict[int, Dict[int, Dict[int, Dict[str, float]]]],
+        layer_stats_per_writer: Dict[int, Tensor],
     ):
         super().__init__()
         self.resnet = resnet
@@ -910,18 +910,8 @@ class WriterAdaptiveResnet2(nn.Module):
         )
 
     def forward(self, imgs: Tensor, writer_ids: torch.Tensor) -> torch.Tensor:
-        # Set `writer_stats` attribute for all AdaptiveBatchnorm2d layers,
-        # which contains the layer mean and variance for each writer in the current
-        # batch.
         for i, bn_layer in enumerate(self.bn_layers):
             bn_layer.writer_ids = writer_ids
-            # stats = []
-            # for wid in writer_ids:
-            #     wid_key = wid.item()
-            #     mean = self.layer_stats_per_writer[wid_key][i]["mean"]
-            #     std = self.layer_stats_per_writer[wid_key][i]["std"]
-            #     stats.append([mean, std])
-            # bn_layer.writer_stats = torch.tensor(stats, device=imgs.device)
         out = self.resnet(imgs)
         for l in self.bn_layers:
             l.writer_stats = None
@@ -978,7 +968,7 @@ class AdaptiveBatchnorm2d(nn.Module):
         return x * weight + bias
 
     @staticmethod
-    def replace_bn_adaptive(module: nn.Module, stats_per_writer: Dict):
+    def replace_bn_adaptive(module: nn.Module, stats_per_writer: Dict[int, Tensor]):
         """
         Replace all nn.BatchNorm2d layers in a module with AdaptiveBatchnorm2d layers.
 
@@ -986,26 +976,19 @@ class AdaptiveBatchnorm2d(nn.Module):
             list of all newly added batchnorm modules
         """
 
-        def dict2tensor(dct: Dict[int, Dict[int, Dict[str, float]]]):
-            if isinstance(dct, Tensor):
-                return dct
-            res = []
-            for writer_id in dct.keys():
-                wrtr_stats = []
-                for chan, stats in dct[writer_id].items():
-                    wrtr_stats.append([stats["mean"], stats["var"]])
-                res.append(wrtr_stats)
-            return torch.tensor(res, dtype=torch.float32)
-
         new_mods = []
         if isinstance(module, AdaptiveBatchnorm2d):
             return new_mods
         if isinstance(module, nn.Sequential):
             for i, m in enumerate(module):
                 if type(m) == nn.BatchNorm2d:
-                    stats_tns = dict2tensor(stats_per_writer[m.layer_idx])
+                    stats_tns = stats_per_writer[m.layer_idx]
                     new_bn = AdaptiveBatchnorm2d(
-                        stats_tns, m.running_mean, m.running_var, m.weight, m.bias
+                        stats_tns,
+                        m.running_mean_old,
+                        m.running_var_old,
+                        m.weight,
+                        m.bias,
                     )
                     module[i] = new_bn
                     new_mods.append(new_bn)
@@ -1013,11 +996,11 @@ class AdaptiveBatchnorm2d(nn.Module):
             for attr_str in dir(module):
                 attr = getattr(module, attr_str)
                 if type(attr) == nn.BatchNorm2d:
-                    stats_tns = dict2tensor(stats_per_writer[attr.layer_idx])
+                    stats_tns = stats_per_writer[attr.layer_idx]
                     new_bn = AdaptiveBatchnorm2d(
                         stats_tns,
-                        attr.running_mean,
-                        attr.running_var,
+                        attr.running_mean_old,
+                        attr.running_var_old,
                         attr.weight,
                         attr.bias,
                     )
@@ -1035,7 +1018,7 @@ class AdaptiveBatchnormModel(nn.Module):
     def __init__(
         self,
         base_model: nn.Module,
-        layer_stats_per_writer: Dict[int, Dict[int, Dict[int, Dict[str, float]]]],
+        layer_stats_per_writer: Dict[int, Tensor],
         d_model: int,
     ):
         """

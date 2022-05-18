@@ -6,6 +6,7 @@ from functools import partial
 from pathlib import Path
 
 import numpy as np
+import torch
 from torch.utils.data import DataLoader
 
 from thesis.lit_models import LitBaseNonEpisodic, LitAdaptiveBatchnormModel
@@ -169,22 +170,38 @@ def main(args):
         )
     )
 
+    num_bn_layers = 19
     bn_stats_dir = Path("../bn_stats")
-    if bn_stats_dir.is_dir():
-        print("Loading batchnorm statistics from disk.")
-        layer_stats_per_writer = dict()
-        for layer_id in range(20):
-            stats = np.load(
-                str(bn_stats_dir / f"layer_{layer_id}_stats_per_writer.npy")
-            )  # (nwriters, C, 2)
-            layer_stats_per_writer[layer_id] = stats
-    else:
-        print("Calculating writer-specific activation statistics...")
-        device = "cpu" if args.use_cpu else "cuda:0"
-        layer_stats_per_writer = get_bn_statistics(
-            learner.model.model, dl, device=device
+    # if bn_stats_dir.is_dir():
+    #     print("Loading batchnorm statistics from disk.")
+    #     layer_stats_per_writer = dict()
+    #     for layer_id in range(num_bn_layers + 1):
+    #         stats = np.load(
+    #             str(bn_stats_dir / f"layer_{layer_id}_stats_per_writer.npy")
+    #         )  # (nwriters, C, 2)
+    #         layer_stats_per_writer[layer_id] = stats
+    # else:
+    device = "cpu" if args.use_cpu else "cuda:0"
+    dataset = ds_test if args.test else ds_val
+
+    print(
+        f"Calculating writer-specific activation statistics for {len(dataset.writer_ids)} writers."
+    )
+    writer_stats = get_bn_statistics(
+        learner.model.model,
+        dataset,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        device=device,
+    )
+    print("Done.")
+
+    # Make the primary key for the statistics the layer index.
+    layer_stats_per_writer = dict()
+    for i in range(num_bn_layers + 1):
+        layer_stats_per_writer[i] = torch.stack(
+            [wstats[i] for wstats in writer_stats], 0
         )
-        print("Done.")
 
     base_model = learner.model.model
     d_model = (
@@ -201,18 +218,18 @@ def main(args):
         **args_,
     )
 
-    # Save batchnorm statistics for post-hoc analysis.
-    bn_stats_dir.mkdir(exist_ok=True)
-    for layer_id in layer_stats_per_writer.keys():
-        wrtr_stats = []
-        for wid in layer_stats_per_writer[layer_id].keys():
-            channel_stats = []
-            for chan, stats in layer_stats_per_writer[layer_id][wid].items():
-                channel_stats.append([stats["mean"], stats["var"]])
-            wrtr_stats.append(channel_stats)
-        wrtr_stats_np = np.array(wrtr_stats)
-        with open(bn_stats_dir / f"layer_{layer_id}_stats_per_writer.npy", "wb") as f:
-            np.save(f, wrtr_stats_np)
+    # Save batchnorm statistics.
+    # bn_stats_dir.mkdir(exist_ok=True)
+    # for layer_id in layer_stats_per_writer.keys():
+    #     wrtr_stats = []
+    #     for wid in layer_stats_per_writer[layer_id].keys():
+    #         channel_stats = []
+    #         for chan, stats in layer_stats_per_writer[layer_id][wid].items():
+    #             channel_stats.append([stats["mean"], stats["var"]])
+    #         wrtr_stats.append(channel_stats)
+    #     wrtr_stats_np = np.array(wrtr_stats)
+    #     with open(bn_stats_dir / f"layer_{layer_id}_stats_per_writer.npy", "wb") as f:
+    #         np.save(f, wrtr_stats_np)
 
     callbacks = [
         ModelSummary(max_depth=3),

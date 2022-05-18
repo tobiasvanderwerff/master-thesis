@@ -534,7 +534,7 @@ class LitAdaptiveBatchnormModel(LitBaseNonEpisodic):
     def __init__(
         self,
         base_model: nn.Module,
-        layer_stats_per_writer: Dict[int, Dict[int, Dict[int, Dict[str, float]]]],
+        layer_stats_per_writer: Dict[int, Tensor],
         d_model: int,
         cer_metric: CharacterErrorRate,
         wer_metric: WordErrorRate,

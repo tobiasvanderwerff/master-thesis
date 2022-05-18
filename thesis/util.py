@@ -398,90 +398,75 @@ def load_best_pl_checkpoint(
     trainer.model = model
 
 
-def get_bn_statistics(model: nn.Module, dataloader: DataLoader, device: str = "cuda:0"):
-    # Collect statistics.
+def get_bn_statistics(
+    model: nn.Module,
+    dataset: IAMDataset,
+    batch_size: int,
+    num_workers: int = 0,
+    device: str = "cuda:0",
+):
+    """
+    Returns:
+        - list containing one entry for each writer, which is a list of length
+          `num_bn_layers` that contains tensors of shape (n_channels, 2).
+    """
     model = model.to(device)
-    tracker = BNStatisticTracker(model)
-    # CNT = 0
     bn_layers = collect_bn_layers(model)
-    for data in dataloader:
-        imgs, target, writer_ids = data
-        imgs, target, writer_ids = (
-            imgs.to(device),
-            target.to(device),
-            writer_ids.to(device),
+    for m in bn_layers:
+        # Do not use a exponentially moving average but a cumulative average.
+        m.momentum = None
+        # Save old statistics.
+        m.running_mean_old = m.running_mean.clone()
+        m.running_var_old = m.running_var.clone()
+
+    eos_tkn_idx, sos_tkn_idx, pad_tkn_idx = dataset.label_enc.transform(
+        [EOS_TOKEN, SOS_TOKEN, PAD_TOKEN]
+    )
+    collate_fn = partial(
+        IAMDataset.collate_fn,
+        pad_val=pad_tkn_idx,
+        eos_tkn_idx=eos_tkn_idx,
+        dataset_returns_writer_id=True,
+    )
+
+    # Go through all writer-specific samples and collect statistics using the native
+    # nn.Batchnorm2d functionality for doing so.
+    writer_stats = []
+    for writer_id in dataset.data["writer_id"].unique():
+        # print(f"Writer {writer_id}.")
+
+        # Reset running stats for all batchnorm layers.
+        for m in bn_layers:
+            m.reset_running_stats()
+
+        # Create a writer-specific dataset.
+        wrtr_data = dataset.data[dataset.data["writer_id"] == writer_id]
+        wrtr_ds = copy(dataset)
+        wrtr_ds.data = wrtr_data
+        assert len(wrtr_ds.writer_ids) == 1
+        wrtr_ds.set_transforms_for_split("test")  # no data augmentations
+        wrtr_dl = DataLoader(
+            wrtr_ds,
+            batch_size=batch_size,
+            shuffle=True,  # shuffle to randomize padding effect
+            collate_fn=collate_fn,
+            num_workers=num_workers,
+            pin_memory=True,
         )
 
-        # Set the writer ids as a layer attribute (because it cannot be passed as an
-        # argument).
-        for i, bn_layer in enumerate(bn_layers):
-            bn_layer.writer_ids = writer_ids
+        # Collect statistics by running the data through the model.
+        for data in wrtr_dl:
+            imgs, target, _ = data
+            imgs, target = imgs.to(device), target.to(device)
+            with torch.inference_mode():
+                _ = model.forward_teacher_forcing(imgs, target)
 
-        with torch.inference_mode():
-            _ = model.forward_teacher_forcing(imgs, target)
-        # CNT += 1
-        # if CNT == 20:
-        #     break
-        # TODO: remove
-    tracker.remove_hooks()
+        # Collect results from batchnorm layers.
+        writer_stats.append(
+            [torch.stack([l.running_mean, l.running_var], 1) for l in bn_layers]
+        )
 
-    # Aggregate statistics.
-    layer_stats = tracker.activ_stats_per_writer
-    for lname in layer_stats.keys():
-        for wid in layer_stats[lname].keys():
-            for chan, lstats in layer_stats[lname][wid].items():
-                mean = np.mean(lstats["mean"])
-                var = np.mean(lstats["var"])
-                layer_stats[lname][wid][chan]["mean"] = mean
-                layer_stats[lname][wid][chan]["var"] = var
-    return layer_stats
-
-
-class BNStatisticTracker(nn.Module):
-    """
-    Collects activation statistics for each batchnorm layer in a model,
-    using forward hooks.
-    """
-
-    def __init__(self, model: nn.Module):
-        super().__init__()
-        self.model = model
-        self.activ_stats_per_writer = defaultdict(dict)
-        self.fhooks = []
-
-        cnt = 0
-        for m in self.model.modules():
-            if isinstance(m, nn.BatchNorm2d):
-                self.fhooks.append(m.register_forward_hook(self.forward_hook_bn(cnt)))
-                cnt += 1
-
-    def forward_hook_bn(self, layer_idx: int):
-        def hook(module: nn.BatchNorm2d, input: Any, output: Any):
-            inpt = input[0]
-            n_channels = inpt.shape[1]
-            writer_ids = module.writer_ids
-            # set the layer index as an attribute so that it can be referenced later.
-            module.layer_idx = layer_idx
-            for i, wid in enumerate(writer_ids):
-                ft_maps = inpt[i]
-                wid_key = wid.item()
-                if self.activ_stats_per_writer[layer_idx].get(wid_key) is None:
-                    self.activ_stats_per_writer[layer_idx][wid_key] = {
-                        chan: {"mean": [], "var": []} for chan in range(n_channels)
-                    }
-                # TODO: weight the mean and var by the amount of units, rather than
-                #  weighing each feature map equally.
-                for chan in range(n_channels):
-                    ft_map = ft_maps[chan]
-                    dct = self.activ_stats_per_writer[layer_idx][wid_key][chan]
-                    dct["mean"].append(ft_map.mean().item())
-                    dct["var"].append(ft_map.var().item())
-
-        return hook
-
-    def remove_hooks(self):
-        for hook in self.fhooks:
-            hook.remove()
+    return writer_stats
 
 
 def collect_bn_layers(module: nn.Module):
@@ -492,18 +477,4 @@ def collect_bn_layers(module: nn.Module):
     for m in module.modules():
         if isinstance(m, nn.BatchNorm2d):
             res.append(m)
-    # if isinstance(module, nn.BatchNorm2d):
-    #     return res
-    # if isinstance(module, nn.Sequential):
-    #     for i, m in enumerate(module):
-    #         if type(m) == nn.BatchNorm2d:
-    #             res.append(m)
-    # else:
-    #     for attr_str in dir(module):
-    #         attr = getattr(module, attr_str)
-    #         if type(attr) == nn.BatchNorm2d:
-    #             res.append(attr)
-    #
-    # for child_module in module.children():
-    #     res.extend(collect_bn_layers(child_module))
     return res
