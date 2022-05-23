@@ -900,13 +900,15 @@ class WriterAdaptiveResnet2(nn.Module):
         self,
         resnet: nn.Module,
         layer_stats_per_writer: Dict[int, Tensor],
+        old_stats_prcnt: float = 0.9,
     ):
         super().__init__()
         self.resnet = resnet
         self.layer_stats_per_writer = layer_stats_per_writer
+        self.old_stats_prcnt = old_stats_prcnt
         # Replace batchnorm layers with adaptive ones.
         self.bn_layers = AdaptiveBatchnorm2d.replace_bn_adaptive(
-            self.resnet, self.layer_stats_per_writer
+            self.resnet, self.layer_stats_per_writer, old_stats_prcnt
         )
 
     def forward(self, imgs: Tensor, writer_ids: torch.Tensor) -> torch.Tensor:
@@ -968,7 +970,9 @@ class AdaptiveBatchnorm2d(nn.Module):
         return x * weight + bias
 
     @staticmethod
-    def replace_bn_adaptive(module: nn.Module, stats_per_writer: Dict[int, Tensor]):
+    def replace_bn_adaptive(
+        module: nn.Module, stats_per_writer: Dict[int, Tensor], old_stats_prcnt: float
+    ):
         """
         Replace all nn.BatchNorm2d layers in a module with AdaptiveBatchnorm2d layers.
 
@@ -989,6 +993,7 @@ class AdaptiveBatchnorm2d(nn.Module):
                         m.running_var_old,
                         m.weight,
                         m.bias,
+                        old_stats_prcnt=old_stats_prcnt,
                     )
                     module[i] = new_bn
                     new_mods.append(new_bn)
@@ -1003,13 +1008,16 @@ class AdaptiveBatchnorm2d(nn.Module):
                         attr.running_var_old,
                         attr.weight,
                         attr.bias,
+                        old_stats_prcnt=old_stats_prcnt,
                     )
                     setattr(module, attr_str, new_bn)
                     new_mods.append(new_bn)
 
         for child_module in module.children():
             new_mods.extend(
-                AdaptiveBatchnorm2d.replace_bn_adaptive(child_module, stats_per_writer)
+                AdaptiveBatchnorm2d.replace_bn_adaptive(
+                    child_module, stats_per_writer, old_stats_prcnt
+                )
             )
         return new_mods
 
@@ -1020,6 +1028,7 @@ class AdaptiveBatchnormModel(nn.Module):
         base_model: nn.Module,
         layer_stats_per_writer: Dict[int, Tensor],
         d_model: int,
+        old_stats_prcnt: float = 0.9,
     ):
         """
         Args:
@@ -1031,6 +1040,7 @@ class AdaptiveBatchnormModel(nn.Module):
         super().__init__()
         self.layer_stats_per_writer = layer_stats_per_writer
         self.d_model = d_model
+        self.old_stats_prcnt = old_stats_prcnt
 
         if isinstance(base_model, FullPageHTREncoderDecoder):
             self.arch = "fphtr"

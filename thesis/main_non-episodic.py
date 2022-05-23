@@ -187,7 +187,7 @@ def main(args):
     dataset = ds_test if args.test else ds_val
 
     base_model = learner.model.model
-    writer_stats_pth = Path(f"writer_stats{'test' if args.test else 'val'}.pkl")
+    writer_stats_pth = Path(f"writer_stats_{'test' if args.test else 'val'}.pkl")
     if writer_stats_pth.is_file():
         print("Loading stats from disk.")
         with open(writer_stats_pth, "rb") as f:

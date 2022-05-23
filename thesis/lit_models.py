@@ -568,6 +568,7 @@ class LitAdaptiveBatchnormModel(LitBaseNonEpisodic):
             base_model=base_model,
             layer_stats_per_writer=layer_stats_per_writer,
             d_model=d_model,
+            old_stats_prcnt=old_stats_prcnt,
         )
 
         self.save_hyperparameters("old_stats_prcnt")
