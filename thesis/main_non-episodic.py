@@ -41,7 +41,7 @@ def main(args):
 
     print(f"Main model used: {str(args.main_model_arch)}")
     print(f"Base model used: {str(args.base_model_arch).upper()}")
-    print(f"Adaptation method: {args.adaptation_method}")
+    print(f"Percentage of old statistics used: {args.old_stats_prcnt * 100}%")
 
     seed_everything(args.seed)
 
@@ -219,18 +219,18 @@ def main(args):
     )
 
     # Save batchnorm statistics.
-    bn_stats_dir.mkdir(exist_ok=True)
-    for layer_id in layer_stats_per_writer.keys():
-        wrtr_stats = []
-        for wid in layer_stats_per_writer[layer_id].keys():
-            channel_stats = []
-            for chan, stats in layer_stats_per_writer[layer_id][wid].items():
-                channel_stats.append([stats["mean"], stats["var"]])
-            wrtr_stats.append(channel_stats)
-        wrtr_stats_np = np.array(wrtr_stats)
-        with open(bn_stats_dir / f"layer_{layer_id}_stats_per_writer.npy", "wb") as f:
-            np.save(f, wrtr_stats_np)
-
+    # bn_stats_dir.mkdir(exist_ok=True)
+    # for layer_id in layer_stats_per_writer.keys():
+    #     wrtr_stats = []
+    #     for wid in layer_stats_per_writer[layer_id].keys():
+    #         channel_stats = []
+    #         for chan, stats in layer_stats_per_writer[layer_id][wid].items():
+    #             channel_stats.append([stats["mean"], stats["var"]])
+    #         wrtr_stats.append(channel_stats)
+    #     wrtr_stats_np = np.array(wrtr_stats)
+    #     with open(bn_stats_dir / f"layer_{layer_id}_stats_per_writer.npy", "wb") as f:
+    #         np.save(f, wrtr_stats_np)
+    #
     callbacks = [
         ModelSummary(max_depth=3),
         LitProgressBar(),

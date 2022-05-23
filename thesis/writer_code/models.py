@@ -934,8 +934,6 @@ class AdaptiveBatchnorm2d(nn.Module):
         self.running_var = running_var  # shape: (C,)
         self.old_stats_prcnt = old_stats_prcnt
 
-        print(f"Percentage of old statistics used: {old_stats_prcnt*100}%")
-
         old_stats = torch.stack([self.running_mean, self.running_var], 1)  # (C, 2)
         old_stats = old_stats.unsqueeze(0).expand_as(stats_per_writer)
         weighted_stats = (
