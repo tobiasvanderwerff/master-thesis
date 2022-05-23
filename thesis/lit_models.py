@@ -538,7 +538,7 @@ class LitAdaptiveBatchnormModel(LitBaseNonEpisodic):
         d_model: int,
         cer_metric: CharacterErrorRate,
         wer_metric: WordErrorRate,
-        old_stats_prcnt: float = 0.9,
+        old_stats_prcnt: float,
         **kwargs,
     ):
         """

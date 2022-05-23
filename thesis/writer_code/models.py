@@ -900,7 +900,7 @@ class WriterAdaptiveResnet2(nn.Module):
         self,
         resnet: nn.Module,
         layer_stats_per_writer: Dict[int, Tensor],
-        old_stats_prcnt: float = 0.9,
+        old_stats_prcnt: float,
     ):
         super().__init__()
         self.resnet = resnet
@@ -1057,7 +1057,9 @@ class AdaptiveBatchnormModel(nn.Module):
         resnet_old = (
             base_model.encoder if self.arch == "fphtr" else base_model.resnet_encoder
         )
-        resnet_new = WriterAdaptiveResnet2(resnet_old, self.layer_stats_per_writer)
+        resnet_new = WriterAdaptiveResnet2(
+            resnet_old, self.layer_stats_per_writer, old_stats_prcnt
+        )
         if self.arch == "fphtr":
             base_model.encoder = resnet_new
         else:  # SAR
