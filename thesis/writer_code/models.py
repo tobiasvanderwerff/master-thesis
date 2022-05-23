@@ -936,9 +936,9 @@ class AdaptiveBatchnorm2d(nn.Module):
 
         old_stats = torch.stack([self.running_mean, self.running_var], 1)  # (C, 2)
         old_stats = old_stats.unsqueeze(0).expand_as(stats_per_writer)
-        weighted_stats = (
-            old_stats_prcnt * old_stats + (1 - old_stats_prcnt) * stats_per_writer
-        )
+        weighted_stats = old_stats_prcnt * old_stats + (
+            1 - old_stats_prcnt
+        ) * stats_per_writer.to(old_stats.device)
 
         self.register_buffer("stats_per_writer", weighted_stats)  # (n_writers, C, 2)
         self.register_parameter("weight", weight)  # shape: (C,)
