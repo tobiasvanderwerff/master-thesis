@@ -538,6 +538,7 @@ class LitAdaptiveBatchnormModel(LitBaseNonEpisodic):
         d_model: int,
         cer_metric: CharacterErrorRate,
         wer_metric: WordErrorRate,
+        old_stats_prcnt: float = 0.9,
         **kwargs,
     ):
         """
@@ -557,6 +558,7 @@ class LitAdaptiveBatchnormModel(LitBaseNonEpisodic):
         self.d_model = d_model
         self.cer_metric = cer_metric
         self.wer_metric = wer_metric
+        self.old_stats_prcnt = old_stats_prcnt
 
         self.ignore_index = base_model.pad_tkn_idx
         self.cer_metric = base_model.cer_metric
@@ -567,6 +569,8 @@ class LitAdaptiveBatchnormModel(LitBaseNonEpisodic):
             layer_stats_per_writer=layer_stats_per_writer,
             d_model=d_model,
         )
+
+        self.save_hyperparameters("old_stats_prcnt")
 
         self.save_hyperparameters(self.hparams_to_log)
 
@@ -688,5 +692,13 @@ class LitAdaptiveBatchnormModel(LitBaseNonEpisodic):
             default="conditional_batchnorm",
             choices=ADAPTATION_METHODS,
             help="adaptation_method(str): how the writer code should be inserted into the model",
+        )
+        parser.add_argument(
+            "--old_stats_prcnt",
+            type=float,
+            default=1.0,
+            help="When averaging writer-agnostic and writer-specific batchnorm "
+            "statistics, what percentage consists of the writer-agnostic "
+            "statistics.",
         )
         return parent_parser

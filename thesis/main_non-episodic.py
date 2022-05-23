@@ -219,17 +219,17 @@ def main(args):
     )
 
     # Save batchnorm statistics.
-    # bn_stats_dir.mkdir(exist_ok=True)
-    # for layer_id in layer_stats_per_writer.keys():
-    #     wrtr_stats = []
-    #     for wid in layer_stats_per_writer[layer_id].keys():
-    #         channel_stats = []
-    #         for chan, stats in layer_stats_per_writer[layer_id][wid].items():
-    #             channel_stats.append([stats["mean"], stats["var"]])
-    #         wrtr_stats.append(channel_stats)
-    #     wrtr_stats_np = np.array(wrtr_stats)
-    #     with open(bn_stats_dir / f"layer_{layer_id}_stats_per_writer.npy", "wb") as f:
-    #         np.save(f, wrtr_stats_np)
+    bn_stats_dir.mkdir(exist_ok=True)
+    for layer_id in layer_stats_per_writer.keys():
+        wrtr_stats = []
+        for wid in layer_stats_per_writer[layer_id].keys():
+            channel_stats = []
+            for chan, stats in layer_stats_per_writer[layer_id][wid].items():
+                channel_stats.append([stats["mean"], stats["var"]])
+            wrtr_stats.append(channel_stats)
+        wrtr_stats_np = np.array(wrtr_stats)
+        with open(bn_stats_dir / f"layer_{layer_id}_stats_per_writer.npy", "wb") as f:
+            np.save(f, wrtr_stats_np)
 
     callbacks = [
         ModelSummary(max_depth=3),
