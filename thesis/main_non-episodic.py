@@ -316,6 +316,7 @@ if __name__ == "__main__":
 
     parser = LitBaseNonEpisodic.add_model_specific_args(parser)
     parser = LitWriterCodeAdaptiveModelNonEpisodic.add_model_specific_args(parser)
+    parser = LitAdaptiveBatchnormModel.add_model_specific_args(parser)
     parser = Trainer.add_argparse_args(parser)  # adds Pytorch Lightning arguments
 
     args = parser.parse_args()

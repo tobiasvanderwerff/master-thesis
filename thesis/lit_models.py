@@ -665,34 +665,7 @@ class LitAdaptiveBatchnormModel(LitBaseNonEpisodic):
 
     @staticmethod
     def add_model_specific_args(parent_parser):
-        parser = parent_parser.add_argument_group("LitWriterCodeAdaptiveModel")
-        parser.add_argument(
-            "--adaptation_num_hidden",
-            type=int,
-            default=128,
-            help="Number of features for the hidden layers of the MLP used for adaptation",
-        )
-        parser.add_argument(
-            "--code_name",
-            type=str,
-            default="hinge",
-            choices=[
-                "hinge",
-                "quadhinge",
-                "cohinge",
-                "cochaincode-hinge",
-                "triplechaincode-hinge",
-                "delta-hinge",
-            ],
-            help="Type of code to use.",
-        )
-        parser.add_argument(
-            "--adaptation_method",
-            type=str,
-            default="conditional_batchnorm",
-            choices=ADAPTATION_METHODS,
-            help="adaptation_method(str): how the writer code should be inserted into the model",
-        )
+        parser = parent_parser.add_argument_group("LitAdaptiveBatchnormModel")
         parser.add_argument(
             "--old_stats_prcnt",
             type=float,
