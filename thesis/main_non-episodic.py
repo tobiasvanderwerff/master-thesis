@@ -4,6 +4,7 @@ import argparse
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
+import pickle
 
 import numpy as np
 import torch
@@ -25,6 +26,7 @@ from thesis.util import (
     PAD_TOKEN,
     load_best_pl_checkpoint,
     get_bn_statistics,
+    collect_bn_layers,
 )
 
 from htr.data import IAMDataset
@@ -184,17 +186,37 @@ def main(args):
     device = "cpu" if args.use_cpu else "cuda:0"
     dataset = ds_test if args.test else ds_val
 
-    print(
-        f"Calculating writer-specific activation statistics for {len(dataset.writer_ids)} writers."
-    )
-    writer_stats = get_bn_statistics(
-        learner.model.model,
-        dataset,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        device=device,
-    )
-    print("Done.")
+    base_model = learner.model.model
+    writer_stats_pth = Path(f"writer_stats{'test' if args.test else 'val'}.pkl")
+    if writer_stats_pth.is_file():
+        print("Loading stats from disk.")
+        with open(writer_stats_pth, "rb") as f:
+            writer_stats = pickle.load(f)
+        bn_layers = collect_bn_layers(base_model)
+        for i, m in enumerate(bn_layers):
+            # Do not use a exponentially moving average but a cumulative
+            # average.
+            m.momentum = None
+            # Save old statistics.
+            m.running_mean_old = m.running_mean.clone()
+            m.running_var_old = m.running_var.clone()
+            # Set a global identifier for each layer.
+            m.layer_idx = i
+    else:
+        print(
+            f"Calculating writer-specific activation statistics for {len(dataset.writer_ids)} writers."
+        )
+        writer_stats = get_bn_statistics(
+            base_model,
+            dataset,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            device=device,
+        )
+        print("Done.")
+        with open(writer_stats_pth, "wb") as f:
+            pickle.dump(writer_stats, f)
+        print("Stats saved.")
 
     # Make the primary key for the statistics the layer index.
     layer_stats_per_writer = dict()
