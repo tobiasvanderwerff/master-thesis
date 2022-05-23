@@ -292,16 +292,13 @@ def main(args):
         callbacks=callbacks,
     )
 
-    trainer.validate(learner, dl_val)
+    if args.test:
+        trainer.test(learner, dl_test)
+    else:
+        trainer.validate(learner, dl_val)
+
     if args.test_on_fit_end:
         trainer.test(learner, dl_test)
-
-    # if args.validate:  # validate a trained model
-    #     trainer.validate(learner, dl_val)
-    # elif args.test:  # test a trained model
-    #     trainer.test(learner, dl_test)
-    # else:  # train a model
-    #     trainer.fit(learner, dl_train, dl_val)
 
 
 if __name__ == "__main__":
