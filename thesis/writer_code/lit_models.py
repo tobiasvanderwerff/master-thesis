@@ -549,7 +549,7 @@ class LitWriterCodeAdaptiveModelNonEpisodic(LitBaseNonEpisodic):
                 label_encoder=label_encoder,
                 params_to_log=model_params_to_log,
             )
-            d_model = base_model.rnn_encoder.input_size
+            d_model = base_model.model.lstm_encoder.rnn_encoder.input_size
 
         # Initialize meta-model.
         model = LitWriterCodeAdaptiveModelNonEpisodic.load_from_checkpoint(

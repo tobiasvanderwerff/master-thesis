@@ -227,7 +227,7 @@ def main(args):
 
     base_model = learner.model.model
     d_model = (
-        base_model.rnn_encoder.input_size
+        base_model.lstm_encoder.rnn_encoder.input_size
         if args.base_model_arch == "sar"
         else base_model.encoder.resnet_out_features
     )
