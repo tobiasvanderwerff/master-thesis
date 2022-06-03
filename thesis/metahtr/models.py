@@ -73,6 +73,8 @@ class MAMLHTR(nn.Module, MAMLLearner):
         """
         super().__init__()
 
+        allow_nograd = True
+
         assert num_inner_steps >= 1
 
         self.val_writerid_to_splits = val_writerid_to_splits
@@ -242,6 +244,8 @@ class MAMLHTR(nn.Module, MAMLLearner):
         learner.train()
         set_dropout_layers_train(learner, False)  # disable dropout
         set_batchnorm_layers_train(learner, self.use_batch_stats_for_batchnorm)
+
+        learner.module.loss_fn.reduction = "none"
 
         _, support_loss_unreduced = learner.module.forward_teacher_forcing(
             adaptation_imgs, adaptation_targets

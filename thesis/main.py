@@ -8,6 +8,7 @@ from thesis.metahtr.lit_util import MAMLHTRCheckpointIO
 from thesis.writer_code.lit_models import (
     LitWriterCodeAdaptiveModel,
     LitWriterCodeAdaptiveModelMAML,
+    LitWriterCodeAdaptiveModelNonEpisodic,
 )
 from thesis.util import (
     filter_df_by_freq,
@@ -134,15 +135,38 @@ def main(args):
         },
         **vars(args),
     )
+
+    # Initialize the base model with AdaBN.
+    learner = (
+        LitWriterCodeAdaptiveModelNonEpisodic.init_with_base_model_from_checkpoint(
+            **args_
+        )
+    )
+    base_model = learner.model.model
+
     # Initialize with a trained base model.
     cls = main_lit_models()[args.main_model_arch]
-    learner = cls.init_with_base_model_from_checkpoint(**args_)
+    num_clf_weights = (
+        base_model.decoder.clf.in_features * base_model.decoder.clf.out_features
+        if args.base_model_arch == "fphtr"
+        else base_model.lstm_decoder.prediction.in_features
+        * base_model.lstm_decoder.prediction.out_features
+    )
+    learner = cls(
+        base_model=base_model,
+        cer_metric=base_model.cer_metric,
+        wer_metric=base_model.wer_metric,
+        num_clf_weights=num_clf_weights,
+        **args_,
+    )
+    # learner = cls.init_with_base_model_from_checkpoint(**args_)
 
     plugins = None
-    if isinstance(
-        learner, (LitMAMLLearner, LitMetaHTR, LitWriterCodeAdaptiveModelMAML)
-    ):
-        plugins = [MAMLHTRCheckpointIO(base_model_params)]
+    # For now disable Checkpoint plugin because it doesn't work. TODO: fix.
+    # if isinstance(
+    #     learner, (LitMAMLLearner, LitMetaHTR, LitWriterCodeAdaptiveModelMAML)
+    # ):
+    #     plugins = [MAMLHTRCheckpointIO(base_model_params)]
 
     callbacks = [
         ModelSummary(max_depth=3),

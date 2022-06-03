@@ -152,6 +152,7 @@ lightning_logs_lines_forms
 *.out
 logs
 tmp
+nbs
 
 hinge-feature-extraction/hinge-features
 hinge-feature-extraction/beyondOCR_hingeV13B31

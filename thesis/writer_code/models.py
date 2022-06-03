@@ -695,7 +695,6 @@ class ConditionalBatchNorm2d(nn.Module):
         super().__init__()
         self.bn = batchnorm_layer
         self.writer_code_size = writer_code_size
-        self.writer_code = None
         self.adapt = nn.Sequential(  # 1-hidden-layer MLP
             nn.Linear(writer_code_size, adaptation_num_hidden),
             nn.ReLU(inplace=True),
@@ -721,15 +720,16 @@ class ConditionalBatchNorm2d(nn.Module):
         Args:
             x (Tensor of shape (N, n_channels, h, w))
         """
-        assert self.writer_code is not None, "Writer code not initialized."
-        assert self.writer_code.ndim == 2 and self.writer_code.shape[0] == x.shape[0]
-
         bsz, n_channels = x.shape[:2]
         self.weight, self.bias = self.weight.to(x.device), self.bias.to(x.device)
 
         x = self.bn(x)
 
-        weight_and_bias = self.adapt(self.writer_code)  # shape: (N, 2 * n_channels)
+        # Always input zero code. This is the same as just using the bias vector of
+        # the MLP.
+        writer_code = torch.zeros(x.shape[0], self.writer_code_size, device=x.device)
+
+        weight_and_bias = self.adapt(writer_code)  # shape: (N, 2 * n_channels)
         weight_delta = weight_and_bias[:, :n_channels]
         bias_delta = weight_and_bias[:, n_channels:]
 
@@ -798,11 +798,106 @@ class WriterAdaptiveResnet(nn.Module):
             self.resnet, writer_code_size, adaptation_num_hidden
         )
 
-    def forward(self, imgs: Tensor, writer_code: torch.Tensor) -> torch.Tensor:
-        # Set `writer_code` attribute for all ConditionalBatchNorm2d layers
-        for l in self.bn_layers:
-            l.writer_code = writer_code
+    def forward(self, imgs: Tensor) -> torch.Tensor:
         out = self.resnet(imgs)
-        for l in self.bn_layers:
-            l.writer_code = None
         return out
+
+
+class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
+    """
+    Writer-code based adaptation without episodic training. Effectively, this means the
+    writer codes are loaded into the model in advance and do not require training.
+    """
+
+    def __init__(
+        self,
+        base_model: nn.Module,
+        d_model: int,
+        code_size: int,
+        adaptation_num_hidden: int,
+        adaptation_method: Union[
+            AdaptationMethod, str
+        ] = AdaptationMethod.CONDITIONAL_BATCHNORM,
+    ):
+        """
+        Args:
+            base_model (nn.Module): pre-trained HTR model, frozen during adaptation
+            d_model (int): size of the feature vectors produced by the feature
+                extractor (e.g. CNN).
+            code_size (int): size of the writer embeddings. If code_size=0, no code
+                will be used.
+            adaptation_num_hidden (int): hidden size for adaptation MLP
+            adaptation_method (AdaptationMethod): how the writer code should be inserted into the model
+        """
+        super().__init__()
+        self.d_model = d_model
+        self.code_size = code_size
+        self.adaptation_num_hidden = adaptation_num_hidden
+        self.adaptation_method = adaptation_method
+        if isinstance(self.adaptation_method, str):
+            self.adaptation_method = AdaptationMethod.from_string(
+                self.adaptation_method
+            )
+
+        if isinstance(base_model, FullPageHTREncoderDecoder):
+            self.arch = "fphtr"
+        elif isinstance(base_model, ShowAttendRead):
+            self.arch = "sar"
+        else:
+            raise ValueError(f"Unrecognized model class: {base_model.__class__}")
+
+        assert base_model.loss_fn.reduction == "mean"
+
+        freeze(base_model)  # make sure the base model weights are frozen
+        # Finetune the linear layer in the base model directly following the adaptation
+        # model.
+        # base_model.encoder.linear.requires_grad_(True)
+
+        self.feature_transform = None
+        resnet_old = (
+            base_model.encoder if self.arch == "fphtr" else base_model.resnet_encoder
+        )
+        resnet_new = WriterAdaptiveResnet(resnet_old, code_size, adaptation_num_hidden)
+        if self.arch == "fphtr":
+            base_model.encoder = resnet_new
+        else:  # SAR
+            base_model.resnet_encoder = resnet_new
+        self.model = base_model
+
+    def forward(
+        self,
+        imgs: Tensor,
+        target: Tensor,
+        writer_ids: Tensor,
+        mode: TrainMode = TrainMode.TRAIN,
+    ):
+        teacher_forcing = True if mode == TrainMode.TRAIN else False
+        if teacher_forcing:
+            logits, loss = self.model.forward_teacher_forcing(imgs, target)
+        else:
+            logits, _, loss = self.model(imgs, target)
+        return logits, loss
+        # if self.arch == "fphtr":
+        #     features = self.model.encoder(imgs)
+        #     if teacher_forcing:
+        #         logits = self.model.decoder.decode_teacher_forcing(features, target)
+        #     else:
+        #         logits, _ = self.model.decoder(features)
+        # else:  # SAR
+        #     imgs = imgs.unsqueeze(1)
+        #     features = self.model.resnet_encoder(imgs)
+        #     h_holistic = self.model.lstm_encoder(features)
+        #     if teacher_forcing:
+        #         logits = self.model.lstm_decoder.forward_teacher_forcing(
+        #             features, h_holistic, target
+        #         )
+        #     else:
+        #         logits, _ = self.model.lstm_decoder(features, h_holistic)
+        # loss = None
+        # if target is not None:
+        #     loss = self.model.loss_fn(
+        #         logits[:, : target.size(1), :].transpose(1, 2),
+        #         target[:, : logits.size(1)],
+        #     )
+        # sampled_ids = logits.argmax(-1)
+        # return logits, sampled_ids, loss
