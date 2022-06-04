@@ -307,7 +307,7 @@ class WriterCodeAdaptiveModel(nn.Module):
         if code_size > 0:
             self.writer_embs = nn.Embedding(num_writers, code_size)
 
-        freeze(base_model)  # make sure the base model weights are frozen
+        # freeze(base_model)  # make sure the base model weights are frozen
         # Finetune the linear layer in the base model directly following the adaptation
         # model.
         if self.adaptation_method is AdaptationMethod.CNN_OUTPUT:
@@ -848,7 +848,7 @@ class WriterCodeAdaptiveModelNonEpisodic(nn.Module):
 
         assert base_model.loss_fn.reduction == "mean"
 
-        freeze(base_model)  # make sure the base model weights are frozen
+        # freeze(base_model)  # make sure the base model weights are frozen
         # Finetune the linear layer in the base model directly following the adaptation
         # model.
         # base_model.encoder.linear.requires_grad_(True)

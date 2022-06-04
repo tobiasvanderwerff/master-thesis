@@ -77,6 +77,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
 
         assert num_inner_steps >= 1
 
+        self.base_model = base_model
         self.val_writerid_to_splits = val_writerid_to_splits
         self.test_writerid_to_splits = test_writerid_to_splits
         self.ways = ways
@@ -91,7 +92,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
 
         if transform is not None:
             self.gbml = l2l.algorithms.GBML(
-                base_model,
+                base_model.decoder.clf,
                 transform=transform,
                 first_order=False,
                 allow_unused=True,
@@ -99,14 +100,14 @@ class MAMLHTR(nn.Module, MAMLLearner):
             )
         else:
             self.gbml = l2l.algorithms.MAML(
-                base_model,
+                base_model.decoder.clf,
                 lr=inner_lr,
                 first_order=False,
                 allow_unused=True,
                 allow_nograd=allow_nograd,
             )
 
-        self.ignore_index = self.gbml.module.pad_tkn_idx
+        self.ignore_index = self.base_model.pad_tkn_idx
         self.char_to_avg_inst_weight = None
 
     def forward(
@@ -136,6 +137,8 @@ class MAMLHTR(nn.Module, MAMLLearner):
         # calculation should be set beforehand, outside of the current function.
 
         # Adapt the model.
+        self.base_model.decoder.clf = learner
+        learner = self.base_model
         learner, _, _ = self.fast_adaptation(
             learner, adaptation_imgs, adaptation_targets
         )
@@ -181,6 +184,8 @@ class MAMLHTR(nn.Module, MAMLLearner):
             # computation of derivatives of the new modules' parameters w.r.t. the
             # original parameters.
             learner = self.gbml.clone()
+            self.base_model.decoder.clf = learner
+            learner = self.base_model
 
             # Inner loop.
             assert torch.is_grad_enabled()
@@ -198,14 +203,12 @@ class MAMLHTR(nn.Module, MAMLLearner):
                         char_to_inst_weights[tgt.item()].append(w.item())
 
             # Outer loop.
-            loss_fn = learner.module.loss_fn
+            loss_fn = learner.loss_fn
             reduction = loss_fn.reduction
             loss_fn.reduction = "mean"
             if mode is TrainMode.TRAIN:
                 set_dropout_layers_train(learner, self.use_dropout)
-                _, query_loss = learner.module.forward_teacher_forcing(
-                    query_imgs, query_tgts
-                )
+                _, query_loss = learner.forward_teacher_forcing(query_imgs, query_tgts)
                 # Using the torch `backward()` function rather than PLs
                 # `manual_backward` means that mixed precision cannot be used.
                 (query_loss / self.ways).backward()
@@ -222,8 +225,8 @@ class MAMLHTR(nn.Module, MAMLLearner):
                         _, preds, query_loss = learner(img, tgt)
 
                     # Calculate metrics.
-                    self.gbml.module.cer_metric(preds, tgt)
-                    self.gbml.module.wer_metric(preds, tgt)
+                    self.base_model.cer_metric(preds, tgt)
+                    self.base_model.wer_metric(preds, tgt)
                     outer_loss += query_loss * img.size(0)
             loss_fn.reduction = reduction
 
@@ -245,9 +248,9 @@ class MAMLHTR(nn.Module, MAMLLearner):
         set_dropout_layers_train(learner, False)  # disable dropout
         set_batchnorm_layers_train(learner, self.use_batch_stats_for_batchnorm)
 
-        learner.module.loss_fn.reduction = "none"
+        learner.loss_fn.reduction = "none"
 
-        _, support_loss_unreduced = learner.module.forward_teacher_forcing(
+        _, support_loss_unreduced = learner.forward_teacher_forcing(
             adaptation_imgs, adaptation_targets
         )
 
@@ -267,7 +270,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
             support_loss = torch.mean(support_loss_unreduced[~ignore_mask])
 
         # Calculate gradients and take an optimization step.
-        learner.adapt(support_loss)
+        learner.decoder.clf.adapt(support_loss)
 
         return learner, support_loss, instance_weights
 
