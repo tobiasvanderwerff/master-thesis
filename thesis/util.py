@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 from typing import Optional, Tuple, List, Sequence, Any, Union, Dict
 
+from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.core.saving import load_hparams_from_yaml
 
 from htr.data import IAMDataset
@@ -356,3 +357,41 @@ def reset_all_weights(module: nn.Module):
         module._reset_parameters()
     for m in module.children():
         reset_all_weights(m)
+
+
+def load_best_pl_checkpoint(
+    trainer: "pl.Trainer",
+    pl_module: "pl.LightningModule",
+    label_encoder: LabelEncoder,
+    verbose: bool = True,
+):
+    """
+    Load the best checkpoint for a given PL module, and set it as new model for
+    the given trainer.
+    """
+    ckpt_callback = None
+    for cb in trainer.callbacks:
+        if isinstance(cb, ModelCheckpoint):
+            ckpt_callback = cb
+            break
+    assert ckpt_callback is not None, "ModelCheckpoint not found in callbacks."
+    best_model_path = ckpt_callback.best_model_path
+
+    if verbose:
+        print(f"Loading best model at {best_model_path}")
+
+    model_hparams_file = Path(best_model_path).parent.parent / "model_hparams.yaml"
+    args = dict(
+        base_model_arch=pl_module.base_model_arch,
+        main_model_arch=pl_module.main_model_arch,
+        checkpoint_path=best_model_path,
+        model_hparams_file=model_hparams_file,
+        label_encoder=label_encoder,
+        writer_codes=pl_module.writer_codes,
+        num_workers=pl_module.num_workers,
+    )
+    args.update(pl_module.hparams)
+
+    cls = pl_module.__class__
+    model = cls.init_with_base_model_from_checkpoint(**args)
+    trainer.model = model
