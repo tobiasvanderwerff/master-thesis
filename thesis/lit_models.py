@@ -5,6 +5,8 @@ from pathlib import Path
 from pytorch_lightning import Callback
 
 from htr.metrics import WordErrorRate, CharacterErrorRate
+from htr.models.fphtr.fphtr import FullPageHTREncoderDecoder
+from htr.models.sar.sar import ShowAttendRead
 from thesis.data import WriterDataset
 from thesis.metahtr.lit_callbacks import (
     LogModelPredictionsMAML,
@@ -12,12 +14,14 @@ from thesis.metahtr.lit_callbacks import (
 )
 
 from thesis.metahtr.models import MAMLHTR
-from thesis.models import MAMLLearner
+from thesis.models import MAMLLearner, FewShotFinetuningModel
 from thesis.util import (
     identity_collate_fn,
     TrainMode,
     PREDICTIONS_TO_LOG,
     prepare_writer_splits,
+    test_split_batch_for_adaptation,
+    train_split_batch_for_adaptation,
 )
 
 from htr.models.lit_models import LitShowAttendRead, LitFullPageHTREncoderDecoder
@@ -434,5 +438,216 @@ class LitMAMLLearner(LitBaseEpisodic):
             action="store_true",
             default=False,
             help="Freeze gamma (scaling factor) for all batchnorm layers.",
+        )
+        return parent_parser
+
+
+class LitFewShotFinetuningModel(LitBaseEpisodic):
+    def __init__(
+        self,
+        base_model: nn.Module,
+        d_model: int,
+        cer_metric: CharacterErrorRate,
+        wer_metric: WordErrorRate,
+        learning_rate_finetune: float,
+        shots: int = 16,
+        max_val_batch_size: int = 64,
+        finetune_opt_steps: int = 3,
+        use_adam_for_adaptation: bool = False,
+        **kwargs,
+    ):
+        """
+        Args:
+            base_model (nn.Module): pre-trained HTR model, frozen during adaptation
+            d_model (int): size of the feature vectors produced by the feature
+                extractor (e.g. CNN).
+            cer_metric (CharacterErrorRate): cer metric module
+            wer_metric (WordErrorRate): wer metric module
+            learning_rate_finetune (float): learning rate used for fast adaptation of an
+                initial embedding during val/test
+            shots (int): number of samples to use for finetuning
+            max_val_batch_size (int): maximum val batch size
+            finetune_opt_steps (int): number of optimization steps during finetuning
+            use_adam_for_adaptation (bool): whether to use Adam during adaptation
+                (otherwise plain SGD is used)
+        """
+        super().__init__(**kwargs)
+
+        assert isinstance(base_model, (FullPageHTREncoderDecoder, ShowAttendRead))
+
+        self.base_model = base_model
+        self.d_model = d_model
+        self.cer_metric = cer_metric
+        self.wer_metric = wer_metric
+        self.learning_rate_finetune = learning_rate_finetune
+        self.shots = shots
+        self.max_val_batch_size = max_val_batch_size
+        self.finetune_opt_steps = finetune_opt_steps
+        self.use_adam_for_adaptation = use_adam_for_adaptation
+
+        self.ignore_index = base_model.pad_tkn_idx
+        self.automatic_optimization = False
+
+        self.model = FewShotFinetuningModel(
+            base_model=base_model,
+            d_model=d_model,
+            learning_rate_finetune=learning_rate_finetune,
+            shots=shots,
+            max_val_batch_size=max_val_batch_size,
+            finetune_opt_steps=finetune_opt_steps,
+            use_adam_for_adaptation=use_adam_for_adaptation,
+        )
+
+        self.save_hyperparameters(
+            "learning_rate_finetune",
+            "finetune_opt_steps",
+            "shots",
+            "use_adam_for_adaptation",
+        )
+        self.save_hyperparameters(self.hparams_to_log)
+
+    def forward(
+        self,
+        adaptation_imgs: Tensor,
+        adaptation_targets: Tensor,
+        inference_imgs: Tensor,
+        inference_tgts: Optional[Tensor] = None,
+        mode: TrainMode = TrainMode.TRAIN,
+    ) -> Tuple[Tensor, Tensor, Tensor]:
+        # self.eval()
+        return self.model(
+            adaptation_imgs, adaptation_targets, inference_imgs, inference_tgts
+        )
+
+    def training_step(self, batch, batch_idx):
+        (
+            adaptation_imgs,
+            adaptation_tgts,
+            inference_imgs,
+            inference_tgts,
+        ) = train_split_batch_for_adaptation(batch, shots=self.shots, ways=1)[0]
+        _, preds, loss = self(
+            adaptation_imgs, adaptation_tgts, inference_imgs, inference_tgts
+        )
+        self.log("train_loss", loss, sync_dist=True, prog_bar=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        return self.val_or_test_step(batch, mode=TrainMode.VAL)
+
+    def test_step(self, batch, batch_idx):
+        return self.val_or_test_step(batch, mode=TrainMode.TEST)
+
+    def val_or_test_step(self, batch, mode=TrainMode.VAL):
+        (
+            adaptation_imgs,
+            adaptation_tgts,
+            inference_imgs,
+            inference_tgts,
+        ) = train_split_batch_for_adaptation(batch, shots=self.shots, ways=1)[0]
+        torch.set_grad_enabled(True)
+        _, preds, loss = self(
+            adaptation_imgs, adaptation_tgts, inference_imgs, inference_tgts
+        )
+        torch.set_grad_enabled(False)
+
+        # Log metrics.
+        cer_metric = self.cer_metric
+        wer_metric = self.wer_metric
+        cer_metric(preds, inference_tgts)
+        wer_metric(preds, inference_tgts)
+
+        self.log("char_error_rate", cer_metric, prog_bar=False)
+        self.log("word_error_rate", wer_metric, prog_bar=True)
+        self.log(f"{mode.name.lower()}_loss", loss, sync_dist=True, prog_bar=True)
+
+        return loss
+
+    def configure_optimizers(self):
+        optimizer = optim.AdamW(
+            self.parameters(), lr=self.learning_rate_finetune, weight_decay=0.0
+        )
+        return optimizer
+
+    @staticmethod
+    def init_with_base_model_from_checkpoint(
+        base_model_arch: str,
+        main_model_arch: str,
+        checkpoint_path: Union[str, Path],
+        model_hparams_file: Union[str, Path],
+        label_encoder: LabelEncoder,
+        model_params_to_log: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ):
+        assert base_model_arch in ["fphtr", "sar"], "Invalid base model architecture."
+
+        # Initialize base model.
+        if base_model_arch == "fphtr":
+            # Load FPHTR model.
+            base_model = LitFullPageHTREncoderDecoder.load_from_checkpoint(
+                checkpoint_path,
+                hparams_file=str(model_hparams_file),
+                strict=False,
+                label_encoder=label_encoder,
+                params_to_log=model_params_to_log,
+            )
+            feature_size = base_model.encoder.resnet_out_features
+        else:  # SAR
+            base_model = LitShowAttendRead.load_from_checkpoint(
+                checkpoint_path,
+                hparams_file=str(model_hparams_file),
+                strict=False,
+                label_encoder=label_encoder,
+                params_to_log=model_params_to_log,
+            )
+            feature_size = base_model.model.lstm_encoder.rnn_encoder.input_size
+
+        # Initialize meta-model.
+        if main_model_arch == "WriterCodeAdaptiveModel":
+            model = LitFewShotFinetuningModel.load_from_checkpoint(
+                checkpoint_path,
+                strict=False,
+                cer_metric=base_model.model.cer_metric,
+                wer_metric=base_model.model.wer_metric,
+                d_model=feature_size,
+                base_model=base_model.model,
+                base_model_arch=base_model_arch,
+                main_model_arch=main_model_arch,
+                **kwargs,
+            )
+        else:
+            model = LitFewShotFinetuningModel.load_from_checkpoint(
+                checkpoint_path,
+                strict=False,
+                cer_metric=base_model.model.cer_metric,
+                wer_metric=base_model.model.wer_metric,
+                base_model=base_model.model,
+                d_model=feature_size,
+                base_model_arch=base_model_arch,
+                main_model_arch=main_model_arch,
+                **kwargs,
+            )
+        return model
+
+    @staticmethod
+    def add_model_specific_args(parent_parser):
+        parser = parent_parser.add_argument_group("LitWriterCodeAdaptiveModel")
+        parser.add_argument(
+            "--learning_rate_finetune",
+            type=float,
+            default=0.0001,
+            help="Learning rate used for finetuning the model parameters.",
+        )
+        parser.add_argument(
+            "--finetune_opt_steps",
+            type=int,
+            default=3,
+            help="Number of optimization steps during finetuning.",
+        )
+        parser.add_argument(
+            "--use_adam_for_adaptation",
+            action="store_true",
+            default=False,
+            help="Use Adam optimizer.",
         )
         return parent_parser

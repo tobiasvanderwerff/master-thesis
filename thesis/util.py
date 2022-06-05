@@ -62,12 +62,14 @@ def main_lit_models():
         LitWriterCodeAdaptiveModel,
         LitWriterCodeAdaptiveModelMAML,
     )
+    from thesis.lit_models import LitFewShotFinetuningModel
 
     return {
         "MAML": LitMAMLLearner,
         "MetaHTR": LitMetaHTR,
         "WriterCodeAdaptiveModel": LitWriterCodeAdaptiveModel,
         "WriterCodeAdaptiveModelMAML": LitWriterCodeAdaptiveModelMAML,
+        "FewShotFinetuningModel": LitFewShotFinetuningModel,
     }
 
 

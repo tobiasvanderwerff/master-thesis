@@ -2,7 +2,7 @@ import argparse
 from pathlib import Path
 
 from thesis.data import WriterDataset
-from thesis.lit_models import LitMAMLLearner, LitBaseEpisodic
+from thesis.lit_models import LitMAMLLearner, LitBaseEpisodic, LitFewShotFinetuningModel
 from thesis.metahtr.lit_models import LitMetaHTR
 from thesis.metahtr.lit_util import MAMLHTRCheckpointIO
 from thesis.writer_code.lit_models import (
@@ -36,7 +36,6 @@ def main(args):
 
     print(f"Main model used: {str(args.main_model_arch)}")
     print(f"Base model used: {str(args.base_model_arch).upper()}")
-    print(f"Adaptation method: {args.adaptation_method}")
 
     if args.base_model_arch == "sar":
         # Disable CuDDN if using LSTM base model (SAR). This is neseccary because CuDNN
@@ -79,17 +78,9 @@ def main(args):
     )
 
     # Exclude writers from the dataset that do not have sufficiently many samples.
-    # For the WriterCodeAdaptive model, there is no support/query split performed.
-    # Therefore, limit the size of the train batch to half of what if would be if
-    # this split was done.
-    train_min_bsz = (
-        args.shots
-        if args.main_model_arch == "WriterCodeAdaptiveModel"
-        else args.shots * 2
-    )
-    ds_train.data = filter_df_by_freq(ds_train.data, "writer_id", train_min_bsz)
-    ds_val.data = filter_df_by_freq(ds_val.data, "writer_id", args.shots * 2)
-    ds_test.data = filter_df_by_freq(ds_test.data, "writer_id", args.shots * 2)
+    ds_train.data = filter_df_by_freq(ds_train.data, "writer_id", args.shots)
+    ds_val.data = filter_df_by_freq(ds_val.data, "writer_id", args.shots)
+    ds_test.data = filter_df_by_freq(ds_test.data, "writer_id", args.shots)
 
     # Set image transforms.
     ds_train.set_transforms_for_split(augmentations)
@@ -103,12 +94,12 @@ def main(args):
 
     # Initialize learn2learn tasksets.
     shots, ways = args.shots, args.ways
-    taskset_train = prepare_train_taskset(
-        dataset=ds_train,
-        ways=ways,
-        bookkeeping_path=cache_dir / f"train_l2l_bookkeeping_shots={shots}.pkl",
-        shots=train_min_bsz,
-    )
+    # taskset_train = prepare_train_taskset(
+    #     dataset=ds_train,
+    #     ways=1,
+    #     bookkeeping_path=cache_dir / f"train_l2l_bookkeeping_shots={shots}.pkl",
+    #     shots=shots,
+    # )
     taskset_val = prepare_test_taskset(ds_val)
     taskset_test = prepare_test_taskset(ds_test)
 
@@ -120,7 +111,7 @@ def main(args):
         load_meta_weights=True,
         model_params_to_log={"only_lowercase": only_lowercase},
         num_writers=len(ds_train.writer_ids),
-        taskset_train=taskset_train,
+        # taskset_train=taskset_train,
         taskset_val=taskset_val,
         taskset_test=taskset_test,
         # allow_nograd=args.freeze_batchnorm_gamma,
@@ -156,7 +147,6 @@ def main(args):
             save_weights_only=True,
         ),
     ]
-    # TODO: fix worst prediction logging callback to work with chunks.
     callbacks = learner.add_model_specific_callbacks(
         callbacks,
         shots=args.shots,
@@ -187,15 +177,13 @@ def main(args):
         callbacks=callbacks,
     )
 
-    if args.validate:  # validate a trained model
-        trainer.validate(learner)
-    elif args.test:  # test a trained model
+    if args.test:  # run on test set
         trainer.test(learner)
-    else:  # train a model
-        trainer.fit(learner)
+    else:  # run on validation set
+        trainer.validate(learner)
 
     if args.test_on_fit_end:
-        load_best_pl_checkpoint(trainer, learner, ds_train.label_enc)
+        # load_best_pl_checkpoint(trainer, learner, ds_train.label_enc)
         trainer.test(learner)
 
 
@@ -205,7 +193,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--main_model_arch", type=str, required=True,
                         choices=["MAML", "MetaHTR", "WriterCodeAdaptiveModel",
-                                 "WriterCodeAdaptiveModelMAML"])
+                                 "WriterCodeAdaptiveModelMAML", "FewShotFinetuningModel"])
     parser.add_argument("--base_model_arch", type=str, required=True,
                         choices=["fphtr", "sar"], default="fphtr")
     parser.add_argument("--trained_model_path", type=str, required=True,
@@ -236,7 +224,8 @@ if __name__ == "__main__":
     parser = LitMAMLLearner.add_model_specific_args(parser)
     parser = LitBaseEpisodic.add_model_specific_args(parser)
     parser = LitMetaHTR.add_model_specific_args(parser)
-    parser = LitWriterCodeAdaptiveModel.add_model_specific_args(parser)
+    # parser = LitWriterCodeAdaptiveModel.add_model_specific_args(parser)
+    parser = LitFewShotFinetuningModel.add_model_specific_args(parser)
     # parser = LitWriterCodeAdaptiveModelMAML.add_model_specific_args(parser)
     parser = Trainer.add_argparse_args(parser)  # adds Pytorch Lightning arguments
 
