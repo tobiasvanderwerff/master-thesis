@@ -165,10 +165,12 @@ class FewShotFinetuningModel(nn.Module):
 
         # Finetune the model.
         print("Finetuning writer.")
-        for i in range(self.finetune_opt_steps):
-            logits, loss = model.forward_teacher_forcing(
-                adaptation_imgs, adaptation_targets
-            )
+        batches = zip(
+            torch.chunk(adaptation_imgs, self.finetune_opt_steps),
+            torch.chunk(adaptation_targets, self.finetune_opt_steps),
+        )
+        for i, (imgs, targets) in enumerate(batches):
+            logits, loss = model.forward_teacher_forcing(imgs, targets)
             print(f"Train loss at step {i}: {loss}")
             optimizer.zero_grad()
             loss.backward()

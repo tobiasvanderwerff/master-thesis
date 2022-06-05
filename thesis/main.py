@@ -100,8 +100,12 @@ def main(args):
     #     bookkeeping_path=cache_dir / f"train_l2l_bookkeeping_shots={shots}.pkl",
     #     shots=shots,
     # )
-    taskset_val = prepare_test_taskset(ds_val)
-    taskset_test = prepare_test_taskset(ds_test)
+    taskset_val = prepare_test_taskset(
+        ds_val, n_augmented_versions=args.finetune_opt_steps - 1
+    )
+    taskset_test = prepare_test_taskset(
+        ds_test, n_augmented_versions=args.finetune_opt_steps - 1
+    )
 
     # Define model arguments.
     args_ = dict(

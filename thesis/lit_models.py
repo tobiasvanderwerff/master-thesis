@@ -524,18 +524,18 @@ class LitFewShotFinetuningModel(LitBaseEpisodic):
             adaptation_imgs, adaptation_targets, inference_imgs, inference_tgts
         )
 
-    def training_step(self, batch, batch_idx):
-        (
-            adaptation_imgs,
-            adaptation_tgts,
-            inference_imgs,
-            inference_tgts,
-        ) = train_split_batch_for_adaptation(batch, shots=self.shots, ways=1)[0]
-        _, preds, loss = self(
-            adaptation_imgs, adaptation_tgts, inference_imgs, inference_tgts
-        )
-        self.log("train_loss", loss, sync_dist=True, prog_bar=True)
-        return loss
+    # def training_step(self, batch, batch_idx):
+    #     (
+    #         adaptation_imgs,
+    #         adaptation_tgts,
+    #         inference_imgs,
+    #         inference_tgts,
+    #     ) = train_split_batch_for_adaptation(batch, shots=self.shots, ways=1)[0]
+    #     _, preds, loss = self(
+    #         adaptation_imgs, adaptation_tgts, inference_imgs, inference_tgts
+    #     )
+    #     self.log("train_loss", loss, sync_dist=True, prog_bar=True)
+    #     return loss
 
     def validation_step(self, batch, batch_idx):
         return self.val_or_test_step(batch, mode=TrainMode.VAL)
@@ -549,7 +549,9 @@ class LitFewShotFinetuningModel(LitBaseEpisodic):
             adaptation_tgts,
             inference_imgs,
             inference_tgts,
-        ) = train_split_batch_for_adaptation(batch, shots=self.shots, ways=1)[0]
+        ) = train_split_batch_for_adaptation(
+            batch, shots=self.shots, ways=self.finetune_opt_steps
+        )
         torch.set_grad_enabled(True)
         _, preds, loss = self(
             adaptation_imgs, adaptation_tgts, inference_imgs, inference_tgts

@@ -169,7 +169,7 @@ def prepare_writer_splits(dataset: WriterDataset):
     return writerid_to_splits
 
 
-def prepare_test_taskset(dataset: IAMDataset):
+def prepare_test_taskset(dataset: IAMDataset, n_augmented_versions: int = 0):
     eos_tkn_idx, sos_tkn_idx, pad_tkn_idx = dataset.label_enc.transform(
         [EOS_TOKEN, SOS_TOKEN, PAD_TOKEN]
     )
@@ -179,7 +179,7 @@ def prepare_test_taskset(dataset: IAMDataset):
         eos_tkn_idx=eos_tkn_idx,
         dataset_returns_writer_id=True,
     )
-    return WriterDataset(dataset, collate_fn)
+    return WriterDataset(dataset, collate_fn, n_augmented_versions)
 
 
 def prepare_train_taskset(
@@ -307,40 +307,35 @@ def train_split_batch_for_adaptation(
     imgs, target, writer_ids = batch
     writer_ids_uniq = writer_ids.unique().tolist()
 
-    assert len(writer_ids_uniq) == ways, f"{len(writer_ids_uniq)} vs {ways}"
-
     # Split the batch into N different writers, where N = ways.
     writer_batches = []
-    for task in range(ways):  # tasks correspond to different writers
-        wrtr_id = writer_ids_uniq[task]
-        task_slice = writer_ids == wrtr_id
+    imgs_, target_ = (
+        imgs,
+        target,
+    )
+    if limit_num_samples_per_task is not None:
         imgs_, target_ = (
-            imgs[task_slice],
-            target[task_slice],
-        )
-        if limit_num_samples_per_task is not None:
-            imgs_, target_ = (
-                imgs[:limit_num_samples_per_task],
-                target[:limit_num_samples_per_task],
-            )
-
-        # Separate data into support/query set.
-        adaptation_indices = np.zeros(imgs_.size(0), dtype=bool)
-        # Select first k even indices for adaptation set.
-        adaptation_indices[np.arange(shots) * 2] = True
-        # Select remaining indices for query set.
-        query_indices = torch.from_numpy(~adaptation_indices)
-        adaptation_indices = torch.from_numpy(adaptation_indices)
-        adaptation_imgs, adaptation_tgts = (
-            imgs_[adaptation_indices],
-            target_[adaptation_indices],
-        )
-        query_imgs, query_tgts = imgs_[query_indices], target_[query_indices]
-        writer_batches.append(
-            (adaptation_imgs, adaptation_tgts, query_imgs, query_tgts)
+            imgs[:limit_num_samples_per_task],
+            target[:limit_num_samples_per_task],
         )
 
-    return writer_batches
+    # Separate data into support/query set.
+    adaptation_indices = np.zeros(imgs_.size(0), dtype=bool)
+    batch_len = imgs_.size(0) // ways
+    for i in range(ways):
+        adaptation_indices[np.arange(i * batch_len, i * batch_len + shots)] = True
+    query_indices = np.zeros(imgs_.size(0), dtype=bool)
+    query_indices[np.arange(shots, batch_len)] = True
+    query_indices = torch.from_numpy(query_indices)
+    adaptation_indices = torch.from_numpy(adaptation_indices)
+    adaptation_imgs, adaptation_tgts = (
+        imgs_[adaptation_indices],
+        target_[adaptation_indices],
+    )
+    query_imgs, query_tgts = imgs_[query_indices], target_[query_indices]
+    writer_batches.append((adaptation_imgs, adaptation_tgts, query_imgs, query_tgts))
+
+    return writer_batches[0]
 
 
 def filter_df_by_freq(df: pd.DataFrame, column: str, min_freq: int) -> pd.DataFrame:
