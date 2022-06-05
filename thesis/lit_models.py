@@ -453,6 +453,7 @@ class LitFewShotFinetuningModel(LitBaseEpisodic):
         shots: int = 16,
         max_val_batch_size: int = 64,
         finetune_opt_steps: int = 3,
+        weight_decay: float = 0.0,
         use_adam_for_adaptation: bool = False,
         **kwargs,
     ):
@@ -468,6 +469,7 @@ class LitFewShotFinetuningModel(LitBaseEpisodic):
             shots (int): number of samples to use for finetuning
             max_val_batch_size (int): maximum val batch size
             finetune_opt_steps (int): number of optimization steps during finetuning
+            weight_decay (float): weight decay
             use_adam_for_adaptation (bool): whether to use Adam during adaptation
                 (otherwise plain SGD is used)
         """
@@ -483,6 +485,7 @@ class LitFewShotFinetuningModel(LitBaseEpisodic):
         self.shots = shots
         self.max_val_batch_size = max_val_batch_size
         self.finetune_opt_steps = finetune_opt_steps
+        self.weight_decay = weight_decay
         self.use_adam_for_adaptation = use_adam_for_adaptation
 
         self.ignore_index = base_model.pad_tkn_idx
@@ -495,6 +498,7 @@ class LitFewShotFinetuningModel(LitBaseEpisodic):
             shots=shots,
             max_val_batch_size=max_val_batch_size,
             finetune_opt_steps=finetune_opt_steps,
+            weight_decay=weight_decay,
             use_adam_for_adaptation=use_adam_for_adaptation,
         )
 
@@ -502,6 +506,7 @@ class LitFewShotFinetuningModel(LitBaseEpisodic):
             "learning_rate_finetune",
             "finetune_opt_steps",
             "shots",
+            "weight_decay",
             "use_adam_for_adaptation",
         )
         self.save_hyperparameters(self.hparams_to_log)

@@ -57,6 +57,7 @@ class FewShotFinetuningModel(nn.Module):
         shots: int = 16,
         max_val_batch_size: int = 64,
         finetune_opt_steps: int = 1,
+        weight_decay: float = 0.0,
         use_adam_for_adaptation: bool = False,
     ):
         """
@@ -69,6 +70,7 @@ class FewShotFinetuningModel(nn.Module):
             shots (int): number of samples to use for finetuning
             max_val_batch_size (int): maximum val batch size
             finetune_opt_steps (int): number of optimization steps during finetuning
+            weight_decay (float): weight decay
             use_adam_for_adaptation (bool): whether to use Adam during adaptation
                 (otherwise plain SGD is used)
         """
@@ -81,6 +83,7 @@ class FewShotFinetuningModel(nn.Module):
         self.shots = shots
         self.max_val_batch_size = max_val_batch_size
         self.finetune_opt_steps = finetune_opt_steps
+        self.weight_decay = weight_decay
         self.use_adam_for_adaptation = use_adam_for_adaptation
 
         if isinstance(self.base_model, FullPageHTREncoderDecoder):
@@ -147,10 +150,18 @@ class FewShotFinetuningModel(nn.Module):
         set_batchnorm_layers_train(model, False)
         # Set up optimizer.
         if self.use_adam_for_adaptation:
-            optimizer = optim.Adam(model.parameters(), lr=self.learning_rate_finetune)
+            optimizer = optim.Adam(
+                model.parameters(),
+                lr=self.learning_rate_finetune,
+                weight_decay=self.weight_decay,
+            )
         else:
             # Plain SGD, i.e. update rule `g = g - lr * grad(loss)`
-            optimizer = optim.SGD(model.parameters(), lr=self.learning_rate_finetune)
+            optimizer = optim.SGD(
+                model.parameters(),
+                lr=self.learning_rate_finetune,
+                weight_decay=self.weight_decay,
+            )
 
         # Finetune the model.
         print("Finetuning writer.")
