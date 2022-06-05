@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Tuple, List, Optional, Any
 
+from learn2learn import clone_module
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -90,8 +91,6 @@ class FewShotFinetuningModel(nn.Module):
             raise ValueError(f"Unrecognized model class: {self.base_model.__class__}")
 
         # Save the original weights of the final classification layer.
-        self.old_clf_weight = self.base_model.decoder.clf.weight.detach().clone()
-        self.old_clf_bias = self.base_model.decoder.clf.bias.detach().clone()
         self.base_model.decoder.clf.requires_grad_(True)  # finetune the last layer
         freeze(self.base_model)  # make sure the base model weights are frozen
 
@@ -112,7 +111,8 @@ class FewShotFinetuningModel(nn.Module):
             inference_tgts (Optional[Tensor]): targets for `inference_imgs`
         """
         # Finetune the model on the adaptation data.
-        self.finetune(adapt_imgs, adapt_tgts)
+        model = clone_module(self.base_model)  # clone the model parameters
+        self.finetune(model, adapt_imgs, adapt_tgts)
 
         # The set of writer examples may be too large too fit into a single
         # batch. Therefore, chunk the data and process each chunk individually.
@@ -138,11 +138,11 @@ class FewShotFinetuningModel(nn.Module):
         sampled_ids = logits.argmax(-1)
         return logits, sampled_ids, inference_loss
 
-    def finetune(self, adaptation_imgs: Tensor, adaptation_targets: Tensor):
+    def finetune(
+        self, model: nn.Module, adaptation_imgs: Tensor, adaptation_targets: Tensor
+    ):
         """Finetune the base model on adaptation data."""
-        model = self.base_model
-        # Reset the previously finetuned base model parameters.
-        self.reset_params(adaptation_imgs.device)
+        self.unfreeze_params_to_finetune(model)
         # Freeze batchnorm stats and use stored statistics.
         set_batchnorm_layers_train(model, False)
         # Set up optimizer.
@@ -163,11 +163,11 @@ class FewShotFinetuningModel(nn.Module):
             loss.backward()
             optimizer.step()
 
-    def reset_params(self, device):
-        """Reset the model parameters to their initial values before finetuning.
-        Note that this does not mean resetting the weights to random values,
-        but rather undoing the finetuning by using the originally stored parameters."""
-        with torch.no_grad():
-            self.base_model.decoder.clf.weight.data = self.old_clf_weight.to(device)
-            self.base_model.decoder.clf.bias.data = self.old_clf_bias.to(device)
-        self.base_model.decoder.clf.requires_grad_(True)
+    def unfreeze_params_to_finetune(
+        self, model: nn.Module, finetune_batchnorm: bool = True
+    ):
+        model.decoder.clf.requires_grad_(True)  # finetune the last layer
+        if finetune_batchnorm:
+            for m in model.modules():
+                if isinstance(m, nn.BatchNorm2d):
+                    m.requires_grad_(True)
