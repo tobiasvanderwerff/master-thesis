@@ -156,6 +156,9 @@ class MAMLHTR(nn.Module, MAMLLearner):
         if mode is TrainMode.TRAIN:
             assert imgs.size(0) >= 2 * self.ways * self.shots, imgs.size(0)
 
+        cer_metric = self.gbml.module.cer_metric
+        wer_metric = self.gbml.module.wer_metric
+
         if mode is TrainMode.TRAIN:
             # Split the batch into N different writers, for K-shot adaptation.
             tasks = train_split_batch_for_adaptation(batch, self.ways, self.shots)
@@ -171,64 +174,87 @@ class MAMLHTR(nn.Module, MAMLLearner):
             tasks = test_split_batch_for_adaptation(
                 batch, self.shots, writerid_to_splits
             )
+            # Reset metrics in order to measure per-writer metrics.
+            cer_metric.reset()
+            wer_metric.reset()
 
-        for support_imgs, support_tgts, query_imgs, query_tgts in tasks:
-            n_query_images += query_imgs.size(0)
+        wer_before_and_after_adaptation = []
+        for i in range(2):  # perform two iterations: one w/ inner loop and one w/o
+            skip_inner_loop = True if i == 0 else False
 
-            # Calling `model.clone()` allows updating the module while still allowing
-            # computation of derivatives of the new modules' parameters w.r.t. the
-            # original parameters.
-            learner = self.gbml.clone()
+            for support_imgs, support_tgts, query_imgs, query_tgts in tasks:
+                n_query_images += query_imgs.size(0)
 
-            # Inner loop.
-            assert torch.is_grad_enabled()
-            for _ in range(self.num_inner_steps):
-                # Adapt the model to the support data.
-                learner, support_loss, instance_weights = self.fast_adaptation(
-                    learner, support_imgs, support_tgts
-                )
+                # Calling `model.clone()` allows updating the module while still allowing
+                # computation of derivatives of the new modules' parameters w.r.t. the
+                # original parameters.
+                learner = self.gbml.clone()
 
-                inner_losses.append(support_loss.item())
-                if instance_weights is not None:
-                    # Store the instance-specific weights for logging.
-                    ignore_mask = support_tgts == self.ignore_index
-                    for tgt, w in zip(support_tgts[~ignore_mask], instance_weights):
-                        char_to_inst_weights[tgt.item()].append(w.item())
+                # Inner loop.
+                assert torch.is_grad_enabled()
+                if not skip_inner_loop:
+                    for _ in range(self.num_inner_steps):
+                        # Adapt the model to the support data.
+                        learner, support_loss, instance_weights = self.fast_adaptation(
+                            learner, support_imgs, support_tgts
+                        )
 
-            # Outer loop.
-            loss_fn = learner.module.loss_fn
-            reduction = loss_fn.reduction
-            loss_fn.reduction = "mean"
-            if mode is TrainMode.TRAIN:
-                set_dropout_layers_train(learner, self.use_dropout)
-                _, query_loss = learner.module.forward_teacher_forcing(
-                    query_imgs, query_tgts
-                )
-                # Using the torch `backward()` function rather than PLs
-                # `manual_backward` means that mixed precision cannot be used.
-                (query_loss / self.ways).backward()
-                outer_loss += query_loss
-            else:  # val/test
-                # The set of writer examples may be too large too fit into a single
-                # batch. Therefore, chunk the data and process each chunk individually.
-                query_img_chunks, query_tgt_chunks = chunk_batch(
-                    query_imgs, query_tgts, self.max_val_batch_size
-                )
+                        inner_losses.append(support_loss.item())
+                        if instance_weights is not None:
+                            # Store the instance-specific weights for logging.
+                            ignore_mask = support_tgts == self.ignore_index
+                            for tgt, w in zip(
+                                support_tgts[~ignore_mask], instance_weights
+                            ):
+                                char_to_inst_weights[tgt.item()].append(w.item())
 
-                for img, tgt in zip(query_img_chunks, query_tgt_chunks):
-                    with torch.inference_mode():
-                        _, preds, query_loss = learner(img, tgt)
+                # Outer loop.
+                loss_fn = learner.module.loss_fn
+                reduction = loss_fn.reduction
+                loss_fn.reduction = "mean"
+                if mode is TrainMode.TRAIN:
+                    set_dropout_layers_train(learner, self.use_dropout)
+                    _, query_loss = learner.module.forward_teacher_forcing(
+                        query_imgs, query_tgts
+                    )
+                    # Using the torch `backward()` function rather than PLs
+                    # `manual_backward` means that mixed precision cannot be used.
+                    (query_loss / self.ways).backward()
+                    outer_loss += query_loss
+                else:  # val/test
+                    # The set of writer examples may be too large too fit into a single
+                    # batch. Therefore, chunk the data and process each chunk individually.
+                    query_img_chunks, query_tgt_chunks = chunk_batch(
+                        query_imgs, query_tgts, self.max_val_batch_size
+                    )
 
-                    # Calculate metrics.
-                    self.gbml.module.cer_metric(preds, tgt)
-                    self.gbml.module.wer_metric(preds, tgt)
-                    outer_loss += query_loss * img.size(0)
-            loss_fn.reduction = reduction
+                    for img, tgt in zip(query_img_chunks, query_tgt_chunks):
+                        with torch.inference_mode():
+                            _, preds, query_loss = learner(img, tgt)
+
+                        # Calculate metrics.
+                        cer_metric(preds, tgt)
+                        wer_metric(preds, tgt)
+                        outer_loss += query_loss * img.size(0)
+                loss_fn.reduction = reduction
+
+            wer = round(wer_metric.compute().item() * 100, 2)
+            wer_before_and_after_adaptation.append(wer)
+            if skip_inner_loop:
+                print(f"w/o inner loop: {wer:.2f}")
+            else:
+                print(f"w/ inner loop: {wer:.2f}")
+        print()
 
         outer_loss /= n_query_images
         inner_loss_avg = np.mean(inner_losses)
 
-        return outer_loss, inner_loss_avg, char_to_inst_weights
+        return (
+            outer_loss,
+            inner_loss_avg,
+            char_to_inst_weights,
+            wer_before_and_after_adaptation,
+        )
 
     def fast_adaptation(
         self,

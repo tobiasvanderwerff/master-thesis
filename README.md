@@ -1,3 +1,8 @@
+# stats-per-writer
+Evaluate WER scores per writer (only meant for running val/test, will crash for train
+loop). Additionally, show WER scores both with and without inner loop adaptation. These
+scores are saved to a CSV file afterwards.
+
 # Master thesis
 
 ## How to install
