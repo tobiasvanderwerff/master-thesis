@@ -176,9 +176,6 @@ class MAMLHTR(nn.Module, MAMLLearner):
             tasks = test_split_batch_for_adaptation(
                 batch, self.shots, writerid_to_splits
             )
-            # Reset metrics in order to measure per-writer metrics.
-            cer_metric.reset()
-            wer_metric.reset()
 
         tgts = []
         wer_before_and_after_adaptation = {"before": 0, "after": 0}
@@ -191,9 +188,9 @@ class MAMLHTR(nn.Module, MAMLLearner):
             for support_imgs, support_tgts, query_imgs, query_tgts in tasks:
                 n_query_images += query_imgs.size(0)
 
-                # Calling `model.clone()` allows updating the module while still allowing
-                # computation of derivatives of the new modules' parameters w.r.t. the
-                # original parameters.
+                # Calling `model.clone()` allows updating the module while still
+                # allowing computation of derivatives of the new modules' parameters
+                # w.r.t. the original parameters.
                 learner = self.gbml.clone()
 
                 # Inner loop.
@@ -241,14 +238,16 @@ class MAMLHTR(nn.Module, MAMLLearner):
                         if calculate_grad:
                             img = img.detach().clone()
                             img.requires_grad = True
-                        if skip_inner_loop:
-                            tgts.append(tgt)  # save the targets for post-hoc evaluation
 
                         with torch.inference_mode(not calculate_grad):
                             logits, preds, query_loss = learner(img, tgt)
                         preds, query_loss = preds.detach(), query_loss.item()
 
                         preds_before_and_after_adaptation[before_of_after].append(preds)
+                        if skip_inner_loop:
+                            # Save the targets for post-hoc evaluation.
+                            tgts.append(tgt)
+
                         if calculate_grad:
                             # Use predictions as pseudo targets and calculate
                             # gradients w.r.t. the input image. This represents the
