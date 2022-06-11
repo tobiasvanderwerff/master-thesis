@@ -162,7 +162,7 @@ class LitBaseEpisodic(pl.LightningModule):
         parser.add_argument(
             "--max_val_batch_size",
             type=int,
-            default=8,  # TODO: make this bigger when testing
+            default=64,
             help="Maximum batch size for validation. If the number of samples for a "
             "writer exceeds this value, the data is split into chunks "
             "of size `max_val_batch_size`.",
