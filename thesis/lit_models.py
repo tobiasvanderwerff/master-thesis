@@ -297,9 +297,10 @@ class LitMAMLLearner(LitBaseEpisodic):
 
     def save_wer_csv(self):
         """Store the WER scores before and after adaptation to a CSV file."""
+        out_dir = Path(self.logger.log_dir)
         out = np.array(self.wer_before_and_after_adaptation)
         np.savetxt(
-            "wer_before_and_after_adaptation.csv",
+            out_dir / "wer_before_and_after_adaptation.csv",
             out,
             delimiter=",",
             header="before after",
