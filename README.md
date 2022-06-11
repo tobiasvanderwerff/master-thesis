@@ -1,7 +1,12 @@
 # stats-per-writer
-Evaluate WER scores per writer (only meant for running val/test, will crash for train
-loop). Additionally, show WER scores both with and without inner loop adaptation. These
-scores are saved to a CSV file afterwards.
+For a trained meta-learing model, decide whether or not to perform adaptation on the
+support batch based on gradient uncertainty. Gradient uncertainty in this
+case is expressed as the gradient of the target log probability with respect to the
+input image, using model predictions as pseudo targets.
+
+This code is only meant for running val/test loop on a trained model and will crash for
+train loop. Additionally, show WER scores both with and without inner loop adaptation.
+These scores are saved to a CSV file afterwards.
 
 # Master thesis
 

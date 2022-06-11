@@ -3,6 +3,8 @@ import math
 from typing import Optional, Dict, Tuple, List, Callable, Any
 from collections import defaultdict
 
+import torch.nn.functional as F
+
 from thesis.metahtr.util import LayerWiseLRTransform
 from thesis.models import MAMLLearner
 from thesis.util import (
@@ -178,9 +180,13 @@ class MAMLHTR(nn.Module, MAMLLearner):
             cer_metric.reset()
             wer_metric.reset()
 
-        wer_before_and_after_adaptation = []
+        tgts = []
+        wer_before_and_after_adaptation = {"before": 0, "after": 0}
+        grad_before_and_after_adaptation = {"before": 0, "after": 0}
+        preds_before_and_after_adaptation = {"before": [], "after": []}
         for i in range(2):  # perform two iterations: one w/ inner loop and one w/o
             skip_inner_loop = True if i == 0 else False
+            before_of_after = "before" if skip_inner_loop else "after"
 
             for support_imgs, support_tgts, query_imgs, query_tgts in tasks:
                 n_query_images += query_imgs.size(0)
@@ -228,24 +234,62 @@ class MAMLHTR(nn.Module, MAMLLearner):
                         query_imgs, query_tgts, self.max_val_batch_size
                     )
 
-                    for img, tgt in zip(query_img_chunks, query_tgt_chunks):
-                        with torch.inference_mode():
-                            _, preds, query_loss = learner(img, tgt)
+                    for i, (img, tgt) in enumerate(
+                        zip(query_img_chunks, query_tgt_chunks)
+                    ):
+                        calculate_grad = True if i == 0 else False
+                        if calculate_grad:
+                            tgts.append(tgt)  # save the targest once
+                            img = img.detach().clone()
+                            img.requires_grad = True
 
-                        # Calculate metrics.
-                        cer_metric(preds, tgt)
-                        wer_metric(preds, tgt)
+                        with torch.inference_mode(not calculate_grad):
+                            logits, preds, query_loss = learner(img, tgt)
+                        preds, query_loss = preds.detach(), query_loss.item()
+
+                        preds_before_and_after_adaptation[before_of_after].append(preds)
+                        if calculate_grad:
+                            # Use predictions as pseudo targets and calculate
+                            # gradients w.r.t. the input image. This represents the
+                            # 'gradient uncertainty', which we use to decide whether
+                            # to use the original or updated model.
+                            pseudo_tgt = preds
+                            loss_fn = nn.CrossEntropyLoss(
+                                ignore_index=self.ignore_index
+                            )
+                            loss = loss_fn(
+                                logits[:, : pseudo_tgt.size(1), :].transpose(1, 2),
+                                pseudo_tgt[:, : logits.size(1)],
+                            )
+
+                            # Calculate gradient w.r.t. input.
+                            inp_grad = grad(loss, img)[0]
+                            inp_grad = torch.linalg.vector_norm(
+                                inp_grad.view(-1), ord=2
+                            ).item()
+                            # inp_grad = img.grad.max().item()
+
+                            grad_before_and_after_adaptation[before_of_after] = inp_grad
+
                         outer_loss += query_loss * img.size(0)
                 loss_fn.reduction = reduction
 
-            wer = round(wer_metric.compute().item() * 100, 2)
-            wer_before_and_after_adaptation.append(wer)
-            if skip_inner_loop:
-                print(f"w/o inner loop: {wer:.2f}")
-            else:
-                print(f"w/ inner loop: {wer:.2f}")
-        print()
+        # Decide which model to choose based on gradient uncertainty.
+        grad_before = grad_before_and_after_adaptation["before"]
+        grad_after = grad_before_and_after_adaptation["after"]
+        best = "before" if grad_before >= grad_after else "after"
+        preds = preds_before_and_after_adaptation[best]
+        print(f"Best model: {best} adaptation")
 
+        # Calculate metrics for the best model (before or after adaptation). Note
+        # that the loss is not updated correctly, and since it is not the most
+        # useful metric here it should be disregarded.
+        for p, t in zip(preds, tgts):
+            cer_metric(p, t)
+            wer_metric(p, t)
+
+        wer = round(wer_metric.compute().item() * 100, 2)
+        wer_before_and_after_adaptation[before_of_after] = wer
         outer_loss /= n_query_images
         inner_loss_avg = np.mean(inner_losses)
 
@@ -253,7 +297,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
             outer_loss,
             inner_loss_avg,
             char_to_inst_weights,
-            wer_before_and_after_adaptation,
+            wer_before_and_after_adaptation.values(),
         )
 
     def fast_adaptation(

@@ -45,7 +45,7 @@ class LitBaseEpisodic(pl.LightningModule):
         taskset_test: Optional[WriterDataset] = None,
         learning_rate: float = 0.0001,
         weight_decay: float = 0.0,
-        max_val_batch_size: int = 128,
+        max_val_batch_size: int = 16,
         grad_clip: Optional[float] = None,
         num_workers: int = 0,
         max_epochs: Optional[int] = None,
@@ -162,7 +162,7 @@ class LitBaseEpisodic(pl.LightningModule):
         parser.add_argument(
             "--max_val_batch_size",
             type=int,
-            default=128,
+            default=8,  # TODO: make this bigger when testing
             help="Maximum batch size for validation. If the number of samples for a "
             "writer exceeds this value, the data is split into chunks "
             "of size `max_val_batch_size`.",
@@ -297,9 +297,10 @@ class LitMAMLLearner(LitBaseEpisodic):
 
     def save_wer_csv(self):
         """Store the WER scores before and after adaptation to a CSV file."""
+        out_dir = Path(self.logger.log_dir)
         out = np.array(self.wer_before_and_after_adaptation)
         np.savetxt(
-            "wer_before_and_after_adaptation.csv",
+            out_dir / "wer_before_and_after_adaptation.csv",
             out,
             delimiter=",",
             header="before after",
