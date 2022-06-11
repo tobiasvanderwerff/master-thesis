@@ -196,10 +196,6 @@ class LitMAMLLearner(LitBaseEpisodic):
         self.cer_metric = cer_metric
         self.wer_metric = wer_metric
 
-        # Stores tuples indicating WER before and after adaptation for each writer in
-        # val/test.
-        self.wer_before_and_after_adaptation = []
-
         # For sub-classes of the current class, self.model can be defined in the
         # sub-class itself after __init__, or initialized here by passing `base_model`.
         self.model = None
@@ -269,11 +265,8 @@ class LitMAMLLearner(LitBaseEpisodic):
             outer_loss,
             inner_loss,
             inst_ws,
-            wer_before_and_after_adaptation,
         ) = self.model.meta_learn(batch, mode=mode)
         torch.set_grad_enabled(False)
-
-        self.wer_before_and_after_adaptation.append(wer_before_and_after_adaptation)
 
         self.log(
             f"{mode.name.lower()}_loss_outer", outer_loss, sync_dist=True, prog_bar=True
@@ -288,23 +281,6 @@ class LitMAMLLearner(LitBaseEpisodic):
         self.log("word_error_rate", self.wer_metric, prog_bar=True)
 
         return {"loss": outer_loss, "char_to_inst_weights": inst_ws}
-
-    def on_validation_end(self):
-        self.save_wer_csv()
-
-    def on_test_end(self):
-        self.save_wer_csv()
-
-    def save_wer_csv(self):
-        """Store the WER scores before and after adaptation to a CSV file."""
-        out_dir = Path(self.logger.log_dir)
-        out = np.array(self.wer_before_and_after_adaptation)
-        np.savetxt(
-            out_dir / "wer_before_and_after_adaptation.csv",
-            out,
-            delimiter=",",
-            header="before after",
-        )
 
     def add_model_specific_callbacks(
         self,

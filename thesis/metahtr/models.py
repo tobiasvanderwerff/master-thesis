@@ -178,7 +178,6 @@ class MAMLHTR(nn.Module, MAMLLearner):
             )
 
         tgts = []
-        wer_before_and_after_adaptation = {"before": 0, "after": 0}
         grad_before_and_after_adaptation = {"before": 0, "after": 0}
         preds_before_and_after_adaptation = {"before": [], "after": []}
         for i in range(2):  # perform two iterations: one w/ inner loop and one w/o
@@ -288,7 +287,6 @@ class MAMLHTR(nn.Module, MAMLLearner):
             wer_metric(p, t)
 
         wer = round(wer_metric.compute().item() * 100, 2)
-        wer_before_and_after_adaptation[before_of_after] = wer
         outer_loss /= n_query_images
         inner_loss_avg = np.mean(inner_losses)
 
@@ -296,7 +294,6 @@ class MAMLHTR(nn.Module, MAMLLearner):
             outer_loss,
             inner_loss_avg,
             char_to_inst_weights,
-            list(wer_before_and_after_adaptation.values()),
         )
 
     def fast_adaptation(
