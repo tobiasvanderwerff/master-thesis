@@ -239,9 +239,10 @@ class MAMLHTR(nn.Module, MAMLLearner):
                     ):
                         calculate_grad = True if i == 0 else False
                         if calculate_grad:
-                            tgts.append(tgt)  # save the targest once
                             img = img.detach().clone()
                             img.requires_grad = True
+                        if skip_inner_loop:
+                            tgts.append(tgt)  # save the targets for post-hoc evaluation
 
                         with torch.inference_mode(not calculate_grad):
                             logits, preds, query_loss = learner(img, tgt)
@@ -279,7 +280,6 @@ class MAMLHTR(nn.Module, MAMLLearner):
         grad_after = grad_before_and_after_adaptation["after"]
         best = "before" if grad_before >= grad_after else "after"
         preds = preds_before_and_after_adaptation[best]
-        print(f"Best model: {best} adaptation")
 
         # Calculate metrics for the best model (before or after adaptation). Note
         # that the loss is not updated correctly, and since it is not the most
