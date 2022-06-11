@@ -268,7 +268,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
                             inp_grad = torch.linalg.vector_norm(
                                 inp_grad.view(-1), ord=2
                             ).item()
-                            # inp_grad = img.grad.max().item()
+                            # inp_grad = inp_grad.max().item()
 
                             grad_before_and_after_adaptation[before_of_after] = inp_grad
 
@@ -297,7 +297,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
             outer_loss,
             inner_loss_avg,
             char_to_inst_weights,
-            wer_before_and_after_adaptation.values(),
+            list(wer_before_and_after_adaptation.values()),
         )
 
     def fast_adaptation(
