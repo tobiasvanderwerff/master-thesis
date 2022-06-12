@@ -338,7 +338,7 @@ class LitWriterCodeAdaptiveModel(LitBaseNonEpisodic):
                 label_encoder=label_encoder,
                 params_to_log=model_params_to_log,
             )
-            feature_size = base_model.rnn_encoder.input_size
+            feature_size = base_model.model.lstm_encoder.rnn_encoder.input_size
 
         # Initialize meta-model.
         if main_model_arch == "WriterCodeAdaptiveModel":
