@@ -276,7 +276,7 @@ class MAMLHTR(nn.Module, MAMLLearner):
         # Decide which model to choose based on gradient uncertainty.
         grad_before = grad_before_and_after_adaptation["before"]
         grad_after = grad_before_and_after_adaptation["after"]
-        best = "before" if grad_before >= grad_after else "after"
+        best = "before" if grad_before < grad_after else "after"
         preds = preds_before_and_after_adaptation[best]
 
         # Calculate metrics for the best model (before or after adaptation). Note
