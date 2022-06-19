@@ -544,29 +544,39 @@ class LitFewShotFinetuningModel(LitBaseEpisodic):
         return self.val_or_test_step(batch, mode=TrainMode.TEST)
 
     def val_or_test_step(self, batch, mode=TrainMode.VAL):
-        (
-            adaptation_imgs,
-            adaptation_tgts,
-            inference_imgs,
-            inference_tgts,
-        ) = train_split_batch_for_adaptation(batch, shots=self.shots, ways=1)[0]
-        torch.set_grad_enabled(True)
-        _, preds, loss = self(
-            adaptation_imgs, adaptation_tgts, inference_imgs, inference_tgts
+        # (
+        #     adaptation_imgs,
+        #     adaptation_tgts,
+        #     inference_imgs,
+        #     inference_tgts,
+        # ) = train_split_batch_for_adaptation(batch, shots=self.shots, ways=1)[0]
+
+        # For validation/testing, an incoming batch consists of all the examples
+        # for a particular writer. We then use 10 different random support/query
+        # splits.
+        writerid_to_splits = (
+            self.val_writerid_to_splits
+            if mode is TrainMode.VAL
+            else self.test_writerid_to_splits
         )
+        tasks = test_split_batch_for_adaptation(batch, self.shots, writerid_to_splits)
+
+        torch.set_grad_enabled(True)
+        for support_imgs, support_tgts, query_imgs, query_tgts in tasks:
+            _, preds, loss = self(support_imgs, support_tgts, query_imgs, query_tgts)
+
+            # Log metrics.
+            cer_metric = self.cer_metric
+            wer_metric = self.wer_metric
+            cer_metric(preds, query_tgts)
+            wer_metric(preds, query_tgts)
+
+            self.log("char_error_rate", cer_metric, prog_bar=False)
+            self.log("word_error_rate", wer_metric, prog_bar=True)
+            self.log(f"{mode.name.lower()}_loss", loss, sync_dist=True, prog_bar=True)
         torch.set_grad_enabled(False)
 
-        # Log metrics.
-        cer_metric = self.cer_metric
-        wer_metric = self.wer_metric
-        cer_metric(preds, inference_tgts)
-        wer_metric(preds, inference_tgts)
-
-        self.log("char_error_rate", cer_metric, prog_bar=False)
-        self.log("word_error_rate", wer_metric, prog_bar=True)
-        self.log(f"{mode.name.lower()}_loss", loss, sync_dist=True, prog_bar=True)
-
-        return loss
+        return loss  # loss is not correct, should be ignored
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(

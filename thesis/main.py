@@ -79,8 +79,8 @@ def main(args):
 
     # Exclude writers from the dataset that do not have sufficiently many samples.
     ds_train.data = filter_df_by_freq(ds_train.data, "writer_id", args.shots)
-    ds_val.data = filter_df_by_freq(ds_val.data, "writer_id", args.shots)
-    ds_test.data = filter_df_by_freq(ds_test.data, "writer_id", args.shots)
+    ds_val.data = filter_df_by_freq(ds_val.data, "writer_id", args.shots * 2)
+    ds_test.data = filter_df_by_freq(ds_test.data, "writer_id", args.shots * 2)
 
     # Set image transforms.
     ds_train.set_transforms_for_split(augmentations)
