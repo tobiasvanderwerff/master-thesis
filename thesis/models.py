@@ -175,7 +175,7 @@ class FewShotFinetuningModel(nn.Module):
             optimizer.step()
 
     def unfreeze_params_to_finetune(
-        self, model: nn.Module, finetune_batchnorm: bool = True
+        self, model: nn.Module, finetune_batchnorm: bool = False
     ):
         model.decoder.clf.requires_grad_(True)  # finetune the last layer
         if finetune_batchnorm:
