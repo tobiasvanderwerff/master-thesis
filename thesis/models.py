@@ -94,7 +94,7 @@ class FewShotFinetuningModel(nn.Module):
             raise ValueError(f"Unrecognized model class: {self.base_model.__class__}")
 
         # Save the original weights of the final classification layer.
-        self.base_model.decoder.clf.requires_grad_(True)  # finetune the last layer
+        self.base_model.clf_layer.requires_grad_(True)  # finetune the last layer
         freeze(self.base_model)  # make sure the base model weights are frozen
 
     def forward(
@@ -177,7 +177,7 @@ class FewShotFinetuningModel(nn.Module):
     def unfreeze_params_to_finetune(
         self, model: nn.Module, finetune_batchnorm: bool = False
     ):
-        model.decoder.clf.requires_grad_(True)  # finetune the last layer
+        model.clf_layer.requires_grad_(True)  # finetune the last layer
         if finetune_batchnorm:
             for m in model.modules():
                 if isinstance(m, nn.BatchNorm2d):
