@@ -94,7 +94,6 @@ class FewShotFinetuningModel(nn.Module):
             raise ValueError(f"Unrecognized model class: {self.base_model.__class__}")
 
         # Save the original weights of the final classification layer.
-        self.base_model.clf_layer.requires_grad_(True)  # finetune the last layer
         freeze(self.base_model)  # make sure the base model weights are frozen
 
     def forward(
@@ -129,7 +128,7 @@ class FewShotFinetuningModel(nn.Module):
         all_logits = []
         for img, tgt in zip(inf_img_chunks, inf_tgt_chunks):
             with torch.inference_mode():
-                logits, _, loss = self.base_model(img, tgt)
+                logits, _, loss = model(img, tgt)
             all_logits.append(logits)
             inference_loss += loss * img.size(0)
         inference_loss /= inference_imgs.size(0)
